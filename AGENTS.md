@@ -50,6 +50,12 @@ Never use `gh auth switch`. Merge with `gh pr merge <n> --rebase`, never `--squa
 
 Commit messages are always in English.
 
+One ticket lands as one commit. Fixes made while building the ticket — review
+findings, failing checks, convention slips like a button onClick that should
+have been a form — are squashed into the feature commit before the PR, not
+left as follow-up commits on top of it. A separate commit is for a separate
+change.
+
 ## Acceptance evidence
 
 Feature-delivery evidence belongs on the matching Linear issue. Upload the validated recording,
