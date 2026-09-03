@@ -1,0 +1,6 @@
+# igniter's own factory config (dogfood)
+# Full schema arrives with STA-168; the skeleton only proves the path exists.
+
+project: igniter
+repo: .
+linear_project: igniter
