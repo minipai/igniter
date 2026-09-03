@@ -5,4 +5,4 @@ Full format arrives with STA-168.
 
 - Branch per ticket: `feature/<ticket>-<slug>`.
 - `bun run check` (typecheck + bun test + vitest) is green before review.
-- Owner accepts in the web board; Commander sets Linear to Ready to merge.
+- Owner accepts in Linear by moving the ticket to Ready to merge; the web page only shows running tickets.

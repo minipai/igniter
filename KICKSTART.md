@@ -4,7 +4,7 @@
 
 ## 這是什麼
 
-一個很小的軟體工廠：Linear 票拖進 `Queued` → runner 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑 → Owner 看證據、在 Linear 把票改成 Ready to merge。網頁只管進行中的票：誰在等人、三個 pane 的畫面、打字回覆。
+一個很小的軟體工廠：Linear 票拖進 `Ready to build` → runner 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑 → Owner 看證據、在 Linear 把票改成 Ready to merge。網頁只管進行中的票：誰在等人、三個 pane 的畫面、打字回覆。
 runner 與網頁是同一個 Bun 程序，**在工廠主機（minipc）上、repo 目錄裡跑**（`cd <repo> && igniter serve`），repo 就是專案目錄；隊友經 Tailscale 連。
 
 - Linear project：https://linear.app/starcoder/project/igniter-ee3d3db6bd6c （team Starcoder，票 STA-158～169）
