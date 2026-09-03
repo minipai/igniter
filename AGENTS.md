@@ -46,15 +46,21 @@ For commands requiring the user's permissions, use `minipai` only for that comma
 
     GH_TOKEN=$(gh auth token --user minipai) gh ...
 
-Never use `gh auth switch`. Merge with `gh pr merge <n> --rebase`, never `--squash`.
+Never use `gh auth switch`.
 
 Commit messages are always in English.
 
 One ticket lands as one commit. Fixes made while building the ticket — review
 findings, failing checks, convention slips like a button onClick that should
-have been a form — are squashed into the feature commit before the PR, not
+have been a form — are squashed into the feature commit before review, not
 left as follow-up commits on top of it. A separate commit is for a separate
 change.
+
+No pull requests. Review happens through diffwalk: capture the ticket commit
+with `diffwalk inspect`, author the explanations, run `diffwalk check`, then
+`diffwalk publish` and put the printed link on the Linear issue. Once the
+owner moves the ticket to Ready to merge, rebase the commit onto local `main`.
+Do not push; the owner pushes. `.diffwalk/` stays out of git.
 
 ## Acceptance evidence
 
