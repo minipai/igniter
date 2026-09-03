@@ -4,7 +4,8 @@ import { Router } from "./router";
 export default function App() {
   const [dark, setDark] = createSignal(false);
 
-  function toggleTheme(): void {
+  function toggleTheme(event: SubmitEvent): void {
+    event.preventDefault();
     const next = !dark();
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
@@ -16,15 +17,11 @@ export default function App() {
         <>
           <header class="topbar">
             <span class="font-semibold text-sm">igniter</span>
-            <button
-              class="btn"
-              data-variant="outline"
-              data-size="sm"
-              type="button"
-              onClick={toggleTheme}
-            >
-              {dark() ? "Light" : "Dark"}
-            </button>
+            <form onSubmit={toggleTheme}>
+              <button class="btn" data-variant="outline" data-size="sm" type="submit">
+                {dark() ? "Light" : "Dark"}
+              </button>
+            </form>
           </header>
           {props.children}
         </>

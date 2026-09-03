@@ -54,18 +54,26 @@ describe("skeleton shell", () => {
     );
   });
 
-  it("toggles html.dark from the header button", async () => {
+  it("toggles html.dark through the header form submit", async () => {
     stubHealth();
     renderApp();
     await settle();
 
+    const form = document.querySelector("header.topbar form");
     const toggle = document.querySelector("header.topbar button.btn");
-    if (!(toggle instanceof HTMLButtonElement)) throw new Error("theme toggle is missing");
+    if (!(form instanceof HTMLFormElement) || !(toggle instanceof HTMLButtonElement)) {
+      throw new Error("theme toggle form is missing");
+    }
+    expect(toggle.type).toBe("submit");
     expect(toggle.textContent).toBe("Dark");
-    toggle.click();
+    form.requestSubmit();
     flush();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(toggle.textContent).toBe("Light");
+    form.requestSubmit();
+    flush();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(toggle.textContent).toBe("Dark");
   });
 
   it("submits the jump form natively and renders the ticket route", async () => {
