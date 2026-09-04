@@ -55,7 +55,7 @@ const STEPS: StageStep[] = [
   "failed",
 ];
 
-type StageCommand = "stage" | "pause" | "resume";
+type StageAction = "pause" | "resume";
 
 /** Minimal socket surface the stage command needs; the real client satisfies it. */
 export interface StageSocket {
@@ -129,22 +129,23 @@ export function defaultStageDeps(): StageDeps {
 }
 
 interface ParsedArgs {
-  command?: StageCommand;
   step?: StageStep;
+  action?: StageAction;
   reason?: string;
   error?: string;
 }
 
+const ACTIONS: StageAction[] = ["pause", "resume"];
+
 function parseStageArgs(argv: string[]): ParsedArgs {
   const [command, name, ...rest] = argv;
-  if (command === "stage") {
-    if (name === undefined || !(STEPS as string[]).includes(name)) {
-      return { error: `usage: igniter stage <${STEPS.join("|")}> [--reason TEXT]` };
-    }
-  } else if (command !== "pause" && command !== "resume") {
-    return { error: `usage: igniter <stage|pause|resume>` };
+  if (command !== "stage") {
+    return { error: `usage: igniter <stage>` };
   }
-  const values = command === "stage" ? rest : [name, ...rest].filter((value): value is string => value !== undefined);
+  if (name === undefined || (!(STEPS as string[]).includes(name) && !(ACTIONS as string[]).includes(name))) {
+    return { error: `usage: igniter stage <${[...STEPS, ...ACTIONS].join("|")}> [--reason TEXT]` };
+  }
+  const values = rest;
   let reason: string | undefined;
   for (let i = 0; i < values.length; i += 1) {
     const flag = values[i] as string;
@@ -154,19 +155,22 @@ function parseStageArgs(argv: string[]): ParsedArgs {
     } else if (flag.startsWith("--reason=")) {
       reason = flag.slice("--reason=".length);
     } else {
-      return { error: `igniter ${command}: unknown flag ${flag}` };
+      return { error: `igniter stage ${name}: unknown flag ${flag}` };
     }
   }
   // The server clears a key whose normalized value is empty, so a blank
   // reason would silently clear instead of naming the stop: reject it.
-  const requiresReason = command === "pause" || name === "failed";
+  const requiresReason = name === "pause" || name === "failed";
   if (requiresReason && (!reason || reason.trim().length === 0)) {
-    return { error: `igniter ${command === "stage" ? `stage ${name}` : command}: --reason TEXT is required` };
+    return { error: `igniter stage ${name}: --reason TEXT is required` };
   }
   if (!requiresReason && reason !== undefined) {
-    return { error: `igniter ${command}: --reason is only valid for pause and stage failed` };
+    return { error: `igniter stage ${name}: --reason is only valid for pause and stage failed` };
   }
-  return { command, step: command === "stage" ? (name as StageStep) : undefined, reason };
+  if ((ACTIONS as string[]).includes(name)) {
+    return { action: name as StageAction, reason };
+  }
+  return { step: name as StageStep, reason };
 }
 
 // Deliberately an unguarded read-modify-write: one factory host runs one
@@ -191,14 +195,17 @@ function nextReviewCount(existing: Record<string, string>): string {
  * another owner. Every step starts from a cleared park: a stage the run
  * has left must not keep its `owner_pending` or `reason` behind, so only
  * `pause` sets them and every other step clears what it does not set.
+ * Every write of `stage` also writes `stage_at`, so dispatch can report
+ * how long the ticket has sat in the stage.
  */
 function stepTokens(
   ticket: string,
   existing: Record<string, string>,
   step: StageStep,
   reason: string | undefined,
+  stageAt: string,
 ): Record<string, string | null> {
-  const tokens: Record<string, string | null> = { ticket, owner_pending: null, reason: null };
+  const tokens: Record<string, string | null> = { ticket, owner_pending: null, reason: null, stage_at: stageAt };
   switch (step) {
     case "plan":
       tokens["stage"] = "plan";
@@ -223,7 +230,7 @@ function stepTokens(
   return tokens;
 }
 
-function actionTokens(ticket: string, command: "pause" | "resume", reason: string | undefined): Record<string, string | null> {
+function actionTokens(ticket: string, command: StageAction, reason: string | undefined): Record<string, string | null> {
   if (command === "pause") return { ticket, owner_pending: "1", reason: reason as string };
   return { ticket, owner_pending: null, reason: null };
 }
@@ -232,9 +239,7 @@ async function reportStep(
   socket: StageSocket,
   deps: StageDeps,
   workspaceId: string,
-  command: StageCommand,
-  step: StageStep,
-  reason: string | undefined,
+  parsed: ParsedArgs,
 ): Promise<void> {
   const envelope = (await socket.call("session.snapshot", {})) as HerdrResults.SessionSnapshot;
   const workspace = envelope.snapshot.workspaces.find(
@@ -248,9 +253,9 @@ async function reportStep(
   if (!ticket) {
     throw new Error(`no ticket in workspace metadata and ${TICKET_ENV} is unset`);
   }
-  const tokens = command === "stage"
-    ? stepTokens(ticket, existing, step, reason)
-    : actionTokens(ticket, command, reason);
+  const tokens = parsed.step !== undefined
+    ? stepTokens(ticket, existing, parsed.step, parsed.reason, new Date().toISOString())
+    : actionTokens(ticket, parsed.action as StageAction, parsed.reason);
   const usage = await deps.readUsage(deps.cwd);
   if (usage !== undefined) tokens["tokens"] = usage;
   const params: HerdrParams.WorkspaceReportMetadataParams = {
@@ -262,24 +267,23 @@ async function reportStep(
 }
 
 /**
- * Run `igniter stage <step> [--reason TEXT]`. Returns the process exit
- * code: 0 on success or when skipped outside Herdr, 1 on failure.
- * Lookup and socket work share one deadline; the deadline closes the
- * socket, so no path hangs the run or leaves a connection open.
+ * Run `igniter stage <step|pause|resume> [--reason TEXT]`. Returns the
+ * process exit code: 0 on success or when skipped outside Herdr, 1 on
+ * failure. Lookup and socket work share one deadline; the deadline closes
+ * the socket, so no path hangs the run or leaves a connection open.
  */
 export async function runStage(argv: string[], over: Partial<StageDeps> = {}): Promise<number> {
   const deps = { ...defaultStageDeps(), ...over };
   const parsed = parseStageArgs(argv);
-  if (parsed.error || !parsed.command) {
+  if (parsed.error || (parsed.step === undefined && parsed.action === undefined)) {
     deps.log(parsed.error as string);
     return 1;
   }
-  const command = parsed.command;
-  const step = parsed.step;
+  const label = parsed.step !== undefined ? `stage ${parsed.step}` : `stage ${parsed.action}`;
   const workspaceId = deps.env[WORKSPACE_ENV];
   if (!deps.env[HERDR_ENV] || !workspaceId) return 0;
   const fail = (error: unknown): number => {
-    deps.log(`igniter ${command === "stage" ? `stage ${step}` : command}: ${error instanceof Error ? error.message : String(error)}`);
+    deps.log(`igniter ${label}: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   };
   let socket: StageSocket | undefined;
@@ -299,7 +303,7 @@ export async function runStage(argv: string[], over: Partial<StageDeps> = {}): P
         if (timedOut) throw new Error(`herdr did not answer within ${deps.reportTimeoutMs}ms`);
         socket = deps.openSocket(socketPath);
         try {
-          await reportStep(socket, deps, workspaceId, command, step as StageStep, parsed.reason);
+          await reportStep(socket, deps, workspaceId, parsed);
         } finally {
           socket.close();
           socket = undefined;

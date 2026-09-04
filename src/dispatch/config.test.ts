@@ -23,12 +23,26 @@ describe("parseDispatchConfig", () => {
       project: "igniter",
       team: undefined,
       maxRunning: 3,
+      maxHours: 4,
+      linearOrg: "starcoder",
       listenHost: "127.0.0.1",
       listenPort: 4180,
       states: DEFAULT_STATES,
       herdrRemote: undefined,
       models: DEFAULT_MODELS,
     });
+  });
+
+  test("accepts max_hours and linear_org", () => {
+    const config = parseDispatchConfig({ project: "x", max_hours: 1.5, linear_org: "acme" });
+    expect(config.maxHours).toBe(1.5);
+    expect(config.linearOrg).toBe("acme");
+  });
+
+  test("rejects bad max_hours values", () => {
+    expect(() => parseDispatchConfig({ project: "x", max_hours: 0 })).toThrow('"max_hours"');
+    expect(() => parseDispatchConfig({ project: "x", max_hours: -2 })).toThrow('"max_hours"');
+    expect(() => parseDispatchConfig({ project: "x", max_hours: "4" })).toThrow('"max_hours"');
   });
 
   test("accepts a full file", () => {

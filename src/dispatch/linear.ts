@@ -35,6 +35,8 @@ export interface LinearProject {
 export interface LinearIssueState {
   id: string;
   name: string;
+  /** Workflow type: unstarted, started, completed, canceled, backlog, triage. */
+  type?: string;
 }
 
 export interface LinearIssue {
@@ -46,6 +48,12 @@ export interface LinearIssue {
   updatedAt: string;
   state: LinearIssueState;
   projectId?: string;
+  labels?: LinearLabel[];
+}
+
+export interface LinearLabel {
+  id: string;
+  name: string;
 }
 
 export interface LinearComment {
@@ -53,8 +61,9 @@ export interface LinearComment {
   body: string;
 }
 
-interface IssuePage extends LinearIssue {
+interface IssuePage extends Omit<LinearIssue, "labels"> {
   project: { id: string };
+  labels: { nodes: LinearLabel[] };
   comments: { nodes: LinearComment[]; pageInfo: { hasNextPage: boolean; endCursor: string | null } };
 }
 
@@ -85,15 +94,16 @@ const PROJECTS_QUERY = `query {
 
 const ISSUES_BY_STATE_QUERY = `query($projectId: ID!, $stateId: ID!, $first: Int!) {
   issues(filter: { project: { id: { eq: $projectId } }, state: { id: { eq: $stateId } } }, first: $first) {
-    nodes { id identifier title description priority updatedAt state { id name } }
+    nodes { id identifier title description priority updatedAt state { id name type } }
   }
 }`;
 
 const ISSUE_QUERY = `query($id: String!, $after: String) {
   issue(id: $id) {
     id identifier title description priority updatedAt
-    state { id name }
+    state { id name type }
     project { id }
+    labels { nodes { id name } }
     comments(first: 100, after: $after) {
       nodes { id body }
       pageInfo { hasNextPage endCursor }
@@ -110,6 +120,24 @@ const ISSUE_UPDATE_MUTATION = `mutation($id: String!, $stateId: String!) {
 const COMMENT_CREATE_MUTATION = `mutation($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
     success comment { id }
+  }
+}`;
+
+const ISSUE_LABEL_LOOKUP_QUERY = `query($name: String!) {
+  issueLabels(filter: { name: { eq: $name } }, first: 1) {
+    nodes { id name }
+  }
+}`;
+
+const ISSUE_LABEL_CREATE_MUTATION = `mutation($name: String!, $teamId: String!) {
+  issueLabelCreate(input: { name: $name, teamId: $teamId }) {
+    success issueLabel { id name }
+  }
+}`;
+
+const ISSUE_LABELS_UPDATE_MUTATION = `mutation($id: String!, $labelIds: [String!]!) {
+  issueUpdate(id: $id, input: { labelIds: $labelIds }) {
+    success issue { id }
   }
 }`;
 
@@ -225,8 +253,7 @@ export class LinearClient {
     return data.issues.nodes;
   }
 
-  async fetchIssue(idOrIdentifier: string): Promise<(LinearIssue & { comments: LinearComment[] }) | null> {
-    // The claim protocol needs read-back to see every claim comment, so
+  async fetchIssue(idOrIdentifier: string): Promise<(LinearIssue & { comments: LinearComment[] }) | null> {    // The claim protocol needs read-back to see every claim comment, so
     // comments are followed through pageInfo instead of trusting one page.
     const comments: LinearComment[] = [];
     let after: string | null = null;
@@ -243,9 +270,9 @@ export class LinearClient {
       after = data.issue.comments.pageInfo.endCursor;
     }
     if (!header) return null;
-    const { project, comments: _pages, ...issue } = header;
+    const { project, labels, comments: _pages, ...issue } = header;
     void _pages;
-    return { ...issue, projectId: project.id, comments };
+    return { ...issue, projectId: project.id, labels: labels?.nodes ?? [], comments };
   }
 
   /**
@@ -271,6 +298,43 @@ export class LinearClient {
       throw new LinearError(200, "Linear refused the comment");
     }
     return data.commentCreate.comment.id;
+  }
+
+  /**
+   * Find a workspace-wide label by name. Labels may belong to no team, so
+   * filtering by team misses them — and creating a same-named team label
+   * then fails as a duplicate.
+   */
+  async lookupIssueLabel(name: string): Promise<LinearLabel | null> {
+    const data = await this.graphql<{ issueLabels: { nodes: LinearLabel[] } }>(
+      ISSUE_LABEL_LOOKUP_QUERY,
+      { name },
+    );
+    return data.issueLabels.nodes[0] ?? null;
+  }
+
+  async createIssueLabel(teamId: string, name: string): Promise<LinearLabel> {
+    const data = await this.graphql<{
+      issueLabelCreate: { success: boolean; issueLabel: LinearLabel };
+    }>(ISSUE_LABEL_CREATE_MUTATION, { name, teamId });
+    if (!data.issueLabelCreate.success) {
+      throw new LinearError(200, "Linear refused the label creation");
+    }
+    return data.issueLabelCreate.issueLabel;
+  }
+
+  /**
+   * Replace the whole label set: callers read the current labels first and
+   * pass them back with the addition, because Linear has no append call.
+   */
+  async setIssueLabels(issueId: string, labelIds: string[]): Promise<void> {
+    const data = await this.graphql<{ issueUpdate: { success: boolean } }>(
+      ISSUE_LABELS_UPDATE_MUTATION,
+      { id: issueId, labelIds },
+    );
+    if (!data.issueUpdate.success) {
+      throw new LinearError(200, "Linear refused the label update");
+    }
   }
 }
 

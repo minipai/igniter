@@ -38,4 +38,54 @@
   .jump-form > .input {
     flex: 1;
   }
+
+  .building-list {
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--spacing) * 3);
+  }
+
+  .building-row {
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--spacing) * 2);
+    padding: calc(var(--spacing) * 3);
+    border: 1px solid var(--color-border);
+    background-color: var(--color-card);
+  }
+
+  .building-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: calc(var(--spacing) * 2);
+    font-size: var(--text-sm);
+  }
+
+  .building-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--spacing) * 2);
+  }
+
+  .building-actions > form {
+    display: flex;
+    align-items: center;
+    gap: calc(var(--spacing) * 1);
+  }
+
+  .start-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--spacing) * 2);
+  }
+
+  .start-form > .input {
+    flex: 1;
+  }
+
+  .result-row {
+    display: block;
+    flex-basis: 100%;
+  }
 }

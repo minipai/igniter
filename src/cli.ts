@@ -9,11 +9,11 @@ import {
   startWatch,
   defaultHost,
   Watcher,
-  type ClaimRequest,
   type DispatchApi,
   type ResolvedDispatch,
   type WatchHandle,
 } from "./dispatch/claims.ts";
+import { createWorkspaceSink, runCommand } from "./dispatch/commands.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
@@ -68,16 +68,35 @@ async function serveCommand(): Promise<void> {
   // Linear retries while the web UI stays up), so the dispatch behind the
   // routes fills in once validation succeeds.
   const holder: { current?: Watcher } = {};
+  const root = repoRoot();
+  const host = defaultHost();
+  const sink = createWorkspaceSink({
+    workspaces,
+    config,
+    repoRoot: root,
+  });
   const dispatch: DispatchApi = {
     queue: () => {
       const watcher = holder.current;
       return watcher ? { lastPollAt: watcher.lastPollAt, order: watcher.lastQueue } : { lastPollAt: null, order: [] };
     },
     activity: (limit) => readActivityTail(logPath, limit),
-    claim: (request: ClaimRequest) => {
+    command: (argv: string[]) => {
       const watcher = holder.current;
-      if (!watcher) throw new Error("dispatch still starting; retry shortly");
-      return claimLock(() => watcher.claimDirect(request.identifier, request));
+      if (!watcher) return Promise.resolve({ ok: false, text: "dispatch still starting; retry shortly" });
+      const resolved = watcher.resolved;
+      return claimLock(() =>
+        runCommand(argv, {
+          client,
+          resolved,
+          host,
+          decisions,
+          workspaces,
+          sink,
+          repoRoot: root,
+          lastPollAt: () => watcher.lastPollAt,
+        }),
+      );
     },
   };
   const server = startServer({ port, hostname: config.listenHost, dispatch });
@@ -121,29 +140,28 @@ async function serveCommand(): Promise<void> {
   const watcher = new Watcher({
     client,
     resolved,
-    host: defaultHost(),
+    host,
     decisions,
     workspaces,
+    sink,
   });
   holder.current = watcher;
-  // The watch loop and forwarded `start` claims share the watcher — and the
-  // lock — so there is ever exactly one claimant in the process.
+  // The watch loop and the commands share the watcher — and the lock — so
+  // there is ever exactly one claimant in the process.
   watch = startWatch({ watcher, lock: claimLock });
   console.log(`watch live: claiming from ${config.states.queued}`);
 }
 
-async function startCommand(ticket: string): Promise<void> {
-  // One claimant: `start` asks the running dispatch instead of claiming.
+/** Dispatch commands run inside the serve process: forward argv over HTTP. */
+async function forwardCommand(argv: string[]): Promise<void> {
   const config = await loadDispatchConfig(repoRoot());
   const base = `http://${config.listenHost}:${config.listenPort}`;
-  const agent = flagValue("--agent");
-  const builder = flagValue("--builder");
   let res: Response;
   try {
-    res = await fetch(`${base}/api/claims`, {
+    res = await fetch(`${base}/api/command`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ identifier: ticket, agent, builder }),
+      body: JSON.stringify({ argv }),
       signal: AbortSignal.timeout(30_000),
     });
   } catch {
@@ -153,26 +171,16 @@ async function startCommand(ticket: string): Promise<void> {
     process.exit(1);
   }
   const payload = (await res.json().catch(() => ({}))) as {
-    status?: string;
-    identifier?: string;
-    slot?: number;
-    error?: string;
-    running?: string[];
+    ok?: boolean;
+    text?: string;
   };
-  if (res.ok && payload.status === "claimed") {
-    console.log(
-      `claimed ${payload.identifier} -> ${config.states.building} (slot ${payload.slot})` +
-        (agent ? ` agent=${agent}` : "") +
-        (builder ? ` builder=${builder}` : ""),
-    );
+  const ok = res.ok && payload.ok === true;
+  const text = payload.text ?? `command failed with HTTP ${res.status}`;
+  if (ok) {
+    console.log(text);
     return;
   }
-  if (res.ok && payload.status === "already") {
-    console.log(`${payload.identifier ?? ticket} is already running`);
-    return;
-  }
-  console.error(payload.error ?? `start failed with HTTP ${res.status}`);
-  if (payload.running?.length) console.error(`running: ${payload.running.join(", ")}`);
+  console.error(text);
   process.exit(1);
 }
 
@@ -199,29 +207,30 @@ function devCommand(): void {
   });
 }
 
+const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart"];
+
 const command = process.argv[2];
 try {
   if (command === "serve") {
     await serveCommand();
   } else if (command === "dev") {
     devCommand();
-  } else if (command === "start") {
-    const ticket = process.argv[3];
-    if (!ticket || ticket.startsWith("--")) {
-      console.error("usage: igniter start <ticket> [--agent <kind>] [--builder <model>]");
-      process.exit(1);
-    }
-    await startCommand(ticket);
+  } else if (command !== undefined && DISPATCH_COMMANDS.includes(command)) {
+    // Dispatch commands never run locally: they go through the one HTTP
+    // door to the serve process. `stage` (with its pause/resume steps)
+    // stays local: the Commander runs it inside the Herdr pane.
+    await forwardCommand(process.argv.slice(2));
   } else if (command === "stage") {
     process.exit(await runStage(["stage", ...process.argv.slice(3)]));
-  } else if (command === "pause" || command === "resume") {
-    process.exit(await runStage([command, ...process.argv.slice(3)]));
   } else {
-    console.error("usage: igniter <serve|dev|start|stage|pause|resume> [--port N]");
+    console.error("usage: igniter <serve|dev|status|start|stage|pause|resume|fail|restart> [--port N]");
     console.error("  serve [--no-watch] [--port N]");
+    console.error("  status");
     console.error("  start <ticket> [--agent <kind>] [--builder <model>]");
-    console.error("  stage <plan|build|verify|acceptance|failed> [--reason TEXT]");
-    console.error("  pause --reason TEXT | resume");
+    console.error("  pause <ticket> | resume <ticket>");
+    console.error("  fail <ticket> --reason TEXT");
+    console.error("  restart <ticket> --builder <model>");
+    console.error("  stage <plan|build|verify|acceptance|failed|pause|resume> [--reason TEXT]");
     process.exit(1);
   }
 } catch (error) {

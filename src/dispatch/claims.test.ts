@@ -9,8 +9,6 @@ import { join } from "node:path";
 import {
   CLAIM_MARKER,
   MISSING_MARKER,
-  MissingCriteriaError,
-  RunningFullError,
   createClaimLock,
   createDispatchLog,
   hasAcceptanceCriteria,
@@ -26,11 +24,13 @@ import {
 import { parseDispatchConfig } from "./config";
 import { LinearClient, LinearError, requireLinearApiKey } from "./linear";
 import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from "./fake-linear";
-import type { RunningWorkspaces } from "./workspaces";
+import { createWorkspaceSink } from "./commands";
+import { FakeGit } from "./fake-git";
+import { FakeWorkspaces } from "./fake-workspaces";
+import type { CommandWorkspaces } from "./workspaces";
 
 const READY = "st-ready";
 const BUILDING = "st-building";
-const TODO = "st-todo";
 const DONE = "st-done";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 
@@ -51,8 +51,10 @@ async function setup(maxRunning = 3): Promise<Setup> {
   return { fake, client, resolved };
 }
 
-function workspacesWith(...identifiers: string[]): RunningWorkspaces {
-  return { runningTickets: async () => new Set(identifiers) };
+function workspacesWith(...identifiers: string[]): FakeWorkspaces {
+  const fake = new FakeWorkspaces();
+  for (const identifier of identifiers) fake.seedWorkspace(identifier);
+  return fake;
 }
 
 interface Watched {
@@ -64,7 +66,7 @@ interface Watched {
 function watch(
   client: LinearClient,
   resolved: ResolvedDispatch,
-  opts: { host?: string; workspaces?: RunningWorkspaces; decisions?: DecisionLog; lines?: string[] } = {},
+  opts: { host?: string; workspaces?: CommandWorkspaces; decisions?: DecisionLog; lines?: string[] } = {},
 ): Watched {
   const seen: string[] = [];
   const lines = opts.lines ?? [];
@@ -80,7 +82,7 @@ function watch(
         lines.push(`${ticket} ${message}`);
       },
     },
-    workspaces: opts.workspaces ?? workspacesWith(),
+    workspaces: opts.workspaces ?? new FakeWorkspaces(),
   });
   return { watcher, seen, lines };
 }
@@ -363,78 +365,50 @@ describe("restart recovery", () => {
   });
 });
 
-describe("claimDirect (forwarded start)", () => {
-  test("claims directly from any state, skipping the queue", async () => {
-    const { fake, client, resolved } = await setup();
+describe("paused tickets and slots", () => {
+  test("a paused building ticket frees its slot for the next candidate", async () => {
+    const { fake, client, resolved } = await setup(1);
     try {
-      addIssue(fake.world, { identifier: "STA-7", stateId: TODO, priority: 4, description: CRITERIA });
-      const { watcher, seen, lines } = watch(client, resolved);
-      const out = await watcher.claimDirect("STA-7", {
-        agent: "builder",
-        builder: "opencode/muse-spark-1.3-contributor-free",
-      });
-      expect(out.already).toBe(false);
-      expect(out.ticket).toMatchObject({ identifier: "STA-7", slot: 0, agent: "builder" });
-      expect(seen).toEqual(["STA-7"]);
-      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
-      expect(lines).toEqual([
-        "STA-7 claimed: Todo → Building (slot 0)",
-        "STA-7 state: Todo → Building",
-      ]);
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      addIssue(fake.world, { identifier: "STA-2", stateId: READY, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", paused: "1" });
+      const { watcher, seen } = watch(client, resolved, { workspaces });
+      const result = await watcher.pollOnce();
+      expect(result.claimed.map((t) => t.identifier)).toEqual(["STA-2"]);
+      expect(seen).toEqual(["STA-2"]);
+      // One snapshot per poll feeds both adoption and pause detection.
+      expect(workspaces.snapshotCalls).toBe(1);
     } finally {
       fake.stop();
     }
   });
 
-  test("refuses with the running list when the queue is full", async () => {
+  test("without the pause the same poll would block", async () => {
     const { fake, client, resolved } = await setup(1);
     try {
       addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
       addIssue(fake.world, { identifier: "STA-2", stateId: READY, priority: 1, description: CRITERIA });
       const { watcher, lines } = watch(client, resolved, { workspaces: workspacesWith("STA-1") });
-      const error = await watcher.claimDirect("STA-2", {}).catch((e) => e);
-      expect(error).toBeInstanceOf(RunningFullError);
-      expect((error as RunningFullError).tickets).toEqual(["STA-1"]);
-      expect(fake.world.issues[1]!.stateId).toBe(READY);
-      expect(lines).toEqual(["STA-2 refused: at max_running (1); running: STA-1"]);
+      expect((await watcher.pollOnce()).claimed).toEqual([]);
+      expect(lines).toEqual(["STA-2 waiting: slots full (1 running)"]);
     } finally {
       fake.stop();
     }
   });
 
-  test("missing criteria is refused with a nudge comment", async () => {
+  test("a paused ticket is never adopted as an orphan", async () => {
     const { fake, client, resolved } = await setup();
     try {
-      addIssue(fake.world, { identifier: "STA-3", stateId: TODO, priority: 1, description: "nothing" });
-      const { watcher } = watch(client, resolved);
-      await expect(watcher.claimDirect("STA-3", {})).rejects.toBeInstanceOf(MissingCriteriaError);
-      const issue = fake.world.issues[0]!;
-      expect(issue.stateId).toBe(TODO);
-      expect(issue.comments.some((c) => c.body.includes(MISSING_MARKER))).toBe(true);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("a running ticket reports already, an abandoned one is adopted", async () => {
-    const { fake, client, resolved } = await setup(1);
-    try {
-      addIssue(fake.world, {
-        identifier: "STA-4",
-        stateId: BUILDING,
-        priority: 1,
-        description: CRITERIA,
-        comments: [{ id: "c-claim", body: `${CLAIM_MARKER}\nClaimed by host=h slot=0 at 2026-09-04T00:00:01.000Z.` }],
-      });
-      const running = watch(client, resolved, { workspaces: workspacesWith("STA-4") });
-      expect((await running.watcher.claimDirect("STA-4", {})).already).toBe(true);
-      expect(running.seen).toEqual([]);
-
-      const abandoned = watch(client, resolved);
-      const out = await abandoned.watcher.claimDirect("STA-4", {});
-      expect(out.already).toBe(false);
-      expect(out.ticket).toMatchObject({ identifier: "STA-4", slot: 0 });
-      expect(abandoned.seen).toEqual(["STA-4"]);
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      // Paused but the workspace lookup misses it by label: tokens still win.
+      workspaces.seedWorkspace("other-label", { ticket: "STA-1", paused: "1" }, { commander: false });
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+      // An unpaused ticket with no live workspace would be adopted here.
+      expect((await watcher.pollOnce()).claimed).toEqual([]);
+      expect(seen).toEqual([]);
+      expect(lines).toEqual([]);
     } finally {
       fake.stop();
     }
@@ -793,21 +767,78 @@ describe("comment pagination", () => {
   });
 });
 
-describe("start after watch", () => {
-  test("a ticket the watch just claimed is already, not sunk twice", async () => {
+describe("sink results", () => {
+  test("a sink that opens a workspace adds the opened line after the claim", async () => {
     const { fake, client, resolved } = await setup();
     try {
       addIssue(fake.world, { identifier: "STA-1", stateId: READY, priority: 1, description: CRITERIA });
-      const { watcher, seen, lines } = watch(client, resolved);
-      expect((await watcher.pollOnce()).claimed.map((t) => t.identifier)).toEqual(["STA-1"]);
-      // No workspace in Herdr yet, but the in-run handoff mark answers.
-      const out = await watcher.claimDirect("STA-1", { builder: "example/model" });
-      expect(out.already).toBe(true);
-      expect(seen).toEqual(["STA-1"]);
-      expect(fake.world.issues[0]!.comments.filter((c) => c.body.includes(CLAIM_MARKER))).toHaveLength(1);
+      const lines: string[] = [];
+      const workspaces = new FakeWorkspaces();
+      const opening = new Watcher({
+        client,
+        resolved,
+        host: "h",
+        sink: createWorkspaceSink({
+          workspaces,
+          config: resolved.config,
+          repoRoot: join(mkdtempSync(join(tmpdir(), "igniter-wt-root-")), "repo"),
+          readApiKey: () => "test-key",
+          runGit: new FakeGit(),
+          now: () => "2026-09-05T00:00:00.000Z",
+        }),
+        decisions: {
+          record: async (ticket, message) => {
+            lines.push(`${ticket} ${message}`);
+          },
+        },
+        workspaces,
+      });
+      expect((await opening.pollOnce()).claimed.map((t) => t.identifier)).toEqual(["STA-1"]);
       expect(lines).toEqual([
         "STA-1 claimed: Ready to build → Building (slot 0)",
         "STA-1 state: Ready to build → Building",
+        "STA-1 workspace opened (ws-1) commander=claude builder=opencode/muse-spark-1.3-contributor-free",
+      ]);
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({
+        ticket: "STA-1",
+        commander: "claude",
+        builder: "opencode/muse-spark-1.3-contributor-free",
+        started_at: "2026-09-05T00:00:00.000Z",
+      });
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a mid-way sink failure names the workspace and aborts the poll", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: READY, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.failMethods.add("agent.start");
+      const lines: string[] = [];
+      const opening = new Watcher({
+        client,
+        resolved,
+        host: "h",
+        sink: createWorkspaceSink({
+          workspaces,
+          config: resolved.config,
+          repoRoot: join(mkdtempSync(join(tmpdir(), "igniter-wt-root-")), "repo"),
+          readApiKey: () => "test-key",
+          runGit: new FakeGit(),
+        }),
+        decisions: {
+          record: async (ticket, message) => {
+            lines.push(`${ticket} ${message}`);
+          },
+        },
+        workspaces,
+      });
+      await expect(opening.pollOnce()).rejects.toThrow("fake herdr exploded");
+      expect(lines).toEqual([
+        "STA-1 handoff failed: fake herdr exploded (workspace ws-1)",
+        "STA-1 claim failed: fake herdr exploded",
       ]);
     } finally {
       fake.stop();

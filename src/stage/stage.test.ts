@@ -182,6 +182,17 @@ describe("stages and counters", () => {
     });
   });
 
+  test("every stage write carries a fresh stage_at timestamp", async () => {
+    const h = harness({ ...INSIDE, IGNITER_TICKET: "STA-7" });
+    const before = new Date().toISOString();
+    await expect(runStage(["build"], h.deps)).resolves.toBe(0);
+    const tokens = reportedParams(h.socket)["tokens"] as Record<string, string>;
+    const stageAt = tokens["stage_at"] as string;
+    expect(stageAt).toBeDefined();
+    expect(stageAt >= before).toBe(true);
+    expect(stageAt <= new Date().toISOString()).toBe(true);
+  });
+
   test("existing tokens owned by others are neither sent nor disturbed", async () => {
     const h = harness({ ...INSIDE }, { ticket: "STA-7", builder: "b-1", commander: "c-1" });
     await expect(runStage(["build"], h.deps)).resolves.toBe(0);
@@ -190,6 +201,7 @@ describe("stages and counters", () => {
     expect(reportedParams(h.socket)["tokens"]).toEqual({
       ticket: "STA-7",
       stage: "build",
+      stage_at: expect.any(String),
       review_count: "0",
       owner_pending: null,
       reason: null,
@@ -206,6 +218,7 @@ describe("stages and counters", () => {
     expect(reportedParams(h.socket)["tokens"]).toEqual({
       ticket: "STA-7",
       stage: "build",
+      stage_at: expect.any(String),
       review_count: "0",
       owner_pending: null,
       reason: null,
@@ -220,6 +233,7 @@ describe("stages and counters", () => {
     expect(reportedParams(h.socket)["tokens"]).toEqual({
       ticket: "STA-7",
       stage: "acceptance",
+      stage_at: expect.any(String),
       owner_pending: "1",
       reason: null,
     });
@@ -227,9 +241,9 @@ describe("stages and counters", () => {
 });
 
 describe("pause and resume", () => {
-  test("pause names the decision without touching the stage", async () => {
+  test("stage pause names the decision without touching the stage", async () => {
     const h = harness({ ...INSIDE }, { ticket: "STA-7", stage: "build" });
-    await expect(runCommand(["pause", "--reason", "risk path auth/"], h.deps)).resolves.toBe(0);
+    await expect(runCommand(["stage", "pause", "--reason", "risk path auth/"], h.deps)).resolves.toBe(0);
     // No stage key is sent; merge semantics leave the current stage alone.
     expect(reportedParams(h.socket)["tokens"]).toEqual({
       ticket: "STA-7",
@@ -239,23 +253,32 @@ describe("pause and resume", () => {
     expect(h.socket.tokens["stage"]).toBe("build");
   });
 
-  test("pause accepts the --reason=value form", async () => {
+  test("stage pause accepts the --reason=value form", async () => {
     const h = harness({ ...INSIDE }, { ticket: "STA-7" });
-    await expect(runCommand(["pause", "--reason=risk path auth/"], h.deps)).resolves.toBe(0);
+    await expect(runCommand(["stage", "pause", "--reason=risk path auth/"], h.deps)).resolves.toBe(0);
     expect(reportedParams(h.socket)["tokens"]).toMatchObject({ reason: "risk path auth/" });
   });
 
-  test("resume clears the pause tokens and leaves the stage", async () => {
+  test("stage resume clears the pause tokens and leaves the stage", async () => {
     const h = harness(
       { ...INSIDE },
       { ticket: "STA-7", stage: "build", owner_pending: "1", reason: "risk path auth/" },
     );
-    await expect(runCommand(["resume"], h.deps)).resolves.toBe(0);
+    await expect(runCommand(["stage", "resume"], h.deps)).resolves.toBe(0);
     const params = reportedParams(h.socket);
     expect(params["tokens"]).toMatchObject({ owner_pending: null, reason: null });
     expect(h.socket.tokens).toMatchObject({ ticket: "STA-7", stage: "build" });
     expect(h.socket.tokens).not.toHaveProperty("owner_pending");
     expect(h.socket.tokens).not.toHaveProperty("reason");
+  });
+
+  test("top-level pause and resume now belong to dispatch, not to stage", async () => {
+    for (const argv of [["pause", "--reason", "x"], ["resume"]]) {
+      const h = harness({ ...INSIDE }, { ticket: "STA-7" });
+      await expect(runCommand(argv, h.deps)).resolves.toBe(1);
+      expect(h.opened).toEqual([]);
+      expect(h.logs).toEqual([expect.stringContaining("usage: igniter <stage>")]);
+    }
   });
 });
 
@@ -278,6 +301,7 @@ describe("stop", () => {
     expect(reportedParams(h.socket)["tokens"]).toEqual({
       ticket: "STA-7",
       stage: "failed",
+      stage_at: expect.any(String),
       owner_pending: null,
       reason: "budget exhausted",
     });
@@ -290,9 +314,9 @@ describe("stop", () => {
     expect(h.opened).toEqual([]);
   });
 
-  test("pause without a reason exits 1 without touching the socket", async () => {
+  test("stage pause without a reason exits 1 without touching the socket", async () => {
     const h = harness({ ...INSIDE }, { ticket: "STA-7" });
-    await expect(runCommand(["pause", "--reason", ""], h.deps)).resolves.toBe(1);
+    await expect(runCommand(["stage", "pause", "--reason", ""], h.deps)).resolves.toBe(1);
     expect(h.opened).toEqual([]);
   });
 

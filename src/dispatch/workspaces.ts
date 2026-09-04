@@ -1,9 +1,8 @@
 // "Is this ticket running?" is a question for Herdr, not for comment
 // ordering on a Linear issue: one factory host, workspaces on this machine.
 // The snapshot already carries everything needed — agent sessions are named
-// `commander|builder|reviewer-<ticket>` (KICKSTART) and workspace tokens may
-// carry the identifier too (STA-162 owns that half and can extend matching
-// here without touching the dispatch loop).
+// `commander|builder|reviewer-<ticket>` (lowercased) and workspace tokens
+// may carry the identifier too.
 
 import { createHerdrSocket } from "../herdr/socket.ts";
 import { lookupSocketPath } from "../herdr/socket-path.ts";
@@ -12,8 +11,73 @@ export interface RunningWorkspaces {
   runningTickets(): Promise<Set<string>>;
 }
 
-export const NoWorkspaces: RunningWorkspaces = {
+/** One workspace as the dispatch commands see it: label plus igniter tokens. */
+export interface SnapshotWorkspace {
+  workspaceId: string;
+  label: string;
+  tokens: Record<string, string>;
+}
+
+export interface SnapshotAgent {
+  name: string;
+  agentStatus: string;
+  workspaceId: string;
+  paneId: string;
+}
+
+export interface SnapshotPane {
+  paneId: string;
+  workspaceId: string;
+}
+
+/** One `session.snapshot` call, shaped for the dispatch commands. */
+export interface WorkspaceSnapshot {
+  workspaces: SnapshotWorkspace[];
+  agents: SnapshotAgent[];
+  panes: SnapshotPane[];
+}
+
+/**
+ * Everything the dispatch commands need from Herdr. Reads go through one
+ * snapshot per call site; every method below opens one short-lived socket
+ * connection per call.
+ */
+export interface CommandWorkspaces extends RunningWorkspaces {
+  snapshot(): Promise<WorkspaceSnapshot>;
+  create(input: { label: string; cwd: string; env: Record<string, string> }): Promise<{
+    workspaceId: string;
+    rootPaneId: string;
+  }>;
+  close(workspaceId: string): Promise<void>;
+  startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void>;
+  prompt(agentName: string, text: string): Promise<void>;
+  readPane(paneId: string, lines: number): Promise<string>;
+  reportMetadata(workspaceId: string, tokens: Record<string, string | null>): Promise<void>;
+  agentKinds(): Promise<string[]>;
+}
+
+export const NoWorkspaces: CommandWorkspaces = {
   runningTickets: async () => new Set<string>(),
+  snapshot: async () => ({ workspaces: [], agents: [], panes: [] }),
+  create: async () => {
+    throw new Error("herdr is not wired: cannot open a workspace");
+  },
+  close: async () => {
+    throw new Error("herdr is not wired: cannot close a workspace");
+  },
+  startAgent: async () => {
+    throw new Error("herdr is not wired: cannot start an agent");
+  },
+  prompt: async () => {
+    throw new Error("herdr is not wired: cannot prompt an agent");
+  },
+  readPane: async () => {
+    throw new Error("herdr is not wired: cannot read a pane");
+  },
+  reportMetadata: async () => {
+    throw new Error("herdr is not wired: cannot report metadata");
+  },
+  agentKinds: async () => [...KNOWN_AGENT_KINDS],
 };
 
 export interface WorkspaceListing {
@@ -21,14 +85,24 @@ export interface WorkspaceListing {
   workspaces?: { tokens?: Record<string, string | null> }[];
 }
 
-const AGENT_NAME = /^(?:commander|builder|reviewer)-([A-Z]{2,}-\d+)$/;
+const AGENT_NAME = /^(?:commander|builder|reviewer)-([a-z]{2,}-\d+)$/i;
 const TICKET_TOKEN = /^[A-Z]{2,}-\d+$/;
+
+/** Agent names are lowercase in Herdr; the ticket half reads uppercased. */
+export function commanderName(identifier: string): string {
+  return `commander-${identifier.toLowerCase()}`;
+}
+
+export function ticketFromAgentName(name: string): string | null {
+  const match = AGENT_NAME.exec(name);
+  return match?.[1] ? match[1].toUpperCase() : null;
+}
 
 export function extractRunningTickets(snapshot: WorkspaceListing): Set<string> {
   const tickets = new Set<string>();
   for (const agent of snapshot.agents ?? []) {
-    const match = typeof agent.name === "string" ? AGENT_NAME.exec(agent.name) : null;
-    if (match?.[1]) tickets.add(match[1]);
+    const ticket = typeof agent.name === "string" ? ticketFromAgentName(agent.name) : null;
+    if (ticket) tickets.add(ticket);
   }
   for (const workspace of snapshot.workspaces ?? []) {
     for (const value of Object.values(workspace.tokens ?? {})) {
@@ -36,6 +110,41 @@ export function extractRunningTickets(snapshot: WorkspaceListing): Set<string> {
     }
   }
   return tickets;
+}
+
+/**
+ * Per-ticket igniter tokens from one snapshot: the workspace whose label is
+ * the ticket as written, or whose tokens name it, wins. Lets the watch loop
+ * and the commands see `paused` without a second socket round trip.
+ */
+export function tokensByTicket(snapshot: WorkspaceSnapshot): Map<string, Record<string, string>> {
+  const byTicket = new Map<string, Record<string, string>>();
+  for (const workspace of snapshot.workspaces) {
+    const ticket = workspace.tokens["ticket"];
+    if (ticket && TICKET_TOKEN.test(ticket) && !byTicket.has(ticket)) {
+      byTicket.set(ticket, workspace.tokens);
+    }
+    if (TICKET_TOKEN.test(workspace.label) && !byTicket.has(workspace.label)) {
+      byTicket.set(workspace.label, workspace.tokens);
+    }
+  }
+  for (const agent of snapshot.agents) {
+    const ticket = ticketFromAgentName(agent.name);
+    if (ticket && !byTicket.has(ticket)) {
+      const workspace = snapshot.workspaces.find((w) => w.workspaceId === agent.workspaceId);
+      byTicket.set(ticket, workspace?.tokens ?? {});
+    }
+  }
+  return byTicket;
+}
+
+/** Tickets whose workspace metadata carries `paused=1`. */
+export function pausedTickets(snapshot: WorkspaceSnapshot): Set<string> {
+  const paused = new Set<string>();
+  for (const [ticket, tokens] of tokensByTicket(snapshot)) {
+    if (tokens["paused"] === "1") paused.add(ticket);
+  }
+  return paused;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -104,7 +213,7 @@ async function runHerdrStatus(timeoutMs: number): Promise<string> {
  * a slow snapshot, or a dead socket throws, and the caller treats that as
  * "assume present" — adoption waits instead of opening duplicate workspaces.
  */
-export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): RunningWorkspaces {
+export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): CommandWorkspaces {
   const timeoutMs = options.timeoutMs ?? 5000;
   const path = createSocketPathCache({
     socketPath: options.socketPath,
@@ -112,20 +221,178 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Run
     runStatus: options.runStatus,
     env: options.env,
   });
+  async function call(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const socketPath = await path();
+    const socket = createHerdrSocket({ socketPath });
+    try {
+      return await withTimeout(socket.call(method, params), timeoutMs, `herdr ${method} timed out`);
+    } finally {
+      socket.close();
+    }
+  }
+  async function waitAgentReady(name: string): Promise<void> {
+    const startedAt = Date.now();
+    for (;;) {
+      let ready = false;
+      try {
+        const got = (await call("agent.get", { target: name })) as {
+          agent?: { interactive_ready?: boolean; launch_pending?: boolean };
+        };
+        ready = got.agent?.interactive_ready === true && got.agent?.launch_pending !== true;
+      } catch {
+        // The name may not resolve yet right after the start; keep polling
+        // until the deadline instead of failing the whole claim on it.
+        ready = false;
+      }
+      if (ready) return;
+      if (Date.now() - startedAt >= READY_TIMEOUT_MS) {
+        throw new Error(`agent ${name} did not become ready within ${READY_TIMEOUT_MS}ms`);
+      }
+      await Bun.sleep(READY_POLL_MS);
+    }
+  }
   return {
     runningTickets: async () => {
-      const socketPath = await path();
-      const socket = createHerdrSocket({ socketPath });
-      try {
-        const result = await withTimeout(
-          socket.call("session.snapshot", {}),
-          timeoutMs,
-          "herdr session.snapshot timed out",
-        );
-        return extractRunningTickets(result.snapshot);
-      } finally {
-        socket.close();
-      }
+      const envelope = (await call("session.snapshot", {})) as {
+        snapshot: WorkspaceListing;
+      };
+      return extractRunningTickets(envelope.snapshot);
     },
+    snapshot: async () => shapeSnapshot(await call("session.snapshot", {})),
+    create: async (input) => {
+      const created = (await call("workspace.create", {
+        label: input.label,
+        cwd: input.cwd,
+        focus: false,
+        env: input.env,
+      })) as {
+        workspace?: { workspace_id?: string };
+        root_pane?: { pane_id?: string };
+      };
+      const workspaceId = created.workspace?.workspace_id;
+      const rootPaneId = created.root_pane?.pane_id;
+      if (!workspaceId || !rootPaneId) {
+        throw new Error("herdr workspace.create answered without a workspace id or root pane");
+      }
+      return { workspaceId, rootPaneId };
+    },
+    close: async (workspaceId) => {
+      await call("workspace.close", { workspace_id: workspaceId });
+    },
+    startAgent: async (input) => {
+      // The root pane's shell needs ~100-300ms after workspace.create; any
+      // other error is real and throws at once.
+      const startedAt = Date.now();
+      for (;;) {
+        try {
+          await call("agent.start", {
+            pane_id: input.paneId,
+            kind: input.kind,
+            name: input.name,
+            ...(input.args ? { args: input.args } : {}),
+          });
+          break;
+        } catch (error) {
+          const message = (error as Error).message;
+          if (!message.includes("is not an available shell") || Date.now() - startedAt >= SHELL_TIMEOUT_MS) {
+            throw error;
+          }
+          await Bun.sleep(SHELL_RETRY_MS);
+        }
+      }
+      // The socket start returns while the agent is still launch_pending;
+      // prompting now would fail, so wait the way the herdr CLI does.
+      await waitAgentReady(input.name);
+    },
+    prompt: async (agentName, text) => {
+      await call("agent.prompt", { target: agentName, text });
+    },
+    readPane: async (paneId, lines) => {
+      const read = (await call("pane.read", {
+        pane_id: paneId,
+        source: "recent",
+        strip_ansi: true,
+        lines,
+      })) as { read?: { text?: string } };
+      return read.read?.text ?? "";
+    },
+    reportMetadata: async (workspaceId, tokens) => {
+      await call("workspace.report_metadata", {
+        workspace_id: workspaceId,
+        source: METADATA_SOURCE,
+        tokens,
+      });
+    },
+    agentKinds: async () => parseAgentKinds(await call("server.agent_manifests", {})),
   };
+}
+
+/** Source stamped on every workspace metadata write igniter owns. */
+export const METADATA_SOURCE = "igniter";
+
+/** Shell warm-up after workspace.create: retry agent.start this often… */
+const SHELL_RETRY_MS = 250;
+/** …for at most this long before the error counts as real. */
+const SHELL_TIMEOUT_MS = 10_000;
+/** Readiness poll after agent.start returns launch_pending… */
+const READY_POLL_MS = 500;
+/** …for at most this long before the claim fails. */
+const READY_TIMEOUT_MS = 60_000;
+
+/**
+ * Known agent kinds from `herdr agent start --help`. The live manifest list
+ * wins when Herdr answers; this list is the offline fallback.
+ */
+export const KNOWN_AGENT_KINDS = [
+  "pi", "claude", "codex", "gemini", "cursor", "devin", "agy", "cline",
+  "omp", "mastracode", "opencode", "copilot", "kimi", "kiro", "droid",
+  "amp", "grok", "hermes", "kilo", "qodercli", "qwen", "maki",
+];
+
+function parseAgentKinds(result: unknown): string[] {
+  if (result !== null && typeof result === "object" && Array.isArray((result as { manifests?: unknown }).manifests)) {
+    const kinds = (result as { manifests: { agent?: unknown }[] }).manifests
+      .map((m) => m.agent)
+      .filter((agent): agent is string => typeof agent === "string" && agent.length > 0);
+    if (kinds.length > 0) return [...new Set(kinds)].sort();
+  }
+  return [...KNOWN_AGENT_KINDS];
+}
+
+function shapeSnapshot(envelope: unknown): WorkspaceSnapshot {
+  const snapshot = (envelope as { snapshot?: unknown }).snapshot;
+  if (snapshot === null || typeof snapshot !== "object") {
+    throw new Error("herdr session.snapshot answered without a snapshot");
+  }
+  const view = snapshot as {
+    workspaces?: { workspace_id?: unknown; label?: unknown; tokens?: unknown }[];
+    agents?: { name?: unknown; agent_status?: unknown; workspace_id?: unknown; pane_id?: unknown }[];
+    panes?: { pane_id?: unknown; workspace_id?: unknown }[];
+  };
+  return {
+    workspaces: (view.workspaces ?? []).map((w) => ({
+      workspaceId: typeof w.workspace_id === "string" ? w.workspace_id : "",
+      label: typeof w.label === "string" ? w.label : "",
+      tokens: tokensOf(w.tokens),
+    })),
+    agents: (view.agents ?? []).map((a) => ({
+      name: typeof a.name === "string" ? a.name : "",
+      agentStatus: typeof a.agent_status === "string" ? a.agent_status : "unknown",
+      workspaceId: typeof a.workspace_id === "string" ? a.workspace_id : "",
+      paneId: typeof a.pane_id === "string" ? a.pane_id : "",
+    })),
+    panes: (view.panes ?? []).map((p) => ({
+      paneId: typeof p.pane_id === "string" ? p.pane_id : "",
+      workspaceId: typeof p.workspace_id === "string" ? p.workspace_id : "",
+    })),
+  };
+}
+
+function tokensOf(tokens: unknown): Record<string, string> {
+  if (tokens === null || typeof tokens !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(tokens as Record<string, unknown>)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
 }

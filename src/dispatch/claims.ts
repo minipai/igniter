@@ -1,8 +1,8 @@
 // Dispatch watch loop and claiming logic.
 //
 // One factory host runs one `igniter serve` process, so there is exactly one
-// claimant: the watch loop, plus `igniter start` forwarded through it over
-// HTTP and serialized behind the same claim lock. Nothing here arbitrates
+// claimant: the watch loop, plus dispatch commands run inline under the same
+// claim lock through `POST /api/command`. Nothing here arbitrates
 // between independent claimants, because there are none.
 //
 // Two problems remain, and the design answers exactly those:
@@ -12,26 +12,30 @@
 //   actually running. A building ticket with no workspace gets its claim
 //   finished (comment when missing, then the sink). The claim comment is a
 //   record for people (host, slot, time), never a lock.
-// - `start` racing the watch disappears instead of being managed: the CLI
-//   POSTs to the running server, which claims inline under the same lock.
+// - A command racing the watch disappears instead of being managed: the CLI
+//   POSTs to the running server, which runs it inline under the same lock.
 //
 // Crash contract for the seam: the claim comment lands before the sink runs.
 // A crash in between is resumed on the next poll or after a restart. Across
 // crashes the sink is at-least-once per issue id, which holds only through
-// the consumer's shared-state check (STA-162 must consult Linear, e.g. the
+// the consumer's shared-state check (the sink consults Linear, e.g. the
 // claim comment, before opening a workspace) — keying by issue id alone is
 // necessary but not sufficient. Supported topology is one dispatch process
 // per project.
 //
-// The claim ends at the ClaimSink seam: STA-162 will turn a claimed ticket
-// into a Herdr workspace. This ticket stops at state + comment + sink call;
-// it never opens workspaces, starts agents, or touches Herdr.
+// The claim ends at the ClaimSink seam: the real sink opens the Herdr
+// workspace and starts the Commander (see commands.ts).
 
 import { hostname } from "node:os";
 import { appendFile } from "node:fs/promises";
 import type { DispatchConfig } from "./config.ts";
 import { LinearClient, LinearError, type LinearIssue } from "./linear.ts";
-import { NoWorkspaces, type RunningWorkspaces } from "./workspaces.ts";
+import {
+  NoWorkspaces,
+  extractRunningTickets,
+  pausedTickets,
+  type CommandWorkspaces,
+} from "./workspaces.ts";
 
 export const POLL_INTERVAL_MS = 30_000;
 
@@ -51,7 +55,7 @@ export interface ResolvedDispatch {
   failedStateId: string;
 }
 
-/** What STA-162 will receive for every claimed ticket. */
+/** What the commands and the watch hand to the sink for every claimed ticket. */
 export interface ClaimedTicket {
   id: string;
   identifier: string;
@@ -62,25 +66,22 @@ export interface ClaimedTicket {
   builder?: string;
 }
 
-export type ClaimSink = (claim: ClaimedTicket) => Promise<void> | void;
+export type ClaimSink = (claim: ClaimedTicket) => Promise<SinkOpened | void> | SinkOpened | void;
 
-export class RunningFullError extends Error {
-  readonly tickets: string[];
-  constructor(maxRunning: number, tickets: string[]) {
-    super(
-      `at max_running (${maxRunning}); running: ${tickets.join(", ") || "none"}`,
-    );
-    this.name = "RunningFullError";
-    this.tickets = tickets;
-  }
+/** What the real sink hands back after opening the workspace. */
+export interface SinkOpened {
+  workspaceId: string;
+  commander: string;
+  builder: string;
 }
 
-export class MissingCriteriaError extends Error {
-  constructor(identifier: string) {
-    super(
-      `ticket "${identifier}" has no acceptance-criteria section and was not claimed; a comment was left on the issue`,
-    );
-    this.name = "MissingCriteriaError";
+/** A sink failure after the workspace exists carries its id for cleanup. */
+export class WorkspaceSinkError extends Error {
+  readonly workspaceId?: string;
+  constructor(message: string, workspaceId?: string) {
+    super(message);
+    this.name = "WorkspaceSinkError";
+    this.workspaceId = workspaceId;
   }
 }
 
@@ -304,7 +305,7 @@ export interface WatcherOptions {
   host?: string;
   sink?: ClaimSink;
   decisions?: DecisionLog;
-  workspaces?: RunningWorkspaces;
+  workspaces?: CommandWorkspaces;
 }
 
 export function defaultHost(): string {
@@ -315,10 +316,10 @@ export function defaultHost(): string {
   }
 }
 
-/** Default sink: log the handoff STA-162 will fill. */
+/** Default sink: log the handoff when no workspace opener is wired. */
 export function logClaim(claim: ClaimedTicket): void {
   console.log(
-    `claimed ${claim.identifier} (slot ${claim.slot}) — workspace handoff belongs to STA-162 and is not wired yet`,
+    `claimed ${claim.identifier} (slot ${claim.slot}) — no workspace sink wired`,
   );
 }
 
@@ -327,11 +328,12 @@ export class Watcher {
   lastPollAt: string | null = null;
 
   private readonly client: LinearClient;
-  private readonly resolved: ResolvedDispatch;
+  /** Validated dispatch, shared with commands running beside the watch loop. */
+  readonly resolved: ResolvedDispatch;
   private readonly host: string;
   private readonly sink: ClaimSink;
   private readonly decisions: DecisionLog;
-  private readonly workspaces: RunningWorkspaces;
+  private readonly workspaces: CommandWorkspaces;
   /** Tickets handed off this run: Herdr has not necessarily caught up yet. */
   private readonly handedOff = new Set<string>();
   private wasFull = false;
@@ -361,11 +363,28 @@ export class Watcher {
     }
     const claimed: ClaimedTicket[] = [];
 
+    // Herdr truth for restart recovery and pause detection: one snapshot
+    // per poll feeds both, never a second socket round trip. When Herdr is
+    // unreadable every ticket counts as present: adoption waits instead of
+    // opening workspaces nobody asked for.
+    let live: Set<string> | null = null;
+    let paused = new Set<string>();
+    try {
+      const snapshot = await this.workspaces.snapshot();
+      live = extractRunningTickets(snapshot);
+      paused = pausedTickets(snapshot);
+    } catch (error) {
+      console.warn(`herdr workspaces unreadable, adoption waiting: ${(error as Error).message}`);
+    }
+    // A paused ticket keeps its workspace but frees its slot.
+    const activeCount = (tickets: LinearIssue[]): number =>
+      tickets.filter((t) => !paused.has(t.identifier)).length;
+
     // The page's queue snapshot: pre-claim order with a reason per ticket.
     const candidates = sortCandidates(
       await client.listIssuesByState(resolved.projectId, resolved.queuedStateId),
     );
-    let free = resolved.config.maxRunning - running.length;
+    let free = resolved.config.maxRunning - activeCount(running);
     this.lastQueue = candidates.map((candidate) => {
       const entry = {
         identifier: candidate.identifier,
@@ -382,23 +401,17 @@ export class Watcher {
       return { ...entry, reason: "waiting, slots full" as QueueReason };
     });
 
-    // Herdr truth for restart recovery. When Herdr is unreadable every
-    // ticket counts as present: adoption waits instead of opening
-    // workspaces nobody asked for.
-    let live: Set<string> | null = null;
-    try {
-      live = await this.workspaces.runningTickets();
-    } catch (error) {
-      console.warn(`herdr workspaces unreadable, adoption waiting: ${(error as Error).message}`);
-    }
-
     // Adopt orphans oldest-first: building tickets with no live workspace and
-    // no handoff this run. Budget counts adoptions that actually hand
+    // no handoff this run. Paused tickets keep their workspace and are never
+    // orphans. Budget counts adoptions that actually hand
     // onward, so one unadoptable ticket can never starve the rest.
     const orphans = running.filter(
-      (issue) => !this.handedOff.has(issue.id) && !(live?.has(issue.identifier) ?? true),
+      (issue) =>
+        !paused.has(issue.identifier) &&
+        !this.handedOff.has(issue.id) &&
+        !(live?.has(issue.identifier) ?? true),
     );
-    const budget = Math.max(0, resolved.config.maxRunning - (running.length - orphans.length));
+    const budget = Math.max(0, resolved.config.maxRunning - (activeCount(running) - orphans.length));
     const oldestFirst = [...orphans].sort((a, b) =>
       a.updatedAt !== b.updatedAt
         ? a.updatedAt < b.updatedAt ? -1 : 1
@@ -431,8 +444,10 @@ export class Watcher {
       }
     }
 
-    // Fill free slots in priority order.
-    free = resolved.config.maxRunning - running.length;
+    // Fill free slots in priority order; paused tickets hold no slot.
+    // Orphan adoptions above never changed membership, so the active count
+    // still stands.
+    free = resolved.config.maxRunning - activeCount(running);
     for (const candidate of candidates) {
       if (free <= 0) break;
       const full = await client.fetchIssue(candidate.id);
@@ -467,121 +482,17 @@ export class Watcher {
     const waiting = candidates.find(
       (c) => !claimedIds.has(c.id) && hasAcceptanceCriteria(c.description),
     );
-    const fullNow = running.length >= resolved.config.maxRunning && waiting !== undefined;
+    const fullNow = activeCount(running) >= resolved.config.maxRunning && waiting !== undefined;
     if (fullNow && !this.wasFull) {
       await this.decisions.record(
         waiting.identifier,
-        `waiting: slots full (${running.length} running)`,
+        `waiting: slots full (${activeCount(running)} running)`,
       );
     }
     this.wasFull = fullNow;
 
     this.lastPollAt = new Date().toISOString();
     return { claimed, running: running.map((t) => t.identifier) };
-  }
-
-  /**
-   * `igniter start <ticket>`, executed inside the serve process under the
-   * claim lock: the same claim on demand, skipping the queued state. Still
-   * needs a free slot.
-   */
-  async claimDirect(
-    identifier: string,
-    options: StartClaimOptions = {},
-  ): Promise<{ already: boolean; ticket?: ClaimedTicket }> {
-    const { resolved, client } = this;
-    const full = await client.fetchIssue(identifier);
-    if (!full) throw new Error(`ticket "${identifier}" was not found in Linear`);
-    if (full.projectId !== resolved.projectId) {
-      throw new Error(`ticket "${identifier}" is not in project "${resolved.config.project}"`);
-    }
-    const running = await this.runningTickets();
-    const extras = { agent: options.agent, builder: options.builder };
-    if (full.state.id === resolved.buildingStateId) {
-      // Handed off this run means claimed — by the watch moments ago, with no
-      // workspace in Herdr yet — so asking Herdr would wrongly say otherwise.
-      if (this.handedOff.has(full.id)) return { already: true };
-      if (await this.hasWorkspace(full.identifier)) return { already: true };
-      // The ticket itself must not count against its own adoption.
-      const others = running.filter((t) => t.id !== full.id);
-      if (others.length >= resolved.config.maxRunning) {
-        await this.decisions.record(
-          full.identifier,
-          `refused: at max_running (${resolved.config.maxRunning}); running: ${others.map((t) => t.identifier).join(", ") || "none"}`,
-        );
-        throw new RunningFullError(
-          resolved.config.maxRunning,
-          others.map((t) => t.identifier),
-        );
-      }
-      if (!hasClaimComment(full.comments)) {
-        if (!(await this.ensureCriteria(full))) {
-          throw new MissingCriteriaError(full.identifier);
-        }
-        const slot = await freeSlot(client, resolved, this.host, running);
-        try {
-          await client.addComment(full.id, buildClaimBody(resolved.config.states.building, this.host, slot));
-        } catch (error) {
-          await this.decisions.record(full.identifier, `claim failed: ${(error as Error).message}`);
-          throw error;
-        }
-        const ticket: ClaimedTicket = {
-          id: full.id,
-          identifier: full.identifier,
-          title: full.title,
-          host: this.host,
-          slot,
-          ...extras,
-        };
-        await this.sinkAndMark(ticket, true);
-        return { already: false, ticket };
-      }
-      const slot = claimedSlot(full.comments, this.host, resolved.config.maxRunning)
-        ?? (await freeSlot(client, resolved, this.host, running));
-      const ticket: ClaimedTicket = {
-        id: full.id,
-        identifier: full.identifier,
-        title: full.title,
-        host: this.host,
-        slot,
-        ...extras,
-      };
-      await this.sinkAndMark(ticket, true);
-      return { already: false, ticket };
-    }
-    if (running.length >= resolved.config.maxRunning) {
-      await this.decisions.record(
-        full.identifier,
-        `refused: at max_running (${resolved.config.maxRunning}); running: ${running.map((t) => t.identifier).join(", ") || "none"}`,
-      );
-      throw new RunningFullError(
-        resolved.config.maxRunning,
-        running.map((t) => t.identifier),
-      );
-    }
-    if (!(await this.ensureCriteria(full))) {
-      throw new MissingCriteriaError(full.identifier);
-    }
-    const from = full.state.name;
-    let slot: number;
-    try {
-      await client.setIssueState(full.id, resolved.buildingStateId);
-      slot = await freeSlot(client, resolved, this.host, running);
-      await client.addComment(full.id, buildClaimBody(resolved.config.states.building, this.host, slot));
-    } catch (error) {
-      await this.decisions.record(full.identifier, `claim failed: ${(error as Error).message}`);
-      throw error;
-    }
-    const ticket: ClaimedTicket = {
-      id: full.id,
-      identifier: full.identifier,
-      title: full.title,
-      host: this.host,
-      slot,
-      ...extras,
-    };
-    await this.sinkAndMark(ticket, false, from);
-    return { already: false, ticket };
   }
 
   /**
@@ -611,22 +522,32 @@ export class Watcher {
   /**
    * Run the sink, remember the handoff for this run, and log what happened.
    * A throwing sink aborts the poll: the ticket stays unmarked, so the next
-   * poll resumes it.
+   * poll resumes it. A mid-way sink failure names the workspace so a person
+   * can clean it up; there is no rollback.
    */
   private async sinkAndMark(ticket: ClaimedTicket, resumed: boolean, from?: string): Promise<void> {
+    let opened: SinkOpened | void;
     try {
-      await this.sink(ticket);
+      opened = await this.sink(ticket);
     } catch (error) {
-      await this.decisions.record(ticket.identifier, `handoff failed: ${(error as Error).message}`);
+      const suffix =
+        error instanceof WorkspaceSinkError && error.workspaceId
+          ? ` (workspace ${error.workspaceId})`
+          : "";
+      await this.decisions.record(ticket.identifier, `handoff failed: ${(error as Error).message}${suffix}`);
       throw error;
     }
     this.handedOff.add(ticket.id);
     if (resumed) {
       await this.decisions.record(ticket.identifier, `resumed: no workspace found (slot ${ticket.slot})`);
     } else {
-      const building = this.resolved.config.states.building;
-      await this.decisions.record(ticket.identifier, `claimed: ${from} → ${building} (slot ${ticket.slot})`);
-      await this.decisions.record(ticket.identifier, `state: ${from} → ${building}`);
+      await recordClaim(this.decisions, ticket.identifier, from ?? "?", this.resolved.config.states.building, ticket.slot);
+    }
+    if (opened) {
+      await this.decisions.record(
+        ticket.identifier,
+        `workspace opened (${opened.workspaceId}) commander=${opened.commander} builder=${opened.builder}`,
+      );
     }
   }
 
@@ -637,30 +558,45 @@ export class Watcher {
   private async ensureCriteria(
     full: { id: string; identifier: string; description: string | null; comments: { body: string }[] },
   ): Promise<boolean> {
-    if (hasAcceptanceCriteria(full.description)) return true;
-    if (!full.comments.some((c) => c.body.includes(MISSING_MARKER))) {
-      await this.client.addComment(full.id, buildMissingBody(this.resolved.config.states.queued));
-      await this.decisions.record(full.identifier, "skipped: no acceptance criteria");
-    }
-    return false;
-  }
-
-  private async hasWorkspace(identifier: string): Promise<boolean> {
-    try {
-      return (await this.workspaces.runningTickets()).has(identifier);
-    } catch (error) {
-      console.warn(`herdr workspaces unreadable, assuming ${identifier} running: ${(error as Error).message}`);
-      return true;
-    }
+    return ensureAcceptanceCriteria(this.client, this.resolved, full, this.decisions);
   }
 }
 
-export interface StartClaimOptions {
-  agent?: string;
-  builder?: string;
+/**
+ * The two claim lines, shared by the watch loop and `igniter start`: the
+ * human record of the state move.
+ */
+export async function recordClaim(
+  decisions: DecisionLog,
+  identifier: string,
+  from: string,
+  building: string,
+  slot: number,
+): Promise<void> {
+  await decisions.record(identifier, `claimed: ${from} → ${building} (slot ${slot})`);
+  await decisions.record(identifier, `state: ${from} → ${building}`);
 }
 
-/** One claimant: serialize polls and forwarded `start` claims. */
+/**
+ * No criteria, no claim: leaves the one-time nudge comment plus its
+ * activity line, and reports whether the ticket may be claimed. Shared by
+ * the watch loop and `igniter start`.
+ */
+export async function ensureAcceptanceCriteria(
+  client: LinearClient,
+  resolved: ResolvedDispatch,
+  full: { id: string; identifier: string; description: string | null; comments: { body: string }[] },
+  decisions: DecisionLog,
+): Promise<boolean> {
+  if (hasAcceptanceCriteria(full.description)) return true;
+  if (!full.comments.some((c) => c.body.includes(MISSING_MARKER))) {
+    await client.addComment(full.id, buildMissingBody(resolved.config.states.queued));
+    await decisions.record(full.identifier, "skipped: no acceptance criteria");
+  }
+  return false;
+}
+
+/** One claimant: serialize polls and commands running under the same lock. */
 export function createClaimLock(): <T>(fn: () => Promise<T>) => Promise<T> {
   let tail: Promise<void> = Promise.resolve();
   return async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -678,16 +614,16 @@ export function createClaimLock(): <T>(fn: () => Promise<T>) => Promise<T> {
   };
 }
 
-export interface ClaimRequest {
-  identifier: string;
-  agent?: string;
-  builder?: string;
+export interface CommandResult {
+  ok: boolean;
+  text: string;
+  data?: unknown;
 }
 
 export interface DispatchApi {
   queue(): { lastPollAt: string | null; order: QueueEntry[] };
   activity(limit: number): Promise<string[]>;
-  claim(request: ClaimRequest): Promise<{ already: boolean; ticket?: ClaimedTicket }>;
+  command(argv: string[]): Promise<CommandResult>;
 }
 
 export interface WatchHandle {

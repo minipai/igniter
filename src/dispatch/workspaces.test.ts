@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { createSocketPathCache, extractRunningTickets } from "./workspaces";
+import net from "node:net";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  commanderName,
+  createHerdrWorkspaces,
+  createSocketPathCache,
+  extractRunningTickets,
+  pausedTickets,
+  ticketFromAgentName,
+  tokensByTicket,
+  type WorkspaceSnapshot,
+} from "./workspaces";
 
 describe("extractRunningTickets", () => {
   test("agent names and token values map to tickets; everything else is ignored", () => {
@@ -25,6 +38,31 @@ describe("extractRunningTickets", () => {
   test("empty snapshots yield no tickets", () => {
     expect(extractRunningTickets({})).toEqual(new Set());
     expect(extractRunningTickets({ agents: [], workspaces: [] })).toEqual(new Set());
+  });
+
+  test("lowercase agent names match and read back uppercased", () => {
+    expect(
+      extractRunningTickets({ agents: [{ name: "commander-sta-1" }, { name: "builder-sta-2" }] }),
+    ).toEqual(new Set(["STA-1", "STA-2"]));
+    expect(ticketFromAgentName("commander-sta-176")).toBe("STA-176");
+    expect(ticketFromAgentName("commander-STA-176")).toBe("STA-176");
+    expect(ticketFromAgentName("bash")).toBeNull();
+    expect(commanderName("STA-176")).toBe("commander-sta-176");
+  });
+
+  test("tokensByTicket matches by label or ticket token, pausedTickets reads paused", () => {
+    const snapshot: WorkspaceSnapshot = {
+      workspaces: [
+        { workspaceId: "w1", label: "STA-1", tokens: { ticket: "STA-1", paused: "1" } },
+        { workspaceId: "w2", label: "STA-2", tokens: { stage: "build" } },
+      ],
+      agents: [{ name: "commander-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2" }],
+      panes: [],
+    };
+    const byTicket = tokensByTicket(snapshot);
+    expect(byTicket.get("STA-1")).toMatchObject({ paused: "1" });
+    expect(byTicket.get("STA-2")).toMatchObject({ stage: "build" });
+    expect(pausedTickets(snapshot)).toEqual(new Set(["STA-1"]));
   });
 });
 
@@ -75,5 +113,125 @@ describe("createSocketPathCache", () => {
     // Failures are not cached: the next poll retries.
     await expect(path()).rejects.toThrow("timed out");
     expect(calls).toBe(2);
+  });
+});
+
+type SocketHandler = (params: Record<string, unknown>, index: number) => unknown;
+
+interface FakeHerdr {
+  path: string;
+  calls: { method: string; params: unknown }[];
+  stop: () => Promise<void>;
+}
+
+/** A scripted Herdr daemon speaking the real NDJSON socket protocol. */
+async function startFakeHerdr(handlers: Record<string, SocketHandler>): Promise<FakeHerdr> {
+  const calls: { method: string; params: unknown }[] = [];
+  const counts: Record<string, number> = {};
+  const server = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line) continue;
+        const request = JSON.parse(line) as { id: string; method: string; params: Record<string, unknown> };
+        calls.push({ method: request.method, params: request.params });
+        const index = counts[request.method] ?? 0;
+        counts[request.method] = index + 1;
+        const handler = handlers[request.method];
+        if (!handler) {
+          socket.write(`${JSON.stringify({ id: request.id, error: { code: "unknown", message: `no handler for ${request.method}` } })}\n`);
+          continue;
+        }
+        try {
+          socket.write(`${JSON.stringify({ id: request.id, result: handler(request.params, index) })}\n`);
+        } catch (error) {
+          socket.write(`${JSON.stringify({ id: request.id, error: { code: "handler", message: (error as Error).message } })}\n`);
+        }
+      }
+    });
+  });
+  const path = join(tmpdir(), `fake-herdr-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sock`);
+  await new Promise<void>((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(path, resolve);
+  });
+  return {
+    path,
+    calls,
+    stop: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+      }).finally(() => unlink(path).catch(() => {})),
+  };
+}
+
+const AGENT_READY = { type: "agent_info", agent: { interactive_ready: true, launch_pending: false } };
+
+describe("startAgent against a live socket", () => {
+  test("retries while the fresh pane's shell is not up yet", async () => {
+    let starts = 0;
+    const fake = await startFakeHerdr({
+      "agent.start": () => {
+        starts += 1;
+        if (starts <= 2) throw new Error("agent target pane pane-1 is not an available shell");
+        return { type: "agent_started" };
+      },
+      "agent.get": () => AGENT_READY,
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "commander-sta-1" });
+      expect(starts).toBe(3);
+      expect(fake.calls.filter((c) => c.method === "agent.get")).toHaveLength(1);
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("any other start error throws at once", async () => {
+    let starts = 0;
+    const fake = await startFakeHerdr({
+      "agent.start": () => {
+        starts += 1;
+        throw new Error("agent kind hal is unknown");
+      },
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await expect(
+        workspaces.startAgent({ paneId: "pane-1", kind: "hal", name: "x" }),
+      ).rejects.toThrow("unknown");
+      expect(starts).toBe(1);
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("waits for interactive_ready past launch_pending before returning", async () => {
+    let gets = 0;
+    const fake = await startFakeHerdr({
+      "agent.start": () => ({ type: "agent_started" }),
+      "agent.get": () => {
+        gets += 1;
+        return gets === 1
+          ? { type: "agent_info", agent: { interactive_ready: false, launch_pending: true } }
+          : AGENT_READY;
+      },
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "commander-sta-1" });
+      expect(gets).toBe(2);
+      expect(fake.calls.filter((c) => c.method === "agent.start")).toHaveLength(1);
+    } finally {
+      await fake.stop();
+    }
   });
 });

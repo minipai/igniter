@@ -20,6 +20,8 @@ export interface DispatchConfig {
   project: string;
   team?: string;
   maxRunning: number;
+  maxHours: number;
+  linearOrg: string;
   listenHost: string;
   listenPort: number;
   states: DispatchStates;
@@ -28,6 +30,8 @@ export interface DispatchConfig {
 }
 
 export const DEFAULT_MAX_RUNNING = 3;
+export const DEFAULT_MAX_HOURS = 4;
+export const DEFAULT_LINEAR_ORG = "starcoder";
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 export const DEFAULT_LISTEN_PORT = 4180;
 export const DEFAULT_STATES: DispatchStates = {
@@ -96,6 +100,14 @@ function parseMaxRunning(raw: unknown): number {
   return raw;
 }
 
+function parseMaxHours(raw: unknown): number {
+  if (raw === undefined || raw === null) return DEFAULT_MAX_HOURS;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    fail(`"max_hours" must be a positive number (got ${JSON.stringify(raw)})`);
+  }
+  return raw;
+}
+
 function parseStates(raw: unknown): DispatchStates {
   if (raw === undefined || raw === null) return { ...DEFAULT_STATES };
   if (!isRecord(raw)) fail(`"states" must be a map of role to Linear status name`);
@@ -133,6 +145,7 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (!isRecord(raw)) fail(`expected a YAML map at the top level`);
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
+  const maxHours = parseMaxHours(raw["max_hours"]);
   const { host, port } = parseListen(raw["listen"]);
   const states = parseStates(raw["states"]);
   if (states.failed === states.queued) {
@@ -144,6 +157,8 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     project,
     team: optionalText(raw, "team"),
     maxRunning,
+    maxHours,
+    linearOrg: optionalText(raw, "linear_org") ?? DEFAULT_LINEAR_ORG,
     listenHost: host,
     listenPort: port,
     states,

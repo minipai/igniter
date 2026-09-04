@@ -35,9 +35,9 @@ from the target repository itself.
 ## Roles
 
 - **Commander:** understands the feature, reads the project settings,
-  inspects enough of the repository to plan it, creates the feature branch,
-  delegates implementation, triages Reviewer findings, records an acceptance
-  run, and coordinates owner acceptance.
+  inspects enough of the repository to plan it, works in the ticket's
+  worktree on its branch, delegates implementation, triages Reviewer
+  findings, records an acceptance run, and coordinates owner acceptance.
 - **Builder:** OpenCode performs implementation in its own Herdr tab.
 - **Reviewer:** Claude Code reviews the committed feature change read-only in
   a separate Herdr tab.
@@ -198,20 +198,17 @@ implementation decisions to the Builder.
 
 ## Feature branch
 
-Create a dedicated branch for each delivery run.
+Dispatch has already created this ticket's worktree and branch before the
+run starts: a git worktree beside the main checkout, on branch
+`feature/<ticket>` (lowercased, e.g. `feature/sta-177`). Work there and
+never create another branch or worktree. Keep implementation and Reviewer
+correction commits for the feature on this branch.
 
-Use a short descriptive branch name, for example:
+A resumed run reuses the same worktree with its checkpoint commits intact:
+read `git diff` and the branch log before writing anything.
 
-```text
-feature/<feature-name>
-```
-
-Keep implementation and Reviewer correction commits for the feature on this
-branch.
-
-Never reset, clean, discard, or overwrite unrelated user changes to create
-the branch. If the working tree prevents safe branch creation, surface the
-conflict to the owner.
+Never reset, clean, discard, or overwrite unrelated user work. If the
+worktree prevents safe work, surface the conflict to the owner.
 
 ## Herdr execution
 
@@ -246,9 +243,9 @@ command resolves the ticket itself and always reports under source
   These commands count calls, so they are not idempotent: report a
   stage exactly once on entering it. Two consecutive `igniter stage
   build` calls mean the run entered build twice.
-- `igniter pause --reason "<phrase>"` parks the run for an owner
-  decision and `igniter resume` clears the park when the run continues.
-  The stage stays where the run stopped.
+- `igniter stage pause --reason "<phrase>"` parks the run for an owner
+  decision and `igniter stage resume` clears the park when the run
+  continues. The stage stays where the run stopped.
 - The Commander never reports `delivered`: after the owner accepts,
   the runner reports that.
 
@@ -314,6 +311,20 @@ Let the Builder own detailed investigation and implementation choices.
 Allow it an uninterrupted implementation turn while it remains responsive
 and on scope.
 
+## Builder restart
+
+When dispatch says to restart the Builder with a new model
+(`igniter: restart the Builder with model <id>`), switch the Builder tab
+without losing the run:
+
+1. Close the current Builder tab.
+2. Open a new Builder tab with the named model.
+3. Give the new Builder the same work order as the first one, plus one
+   warning: the work tree may be half-changed and uncommitted, so the new
+   Builder must read `git diff` first to see what the previous Builder
+   already did before writing anything.
+4. Continue from the current stage; do not restart from plan.
+
 ## Builder handoff
 
 Start Reviewer only after the Builder reports that it has:
@@ -337,11 +348,11 @@ paths from the project settings. When the diff touches a listed path, pause
 the run and hand the decision to the owner instead of starting Reviewer:
 
 ```bash
-igniter pause --reason "risk path <path>"
+igniter stage pause --reason "risk path <path>"
 ```
 
 When the owner decides and the run continues, clear the park with
-`igniter resume`.
+`igniter stage resume`.
 
 ## Reviewer
 

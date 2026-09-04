@@ -14,6 +14,12 @@ export interface FakeComment {
   body: string;
 }
 
+export interface FakeLabel {
+  id: string;
+  name: string;
+  teamId: string;
+}
+
 export interface FakeIssue {
   id: string;
   identifier: string;
@@ -23,6 +29,7 @@ export interface FakeIssue {
   updatedAt: string;
   stateId: string;
   projectId: string;
+  labelIds: string[];
   comments: FakeComment[];
 }
 
@@ -45,6 +52,7 @@ export interface FakeLinearWorld {
   statesByTeam: Record<string, FakeState[]>;
   projects: FakeProject[];
   issues: FakeIssue[];
+  labels: FakeLabel[];
   /** Artificial delay per request, to prove polls never overlap. */
   delayMs?: number;
   /** Fail the first N requests with HTTP 500, to prove polls survive. */
@@ -87,8 +95,11 @@ export function standardWorld(apiKey = "test-key"): FakeLinearWorld {
     statesByTeam: { "team-1": standardStates() },
     projects: [{ id: "proj-1", name: "igniter", slugId: "igniter", teamIds: ["team-1"] }],
     issues: [],
+    labels: [],
   };
 }
+
+let labelCounter = 0;
 
 let issueCounter = 0;
 let commentCounter = 0;
@@ -113,6 +124,7 @@ export function addIssue(
     updatedAt: issue.updatedAt ?? nextUpdatedAt(),
     stateId: issue.stateId,
     projectId: issue.projectId ?? "proj-1",
+    labelIds: issue.labelIds ?? [],
     comments: issue.comments ?? [],
   };
   world.issues.push(full);
@@ -123,14 +135,23 @@ function stateName(world: FakeLinearWorld, teamId: string, stateId: string): str
   return world.statesByTeam[teamId]?.find((s) => s.id === stateId)?.name ?? stateId;
 }
 
+function stateType(world: FakeLinearWorld, teamId: string, stateId: string): string {
+  return world.statesByTeam[teamId]?.find((s) => s.id === stateId)?.type ?? "unstarted";
+}
+
 /**
  * The fake validates variable declarations the way a GraphQL server does:
  * a String! where the schema wants ID! is rejected before execution. This
  * keeps client queries honest about Linear's published types.
  */
-const EXPECTED_VARIABLES: { match: string; vars: Record<string, string> }[] = [
+const EXPECTED_VARIABLES: { match: string; vars: Record<string, string>; absent?: string[] }[] = [
   { match: "commentCreate", vars: { issueId: "String!", body: "String!" } },
+  { match: "labelIds", vars: { id: "String!", labelIds: "[String!]!" } },
   { match: "issueUpdate", vars: { id: "String!", stateId: "String!" } },
+  { match: "issueLabelCreate", vars: { name: "String!", teamId: "String!" } },
+  // The real issueLabels filter takes a name, not a team id: a $teamId here
+  // is rejected the way Linear rejects it.
+  { match: "issueLabels", vars: { name: "String!" }, absent: ["teamId"] },
   { match: "team(id:", vars: { teamId: "String!" } },
   { match: "issues(", vars: { projectId: "ID!", stateId: "ID!", first: "Int!" } },
   { match: "issue(", vars: { id: "String!" } },
@@ -143,12 +164,17 @@ function variableMismatch(query: string): string | null {
   if (!rule) return "unknown operation";
   const declared: Record<string, string> = {};
   const head = /^(?:query|mutation)\s*\(([^)]*)\)/.exec(query)?.[1] ?? "";
-  for (const [, name, type] of head.matchAll(/\$(\w+)\s*:\s*([A-Za-z0-9_!]+)/g)) {
+  for (const [, name, type] of head.matchAll(/\$(\w+)\s*:\s*(\[[A-Za-z0-9_!]+\]!?|[A-Za-z0-9_!]+)/g)) {
     declared[name as string] = type as string;
   }
   for (const [name, type] of Object.entries(rule.vars)) {
     if (declared[name] !== type) {
       return `Variable $${name} of type ${declared[name] ?? "unknown"} used in position expecting type ${type}`;
+    }
+  }
+  for (const name of rule.absent ?? []) {
+    if (name in declared) {
+      return `Variable $${name} must not be declared for this operation`;
     }
   }
   return null;
@@ -214,6 +240,15 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
         if (query.includes("issueUpdate")) {
           const issue = world.issues.find((i) => i.id === variables["id"]);
           if (!issue) return Response.json({ errors: [{ message: "issue not found" }] });
+          if (query.includes("labelIds")) {
+            // Label writes replace the whole set, like the real API.
+            const ids = variables["labelIds"];
+            if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string")) {
+              return Response.json({ errors: [{ message: "labelIds must be a string array" }] });
+            }
+            issue.labelIds = [...(ids as string[])];
+            return Response.json({ data: { issueUpdate: { success: true, issue: shape(issue, world) } } });
+          }
           // Exactly like the real Linear mutation: unconditional. Writing
           // the state the issue already has succeeds and changes nothing.
           issue.stateId = String(variables["stateId"]);
@@ -221,6 +256,24 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
           return Response.json({
             data: { issueUpdate: { success: true, issue: shape(issue, world) } },
           });
+        }
+
+        if (query.includes("issueLabelCreate")) {
+          const name = String(variables["name"]);
+          const teamId = String(variables["teamId"]);
+          labelCounter += 1;
+          const label = { id: `label-${labelCounter}`, name, teamId };
+          world.labels.push(label);
+          return Response.json({ data: { issueLabelCreate: { success: true, issueLabel: label } } });
+        }
+
+        if (query.includes("issueLabels")) {
+          const name = String(variables["name"]);
+          const nodes = world.labels
+            .filter((l) => l.name === name)
+            .slice(0, 1)
+            .map((l) => ({ id: l.id, name: l.name }));
+          return Response.json({ data: { issueLabels: { nodes } } });
         }
 
         if (query.includes("issue(")) {
@@ -237,6 +290,12 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
               issue: {
                 ...shape(issue, world),
                 project: { id: issue.projectId },
+                labels: {
+                  nodes: issue.labelIds
+                    .map((id) => world.labels.find((l) => l.id === id))
+                    .filter((l) => l !== undefined)
+                    .map((l) => ({ id: l.id, name: l.name })),
+                },
                 comments: {
                   nodes,
                   pageInfo: {
@@ -315,6 +374,6 @@ function shape(issue: FakeIssue, world: FakeLinearWorld) {
     description: issue.description,
     priority: issue.priority,
     updatedAt: issue.updatedAt,
-    state: { id: issue.stateId, name: stateName(world, teamId, issue.stateId) },
+    state: { id: issue.stateId, name: stateName(world, teamId, issue.stateId), type: stateType(world, teamId, issue.stateId) },
   };
 }
