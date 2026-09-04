@@ -51,7 +51,7 @@ required tabs.
 
 ## Project settings
 
-At the start of a run, the Commander reads `.igniter/delivery.md` from the
+At the start of a run, the Commander reads `docs/delivery.md` from the
 target repository root. Sections present in the file override the defaults
 below; sections absent from the file fall back to the defaults; a missing
 file means the whole run uses defaults.
@@ -61,10 +61,11 @@ directly. The only checking is validation: when a value names something
 unknown (an acceptance method, a model short name, a stage step), stop and
 ask the owner instead of guessing.
 
-`.igniter/config.yaml` sits beside this file and belongs to the runner
-(Linear project, ticket states, concurrency limit, bind address). It never
-carries Commander run settings. Both files live in the repository under
-version control.
+`.igniter/config.yaml` belongs to the runner (Linear project, ticket states,
+concurrency limit, bind address). It never carries Commander run settings.
+The delivery document describes the repository and would exist without
+igniter; the config file is igniter's own per-repository setup. Both live in
+the repository under version control.
 
 ### Run
 
