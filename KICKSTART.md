@@ -52,7 +52,7 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
   `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR：審查用 diffwalk 發布連結貼到票上，Ready to merge 後 rebase 到本機 `main`，不 push，由 Owner 推。
 - Commit：`--author="くるみ <kurumi@claudecafe.dev>"`，訊息英文，不加 Co-Authored-By。
 - Herdr metadata 的 source 統一 `igniter`；agent pane 命名 `commander-<票號>`、`builder-<票號>`、`reviewer-<票號>`。
-- blocked 超過 20 分鐘只是 stalled，不算失敗、不關 workspace；`max_hours`（4）到了也只釋放 slot 並回報，不判失敗。判死（`igniter fail`）與接回（`igniter resume`）是指令。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案）。
+- blocked 超過 20 分鐘只是 stalled，不算失敗、不關 workspace；`max_hours`（4）到了也只釋放 slot 並回報，不判失敗。判死（`igniter fail`）、接回（`igniter resume`）、手動開工（`igniter start`，反過來由 dispatch 改 Linear 狀態）都是指令（STA-176）。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案）。
 - 主機 minipc（Ubuntu、Tailscale）；上面 Sunshine / 虛擬顯示器設定不要動。
 
 ## 還沒定的小事
