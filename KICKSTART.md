@@ -10,7 +10,7 @@ dispatch（2026-09-04 前叫 runner）與網頁是同一個 Bun 程序，**在�
 - Linear project：https://linear.app/starcoder/project/igniter-ee3d3db6bd6c （team Starcoder，票 STA-158～169）
 - 完整背景、名詞、決策：Linear 專案文件「新 session 先讀：背景、名詞、決策」
   https://linear.app/starcoder/document/新-session-先讀背景名詞決策-8d677e0bd3a6
-- Commander 規則：由 igniter 自帶（怎麼餵給 Commander 由 STA-162 定）。草稿目前還在 `~/.agents/skills/feature-delivery/SKILL.md`（缺口清單 `GAPS.md`），搬進 repo 時一起搬；`prototype/workflow.md` 是它去掉 frontmatter 的副本，當 Rules 的假資料。
+- Commander 規則就是 `/feature-delivery` skill，跟 igniter 綁定，進 `src/`（不是 `docs/`；STA-174）。怎麼餵給 Commander 由 STA-162 定。草稿目前還在 `~/.agents/skills/feature-delivery/SKILL.md`（缺口清單 `GAPS.md`）；`prototype/workflow.md` 是它去掉 frontmatter 的副本，當 Rules 的假資料。
 - 定版 UI 原型（從 `prototype/` 編出）：https://claude.ai/code/artifact/d350b5f2-c48f-4cf4-8827-4da3a0c4448a
 - UI 規格文字版：STA-164「定版的 UI」段。**UI 以原型為準，改 UI 就要同步改票。**
 
@@ -52,7 +52,7 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
   `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR：審查用 diffwalk 發布連結貼到票上，Ready to merge 後 rebase 到本機 `main`，不 push，由 Owner 推。
 - Commit：`--author="くるみ <kurumi@claudecafe.dev>"`，訊息英文，不加 Co-Authored-By。
 - Herdr metadata 的 source 統一 `igniter`；agent pane 命名 `commander-<票號>`、`builder-<票號>`、`reviewer-<票號>`。
-- blocked 超過 20 分鐘只是 stalled，不算失敗、不關 workspace；`max_hours`（4）才失敗。
+- blocked 超過 20 分鐘只是 stalled，不算失敗、不關 workspace；`max_hours`（4）到了也只釋放 slot 並回報，不判失敗。判死（`igniter fail`）與接回（`igniter resume`）是指令。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案）。
 - 主機 minipc（Ubuntu、Tailscale）；上面 Sunshine / 虛擬顯示器設定不要動。
 
 ## 還沒定的小事
