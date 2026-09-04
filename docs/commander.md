@@ -1,7 +1,7 @@
 # Commander rules
 
 These rules are bundled with igniter. The Commander follows them on every
-delivery run; nothing needs to be installed. How the runner hands this
+delivery run; nothing needs to be installed. How the dispatch process hands this
 document to the Commander process is decided elsewhere and is not covered
 here.
 
@@ -61,7 +61,7 @@ directly. The only checking is validation: when a value names something
 unknown (an acceptance method, a model short name, a stage step), stop and
 ask the owner instead of guessing.
 
-`.igniter/config.yaml` belongs to the runner (Linear project, ticket states,
+`.igniter/config.yaml` belongs to dispatch (Linear project, ticket states,
 concurrency limit, bind address). It never carries Commander run settings.
 The delivery document describes the repository and would exist without
 igniter; the config file is igniter's own per-repository setup. Both live in
@@ -103,7 +103,7 @@ Default Builder model and Reviewer model, by short name.
 
 Defaults: Builder `luna`, Reviewer `claude-sonnet-5`. The short names are
 `luna`, `terra`, and `spark`. Resolving a short name to a model is the
-runner's job; the mechanism is not defined here. The runner's `--builder`
+dispatch's job; the mechanism is not defined here. The dispatch `--builder`
 flag wins over this section.
 
 ### Risk areas
@@ -233,7 +233,7 @@ The Builder model is the Models default (`luna`) unless the feature is
 complex or open-ended, or repeated implementation failure warrants the
 stronger `terra` model. Keep OpenCode as the Builder harness.
 
-Resolve the Builder short name through the runner, then verify that
+Resolve the Builder short name through dispatch, then verify that
 OpenCode lists the resolved model id before creating the Builder tab. If it
 is unavailable, stop and report that instead of silently substituting
 another model.

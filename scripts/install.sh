@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision this machine as an igniter factory host: tools, an igniter
 # checkout, a Herdr session that survives reboots, and a low-priority
-# resource group for agents and the runner.
+# resource group for agents and dispatch.
 #
 # Idempotent: every mutation is guarded by a check, so re-running changes
 # nothing. Detects the OS package manager (apt, brew) and branches on that,
@@ -739,7 +739,7 @@ ensure_slice() {
   local unit="$HOME/.config/systemd/user/factory.slice"
   if write_file "$unit" <<EOF
 [Unit]
-Description=igniter factory slice (low-priority agents and runner)
+Description=igniter factory slice (low-priority agents and dispatch)
 Before=slices.target
 
 [Slice]

@@ -1,4 +1,4 @@
-// Reserved SSE boundary for runner events (STA-167+). The skeleton only
+// Reserved SSE boundary for dispatch events (STA-167+). The skeleton only
 // proves the boundary exists: headers, an initial ready event, heartbeats.
 
 export function createEventStream(signal?: AbortSignal): Response {

@@ -16,7 +16,7 @@ Those files are official docs pulled from the solid repo's `next` branch — don
 
 Every feature must expose its state or protocol through a deterministic test:
 
-- server/runner behavior (anything touching Bun APIs) belongs in a `*.test.ts` test run with `bun test`;
+- server/dispatch behavior (anything touching Bun APIs) belongs in a `*.test.ts` test run with `bun test`;
 - Solid UI and form behavior belongs in a `*.dom.test.tsx` test run with vitest 4 + jsdom, compiled through the `@solidjs/vite-plugin` in `vitest.config.ts`.
 
 Tests must never use real credentials, call a real provider, or modify a real project. `LINEAR_API_KEY` is read from the environment only and never committed.

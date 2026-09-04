@@ -4,8 +4,8 @@
 
 ## 這是什麼
 
-一個很小的軟體工廠：Linear 票拖進 `Ready to build` → runner 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑 → Owner 看證據、在 Linear 把票改成 Ready to merge。網頁只管進行中的票：誰在等人、三個 pane 的畫面、打字回覆。
-runner 與網頁是同一個 Bun 程序，**在工廠主機（minipc）上、repo 目錄裡跑**（`cd <repo> && igniter serve`），repo 就是專案目錄；隊友經 Tailscale 連。
+一個很小的軟體工廠：Linear 票拖進 `Ready to build` → dispatch 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑 → Owner 看證據、在 Linear 把票改成 Ready to merge。網頁左欄是 dispatch 的視角：Building（進行中的票、跑了多久）與 Dispatch（Queue 認領順序與理由、Activity 決定紀錄、Workflow 規則全文）；右欄看三個 pane 的畫面、打字回覆（2026-09-04 定案，原型與規格見 STA-164）。
+dispatch（2026-09-04 前叫 runner）與網頁是同一個 Bun 程序，**在工廠主機（minipc）上、repo 目錄裡跑**（`cd <repo> && igniter serve`），repo 就是專案目錄；隊友經 Tailscale 連。
 
 - Linear project：https://linear.app/starcoder/project/igniter-ee3d3db6bd6c （team Starcoder，票 STA-158～169）
 - 完整背景、名詞、決策：Linear 專案文件「新 session 先讀：背景、名詞、決策」
@@ -28,7 +28,7 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
 - 配色定案 **Sand**（暖石中性色、墨黑主色），檔案就是 `prototype/theme.css`，之後搬到 `src/web/theme.css`，將來跨專案共用。
 - 字型 Geist + Geist Mono（Google Fonts）。深色模式是 `html.dark`，自己切 class。
 - 終端畫面：`pane.read` 純文字塞 `<pre>`，不用 xterm；三個 pane 同時顯示、選一格放大。放大那格底下的輸入列走 `pane.send_input`，y / n 走 `pane.send_keys`。
-- 單一 package：`src/herdr`、`src/linear`、`src/runner`、`src/server`、`src/web`、`src/cli.ts`。
+- 單一 package：`src/herdr`、`src/linear`、`src/dispatch`、`src/server`、`src/web`、`src/cli.ts`。
 - 前端寫法照 `~/Dev/openchan`：先搬它的 `docs/solid-2.0/`（CHEATSHEET 與 RFC）與 AGENTS.md「寫 Solid 前先讀 cheatsheet」規則。
 
 ## prototype/ 目錄
@@ -58,5 +58,5 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
 ## 還沒定的小事
 
 - spark 的模型 id（暫定 `openai/gpt-5.3-codex-spark`）要跟使用者確認。
-- runner 怎麼把 Commander 規則餵給三種 kind（讀檔、常數、還是別的），做 STA-162 時實測。
+- dispatch 怎麼把 Commander 規則餵給三種 kind（讀檔、常數、還是別的），做 STA-162 時實測。
 - 使用者要自己建 Linear issue template（`## 驗收條件` checklist）並把 igniter project 加到側欄最愛。

@@ -1,7 +1,7 @@
 # Herdr socket client
 
 Thin TypeScript client for the Herdr unix socket, shared by the igniter
-runner and the web server. No third-party dependencies.
+dispatch and the web server. No third-party dependencies.
 
 - `socket.ts` — `createHerdrSocket({ socketPath })` with `call` and `subscribe`.
 - `ndjson.ts` — the newline-delimited JSON the socket speaks.
