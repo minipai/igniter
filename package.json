@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "bin": {
+    "igniter": "./src/cli.ts"
+  },
   "scripts": {
     "dev": "bun src/cli.ts dev",
     "dev:web": "vite",
