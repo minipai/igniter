@@ -34,8 +34,16 @@ back to the defaults there.
 
 ## Models
 
-- Builder: `luna`.
+Real model ids, not short names. A short-name table has to be kept in sync
+with a reality that keeps moving, and free model tiers rotate.
+
+- Builder: `opencode/muse-spark-1.3-contributor-free`.
 - Reviewer: `claude-sonnet-5`.
+- Escalate: `openai/gpt-5.6-terra`, for a complex feature or a build that
+  keeps failing.
+
+This section moves to `.igniter/config.yaml` in STA-174; the models belong to
+the runtime that starts the agents, not to the delivery document.
 
 ## Risk areas
 

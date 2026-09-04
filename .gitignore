@@ -4,3 +4,6 @@ dist/
 .env
 coverage/
 .diffwalk/
+
+# Worktrees other agents create inside the repo
+.claude/worktrees/

@@ -57,6 +57,6 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
 
 ## 還沒定的小事
 
-- spark 的模型 id（暫定 `openai/gpt-5.3-codex-spark`）要跟使用者確認。
+- 模型短名（luna / terra / spark）2026-09-04 廢除：設定裡直接寫完整 model id，沒有對照表要維護。預設 Builder `opencode/muse-spark-1.3-contributor-free`、Reviewer `claude-sonnet-5`、升級用 `openai/gpt-5.6-terra`。
 - dispatch 怎麼把 Commander 規則餵給三種 kind（讀檔、常數、還是別的），做 STA-162 時實測。
 - 使用者要自己建 Linear issue template（`## 驗收條件` checklist）並把 igniter project 加到側欄最愛。
