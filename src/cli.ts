@@ -209,9 +209,18 @@ function devCommand(): void {
 
 const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart"];
 
+async function versionCommand(): Promise<void> {
+  const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
+    version: string;
+  };
+  console.log(pkg.version);
+}
+
 const command = process.argv[2];
 try {
-  if (command === "serve") {
+  if (command === "--version" || command === "-v") {
+    await versionCommand();
+  } else if (command === "serve") {
     await serveCommand();
   } else if (command === "dev") {
     devCommand();
@@ -231,6 +240,7 @@ try {
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");
     console.error("  stage <plan|build|verify|acceptance|failed|pause|resume> [--reason TEXT]");
+    console.error("  --version, -v");
     process.exit(1);
   }
 } catch (error) {
