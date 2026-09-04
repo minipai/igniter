@@ -10,7 +10,8 @@
     "build": "vite build",
     "serve": "bun src/cli.ts serve",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src/server",
+    "generate:herdr": "bun src/herdr/generate-types.ts",
+    "test": "bun test src/server src/herdr",
     "test:ui": "vitest run",
     "check": "bun run typecheck && bun run test && bun run test:ui"
   },
