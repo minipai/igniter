@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
-
 // Where the Herdr server listens: HERDR_SOCKET_PATH when set, otherwise the
 // `server.socket` value reported by `herdr status`.
+
+/** A one-shot lookup must not stall its caller past this. */
+const STATUS_TIMEOUT_MS = 10_000;
 
 export interface SocketPathDeps {
   env?: Record<string, string | undefined>;
@@ -10,16 +11,46 @@ export interface SocketPathDeps {
 
 function defaultRunStatus(): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawnSync("herdr", ["status"], { encoding: "utf8" });
-    if (child.error) {
-      reject(child.error);
+    let proc: ReturnType<typeof Bun.spawn> | undefined;
+    try {
+      proc = Bun.spawn(["herdr", "status"], { stdout: "pipe", stderr: "pipe" });
+    } catch (error) {
+      reject(error);
       return;
     }
-    if (child.status !== 0) {
-      reject(new Error(`herdr status exited with ${child.status}: ${child.stderr}`));
-      return;
-    }
-    resolve(child.stdout);
+    // A child that traps the signal must not stall the caller: on expiry
+    // the wait is abandoned and the call rejects. The kill is best-effort
+    // and reaping is never awaited, so a wedged child cannot hang us.
+    const timer = setTimeout(() => {
+      try {
+        proc?.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+      reject(new Error(`herdr status did not answer within ${STATUS_TIMEOUT_MS}ms`));
+    }, STATUS_TIMEOUT_MS);
+    const read = async (stream: unknown): Promise<string> =>
+      stream instanceof ReadableStream ? new Response(stream).text() : "";
+    (async () => {
+      try {
+        const [stdout, stderr] = await Promise.all([read(proc?.stdout), read(proc?.stderr)]);
+        await proc?.exited;
+        return { code: proc?.exitCode, stdout, stderr };
+      } finally {
+        clearTimeout(timer);
+      }
+    })().then(
+      ({ code, stdout, stderr }) => {
+        if (code !== 0) {
+          reject(new Error(`herdr status exited with ${code}: ${stderr}`));
+          return;
+        }
+        resolve(stdout);
+      },
+      (error: unknown) => {
+        reject(error);
+      },
+    );
   });
 }
 

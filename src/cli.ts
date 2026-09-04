@@ -18,6 +18,7 @@ import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
+import { runStage } from "./stage/stage.ts";
 
 function flagValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -211,10 +212,16 @@ try {
       process.exit(1);
     }
     await startCommand(ticket);
+  } else if (command === "stage") {
+    process.exit(await runStage(["stage", ...process.argv.slice(3)]));
+  } else if (command === "pause" || command === "resume") {
+    process.exit(await runStage([command, ...process.argv.slice(3)]));
   } else {
-    console.error("usage: igniter <serve|dev|start> [--port N]");
+    console.error("usage: igniter <serve|dev|start|stage|pause|resume> [--port N]");
     console.error("  serve [--no-watch] [--port N]");
     console.error("  start <ticket> [--agent <kind>] [--builder <model>]");
+    console.error("  stage <plan|build|verify|acceptance|failed> [--reason TEXT]");
+    console.error("  pause --reason TEXT | resume");
     process.exit(1);
   }
 } catch (error) {

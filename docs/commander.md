@@ -125,7 +125,7 @@ build, verify, acceptance, delivered — always run and can never be skipped;
 only steps inside them can be skipped or added.
 
 - `skip: review` means no Reviewer tab is started, the build goes straight to
-  verify, and the workspace metadata carries no `review_count`.
+  verify, and the workspace metadata keeps `review_count=0`.
 - `skip: recording` means acceptance runs without a recording, and the
   completion report names the project configuration as the reason.
 
@@ -154,6 +154,8 @@ unfinished item from the repository's active task source.
 Inspect the current branch and working tree and preserve unrelated user work.
 
 ## Plan
+
+As the first action of this stage, run `igniter stage plan`.
 
 For a non-trivial feature, inspect enough of the existing implementation to
 identify the relevant system boundaries, likely integration points, and
@@ -223,11 +225,45 @@ Create tabs without stealing focus and retain the IDs of tabs created by
 this workflow.
 
 If separate Builder and Reviewer tabs cannot be created, stop because the
-required workflow topology is unavailable.
+required workflow topology is unavailable, then report the stop with
+`igniter stage failed --reason "<short phrase>"`.
+
+## Workspace metadata
+
+At every stage transition, the Commander reports the step with the
+igniter CLI as its first action, so the runner and the board know
+which ticket is at which step without parsing terminal output. The
+command resolves the ticket itself and always reports under source
+`igniter`; each call site below only names the step:
+
+- `igniter stage <plan|build|verify|acceptance|failed>` writes that
+  exact stage. `failed` requires `--reason "<phrase>"`; `acceptance`
+  closes the Commander's run with owner acceptance pending.
+- `igniter stage verify` increments `verify_count` once per
+  verification round. `igniter stage build` starts with
+  `review_count=0`; every later build entry increments it, because it
+  follows a completed review round and the subsequent Builder fixes.
+  These commands count calls, so they are not idempotent: report a
+  stage exactly once on entering it. Two consecutive `igniter stage
+  build` calls mean the run entered build twice.
+- `igniter pause --reason "<phrase>"` parks the run for an owner
+  decision and `igniter resume` clears the park when the run continues.
+  The stage stays where the run stopped.
+- The Commander never reports `delivered`: after the owner accepts,
+  the runner reports that.
+
+The Builder token count is attached when STA-159's
+`scripts/opencode-session-usage.sh` is present; its absence is not an
+error. Outside Herdr the command is a silent no-op.
 
 ## Builder
 
-Create the Builder tab first.
+As the first action of this stage, run `igniter stage build`.
+
+Create the Builder tab first. Start its agent as
+`builder-<ticket>` so the board can match the pane to the ticket.
+(The Commander tab itself is named `commander-<ticket>` by the
+runner.)
 
 The Builder model is the Models default (`luna`) unless the feature is
 complex or open-ended, or repeated implementation failure warrants the
@@ -236,7 +272,8 @@ stronger `terra` model. Keep OpenCode as the Builder harness.
 Resolve the Builder short name through dispatch, then verify that
 OpenCode lists the resolved model id before creating the Builder tab. If it
 is unavailable, stop and report that instead of silently substituting
-another model.
+another model, then report the stop with
+`igniter stage failed --reason "<short phrase>"`.
 
 ### Builder permission prompts
 
@@ -297,12 +334,20 @@ for review is represented by committed changes.
 
 Before starting Reviewer, compare the committed diff against the Risk areas
 paths from the project settings. When the diff touches a listed path, pause
-the run and hand the decision to the owner instead of starting Reviewer.
+the run and hand the decision to the owner instead of starting Reviewer:
+
+```bash
+igniter pause --reason "risk path <path>"
+```
+
+When the owner decides and the run continues, clear the park with
+`igniter resume`.
 
 ## Reviewer
 
 Create Reviewer in a separate Herdr tab. Skip this whole section when the
-project settings say `skip: review`.
+project settings say `skip: review`. Start its agent as
+`reviewer-<ticket>` so the board can match the pane to the ticket.
 
 The Reviewer model is the Models default (`claude-sonnet-5`). Choose a
 stronger Reviewer model when feature complexity or review findings warrant
@@ -351,7 +396,16 @@ to inspect.
 Repeat Reviewer when the corrections materially require another independent
 review.
 
+After each completed review round — one Reviewer run plus triage,
+whatever the finding count — send accepted findings back to Builder,
+then have Builder re-enter build with `igniter stage build` before it
+starts the corrections.
+
 ## Commander acceptance
+
+As the first action of this stage, run `igniter stage verify`. Each
+completed verification round — one full pass through the steps below —
+begins by entering verify again with `igniter stage verify`.
 
 After implementation and Reviewer are complete:
 
@@ -421,6 +475,8 @@ validated screenshots and test output, and explain why no recording was
 produced.
 
 ## Owner acceptance
+
+As the final Commander action, run `igniter stage acceptance`.
 
 After Commander acceptance:
 
