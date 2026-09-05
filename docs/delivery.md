@@ -1,7 +1,7 @@
 # igniter delivery settings (dogfood)
 
 Project settings for Commander runs against this repository. Format and
-defaults are defined in `docs/commander.md`. Sections not listed here fall
+defaults are defined in `src/commander/rules.md`. Sections not listed here fall
 back to the defaults there.
 
 ## Run
@@ -31,19 +31,6 @@ back to the defaults there.
   acceptance report covering each acceptance criterion.
 - Validate the recording with `ffprobe` and frame inspection before
   publishing, per the Commander rules.
-
-## Models
-
-Real model ids, not short names. A short-name table has to be kept in sync
-with a reality that keeps moving, and free model tiers rotate.
-
-- Builder: `opencode/muse-spark-1.3-contributor-free`.
-- Reviewer: `claude-sonnet-5`.
-- Escalate: `openai/gpt-5.6-terra`, for a complex feature or a build that
-  keeps failing.
-
-This section moves to `.igniter/config.yaml` in STA-174; the models belong to
-the runtime that starts the agents, not to the delivery document.
 
 ## Risk areas
 

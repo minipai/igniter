@@ -623,7 +623,7 @@ export function buildRestartPrompt(model: string): string {
     `igniter: restart the Builder with model ${model}. ` +
     `Close the current Builder tab and open a new one with this model. ` +
     `The work tree may be half-changed and uncommitted: the new Builder's work order must say so ` +
-    `and tell it to read \`git diff\` first (see 'Builder restart' in docs/commander.md).`
+    `and tell it to read \`git diff\` first (see 'Builder restart' in src/commander/rules.md).`
   );
 }
 
@@ -696,7 +696,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `created by igniter. Work there; do not create another branch. ` +
     `Install dependencies first as the repository instructs (bun install).\n` +
     `\n` +
-    `Read the repository's AGENTS.md and follow it. Then read docs/commander.md ` +
+    `Read the repository's AGENTS.md and follow it. Then read src/commander/rules.md ` +
     `(relative to the repo root) and run this delivery exactly as it says.\n` +
     `\n` +
     `Models for this run:\n` +

@@ -58,14 +58,15 @@ file means the whole run uses defaults.
 
 The file is project configuration, not untrusted user input. Read it
 directly. The only checking is validation: when a value names something
-unknown (an acceptance method, a model short name, a stage step), stop and
+unknown (an acceptance method, a model id, a stage step), stop and
 ask the owner instead of guessing.
 
-`.igniter/config.yaml` belongs to dispatch (Linear project, ticket states,
-concurrency limit, bind address). It never carries Commander run settings.
-The delivery document describes the repository and would exist without
-igniter; the config file is igniter's own per-repository setup. Both live in
-the repository under version control.
+Run, Checks, Acceptance, Risk areas, Stages, and Conventions live in
+`docs/delivery.md`. Dispatch settings (Linear project, ticket states,
+concurrency limit, bind address) plus `models` live in
+`.igniter/config.yaml`. The delivery document describes the repository and
+would exist without igniter; the config file is igniter's own
+per-repository setup. Both live in the repository under version control.
 
 ### Run
 
@@ -99,12 +100,10 @@ produced.
 
 ### Models
 
-Default Builder model and Reviewer model, by short name.
-
-Defaults: Builder `luna`, Reviewer `claude-sonnet-5`. The short names are
-`luna`, `terra`, and `spark`. Resolving a short name to a model is the
-dispatch's job; the mechanism is not defined here. The dispatch `--builder`
-flag wins over this section.
+Builder, Reviewer, and Escalate models come from the `models` block of
+`.igniter/config.yaml` as full model ids. Dispatch passes them to the
+Commander in the work order. Before opening a tab, the Commander confirms
+the id exists with `opencode models`.
 
 ### Risk areas
 
@@ -262,12 +261,12 @@ Create the Builder tab first. Start its agent as
 (The Commander tab itself is named `commander-<ticket>` by the
 runner.)
 
-The Builder model is the Models default (`luna`) unless the feature is
-complex or open-ended, or repeated implementation failure warrants the
-stronger `terra` model. Keep OpenCode as the Builder harness.
+The Builder model is the `builder` id from config unless the feature is
+complex or open-ended, or repeated implementation failure warrants
+switching to the `escalate` id. Keep OpenCode as the Builder harness.
 
-Resolve the Builder short name through dispatch, then verify that
-OpenCode lists the resolved model id before creating the Builder tab. If it
+Take the Builder id from the work order, then verify that
+OpenCode lists that model id before creating the Builder tab. If it
 is unavailable, stop and report that instead of silently substituting
 another model, then report the stop with
 `igniter stage failed --reason "<short phrase>"`.
@@ -360,9 +359,9 @@ Create Reviewer in a separate Herdr tab. Skip this whole section when the
 project settings say `skip: review`. Start its agent as
 `reviewer-<ticket>` so the board can match the pane to the ticket.
 
-The Reviewer model is the Models default (`claude-sonnet-5`). Choose a
-stronger Reviewer model when feature complexity or review findings warrant
-it.
+The Reviewer model is the `reviewer` id from config. Choose the
+`escalate` id when feature complexity or review findings warrant a
+stronger Reviewer model.
 
 Run Claude Code as a read-only one-shot review.
 

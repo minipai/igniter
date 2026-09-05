@@ -762,7 +762,7 @@ describe("work order", () => {
       "b-model",
       "r-model",
       "e-model",
-      "docs/commander.md",
+      "src/commander/rules.md",
       "AGENTS.md",
       "LINEAR_API_KEY",
       "Linear GraphQL API",
