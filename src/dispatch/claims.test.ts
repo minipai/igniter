@@ -34,6 +34,7 @@ const BUILDING = "st-building";
 const REVIEW = "st-review";
 const MERGE = "st-merge";
 const DONE = "st-done";
+const CANCELED = "st-canceled";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 
 interface Setup {
@@ -42,13 +43,13 @@ interface Setup {
   resolved: ResolvedDispatch;
 }
 
-async function setup(maxRunning = 3): Promise<Setup> {
+async function setup(maxRunning = 3, extra: Record<string, unknown> = {}): Promise<Setup> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
   const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
   const resolved = await validateStartup(
     client,
-    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
+    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning, ...extra }),
   );
   return { fake, client, resolved };
 }
@@ -68,7 +69,7 @@ interface Watched {
 function watch(
   client: LinearClient,
   resolved: ResolvedDispatch,
-  opts: { host?: string; workspaces?: CommandWorkspaces; decisions?: DecisionLog; lines?: string[] } = {},
+  opts: { host?: string; workspaces?: CommandWorkspaces; decisions?: DecisionLog; lines?: string[]; now?: () => number } = {},
 ): Watched {
   const seen: string[] = [];
   const lines = opts.lines ?? [];
@@ -85,6 +86,7 @@ function watch(
       },
     },
     workspaces: opts.workspaces ?? new FakeWorkspaces(),
+    ...(opts.now ? { now: opts.now } : {}),
   });
   return { watcher, seen, lines };
 }
@@ -706,7 +708,7 @@ describe("stage tracking", () => {
     }
   });
 
-  test("failed stages log no stage line; STA-163 owns them", async () => {
+  test("a failed stage gets no generic stage line; the failure reaction owns it", async () => {
     const { fake, client, resolved } = await setup();
     try {
       addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
@@ -715,10 +717,677 @@ describe("stage tracking", () => {
       const { watcher, lines } = watch(client, resolved, { workspaces });
       await watcher.pollOnce();
       const workspaceId = workspaces.workspaces[0]!.workspaceId;
-      await workspaces.reportMetadata(workspaceId, { stage: "failed" });
+      await workspaces.reportMetadata(workspaceId, { stage: "failed", reason: "builder wedged" });
+      await watcher.pollOnce();
+      expect(lines).toEqual([
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-1)",
+      ]);
+      expect(lines.some((l) => l.includes("stage:"))).toBe(false);
+      expect(fake.world.issues[0]!.stateId).toBe("st-todo");
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+describe("failure recovery", () => {
+  test("stage=failed runs the same failure actions as igniter fail", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "failed", reason: "builder wedged" },
+        { paneText: "panic: boom\nat build.ts:1" },
+      );
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+      const result = await watcher.pollOnce();
+      expect(result.claimed).toEqual([]);
+      expect(seen).toEqual([]);
+      const issue = fake.world.issues[0]!;
+      expect(issue.stateId).toBe(resolved.failedStateId);
+      const failedLabel = fake.world.labels.find((l) => l.name === "agent-failed");
+      expect(failedLabel).toBeDefined();
+      expect(issue.labelIds).toEqual([failedLabel!.id]);
+      expect(issue.comments).toHaveLength(1);
+      const comment = issue.comments[0]!.body;
+      expect(comment).toContain("<!-- igniter:failed -->");
+      expect(comment).toContain("builder wedged");
+      expect(comment).toContain("```\npanic: boom\nat build.ts:1\n```");
+      expect(workspaces.workspaces[0]!.closed).toBe(true);
+      expect(lines).toEqual([
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-1)",
+      ]);
+      // The workspace is gone, so the next poll stays quiet: no repeat.
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(2);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("stage=failed without a reason uses the fallback phrase", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "failed" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      const comment = fake.world.issues[0]!.comments[0]!.body;
+      expect(comment).toContain("<!-- igniter:failed -->");
+      expect(comment).toContain("Commander reported stage=failed with no reason");
+      expect(comment).not.toContain("```");
+      expect(lines).toEqual([
+        "STA-1 failed: Commander reported stage=failed with no reason",
+        "STA-1 workspace closed (ws-1)",
+      ]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a failed close never repeats the failure", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "failed", reason: "x" });
+      workspaces.failMethods.add("workspace.close");
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      const issue = fake.world.issues[0]!;
+      expect(issue.stateId).toBe(resolved.failedStateId);
+      expect(lines).toEqual([
+        "STA-1 failed: x",
+        "STA-1 workspace close failed: fake herdr exploded",
+      ]);
+      // The issue already left its started state with the reason's comment
+      // on it: the next poll retries the lifecycle close (still failing)
+      // but posts nothing more.
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(2);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a ticket with stage=failed outside started work is left to the lifecycle", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: DONE, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "failed", reason: "x" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      // No failure lines and no comment: only the lifecycle closes the
+      // leftover workspace.
+      expect(lines).toEqual(["STA-1 workspace closed (ws-1)"]);
+      expect(fake.world.issues[0]!.stateId).toBe(DONE);
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(workspaces.workspaces[0]!.closed).toBe(true);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a previously failed ticket is claimed normally once it is ready again", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, {
+        identifier: "STA-1",
+        stateId: READY,
+        priority: 1,
+        description: CRITERIA,
+        comments: [{ id: "c-failed", body: "<!-- igniter:failed -->\nbuilder wedged\n" }],
+      });
+      const { watcher, seen, lines } = watch(client, resolved);
+      const result = await watcher.pollOnce();
+      expect(result.claimed.map((t) => t.identifier)).toEqual(["STA-1"]);
+      expect(seen).toEqual(["STA-1"]);
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(lines).toEqual([
+        "STA-1 claimed: Ready to build → Building (slot 0)",
+        "STA-1 state: Ready to build → Building",
+      ]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("the same reason in a later episode fails again with its own comment", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      const issue = addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const firstAt = "2026-09-05T12:00:00.000Z";
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "failed", stage_at: firstAt, reason: "builder wedged" },
+        { paneText: "first tail" },
+      );
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(resolved.failedStateId);
+      expect(lines).toEqual([
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-1)",
+      ]);
+      // Dragged back to work and failing again with the same reason: a new
+      // stage_at makes it a new episode, so the reaction runs again in full
+      // instead of matching the old comment.
+      await client.setIssueState(issue.id, resolved.buildingStateId);
+      const secondAt = "2026-09-05T13:00:00.000Z";
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "failed", stage_at: secondAt, reason: "builder wedged" },
+        { paneText: "second tail" },
+      );
+      await watcher.pollOnce();
+      const comments = fake.world.issues[0]!.comments;
+      expect(comments).toHaveLength(2);
+      expect(comments[0]!.body).toContain(`<!-- igniter:failed ${firstAt} -->`);
+      expect(comments[1]!.body).toContain(`<!-- igniter:failed ${secondAt} -->`);
+      expect(comments[1]!.body).toContain("second tail");
+      expect(workspaces.workspaces[1]!.closed).toBe(true);
+      expect(fake.world.issues[0]!.stateId).toBe(resolved.failedStateId);
+      expect(lines).toEqual([
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-1)",
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-2)",
+      ]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a comment lost mid-failure lands exactly once on the next poll", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const failedAt = "2026-09-05T12:00:00.000Z";
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "failed", stage_at: failedAt, reason: "builder wedged" },
+        { paneText: "panic: boom" },
+      );
+      fake.world.failNextComment = true;
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      // Label and state landed, the comment did not: the issue sits in the
+      // failed state with the workspace still open and no trace of why.
+      const issue = fake.world.issues[0]!;
+      expect(issue.stateId).toBe(resolved.failedStateId);
+      expect(issue.comments).toHaveLength(0);
+      expect(workspaces.workspaces[0]!.closed).toBe(false);
+      expect(lines).toEqual(["STA-1 fail failed: Linear GraphQL error: rate limited"]);
+      // The retry gate admits it back: same idempotent label and state, one
+      // comment, then the close.
+      await watcher.pollOnce();
+      expect(issue.comments).toHaveLength(1);
+      const comment = issue.comments[0]!.body;
+      expect(comment).toContain(`<!-- igniter:failed ${failedAt} -->`);
+      expect(comment).toContain("builder wedged");
+      expect(workspaces.workspaces[0]!.closed).toBe(true);
+      expect(lines).toEqual([
+        "STA-1 fail failed: Linear GraphQL error: rate limited",
+        "STA-1 failed: builder wedged",
+        "STA-1 workspace closed (ws-1)",
+      ]);
+      // Settled: the next poll stays quiet.
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(3);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+describe("stalled commanders", () => {
+  test("blocked past blocked_minutes comments once and sets stalled=1", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "build", started_at: "2026-09-05T11:00:00.000Z" },
+        { commanderStatus: "blocked", paneText: "waiting for approval: proceed? (y/n)" },
+      );
+      let now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
       await watcher.pollOnce();
       expect(lines).toEqual([]);
+      // Exactly at the threshold is not past it.
+      now += 20 * 60_000;
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("stalled");
+      now += 60_000;
+      await watcher.pollOnce();
+      const issue = fake.world.issues[0]!;
+      expect(issue.comments).toHaveLength(1);
+      const comment = issue.comments[0]!.body;
+      expect(comment).toContain("<!-- igniter:stalled -->");
+      expect(comment).toContain("commander-sta-1");
+      expect(comment).toContain("blocked");
+      expect(comment).toContain("```\nwaiting for approval: proceed? (y/n)\n```");
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ stalled: "1" });
+      expect(lines).toEqual(["STA-1 stalled: commander blocked for 21m at stage build"]);
+      // Linear state and workspace unchanged.
+      expect(issue.stateId).toBe(BUILDING);
+      expect(workspaces.workspaces[0]!.closed).toBe(false);
+      // Still blocked: no second comment, no second line.
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("leaving blocked clears stalled with one more line; a new episode comments again", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "build", stalled: "1" },
+        { commanderStatus: "working" },
+      );
+      let now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("stalled");
+      expect(lines).toEqual(["STA-1 stalled cleared"]);
       expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      // A new blocked episode after the recovery comments again.
+      workspaces.agents[0]!.agentStatus = "blocked";
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      now += 21 * 60_000;
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.comments).toHaveLength(1);
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ stalled: "1" });
+      expect(lines).toEqual([
+        "STA-1 stalled cleared",
+        "STA-1 stalled: commander blocked for 21m at stage build",
+      ]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a lost stalled token retries without duplicating the comment", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "build", started_at: "2026-09-05T11:00:00.000Z" },
+        { commanderStatus: "blocked", paneText: "waiting for approval: proceed? (y/n)" },
+      );
+      let now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      await watcher.pollOnce();
+      now += 21 * 60_000;
+      // The token write fails, so the comment is never attempted: nothing
+      // is half-done and the next poll starts clean.
+      workspaces.failMethods.add("workspace.report_metadata");
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("stalled");
+      workspaces.failMethods.delete("workspace.report_metadata");
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.comments).toHaveLength(1);
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ stalled: "1" });
+      expect(lines).toEqual(["STA-1 stalled: commander blocked for 21m at stage build"]);
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      expect(fake.world.issues[0]!.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a lost stalled comment is posted verbatim on the next poll", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "build", started_at: "2026-09-05T11:00:00.000Z" },
+        { commanderStatus: "blocked", paneText: "waiting for approval: proceed? (y/n)" },
+      );
+      let now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      await watcher.pollOnce();
+      now += 21 * 60_000;
+      // Token first, so it lands; the comment fails and is remembered.
+      fake.world.failNextComment = true;
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ stalled: "1" });
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(lines).toEqual([]);
+      // Next poll posts the stored text exactly once, with its line.
+      await watcher.pollOnce();
+      const issue = fake.world.issues[0]!;
+      expect(issue.comments).toHaveLength(1);
+      expect(issue.comments[0]!.body).toContain("<!-- igniter:stalled -->");
+      expect(issue.comments[0]!.body).toContain("waiting for approval: proceed? (y/n)");
+      expect(lines).toEqual(["STA-1 stalled: commander blocked for 21m at stage build"]);
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a cleared stalled token drops the pending comment instead of undoing the clear", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const seeded = workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", stage: "build", started_at: "2026-09-05T11:00:00.000Z" },
+        { commanderStatus: "blocked", paneText: "waiting for approval: proceed? (y/n)" },
+      );
+      let now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      await watcher.pollOnce();
+      now += 21 * 60_000;
+      fake.world.failNextComment = true;
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ stalled: "1" });
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      // The token is cleared out-of-band before the next poll. The retry
+      // must not write it back, post the stale comment, or log.
+      await workspaces.reportMetadata(seeded.workspaceId, { stalled: null });
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("stalled");
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+describe("over-budget tickets", () => {
+  test("past max_hours before acceptance comments once and frees the slot", async () => {
+    const { fake, client, resolved } = await setup(1, { max_hours: 4 });
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      addIssue(fake.world, { identifier: "STA-2", stateId: READY, priority: 1, description: CRITERIA });
+      const now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces, now: () => now });
+      expect((await watcher.pollOnce()).claimed).toEqual([]);
+      // The first poll flags the ticket: one comment, one token, one line.
+      // The slot is still held this poll, so the next ticket waits.
+      const over = fake.world.issues[0]!;
+      expect(over.comments).toHaveLength(1);
+      const comment = over.comments[0]!.body;
+      expect(comment).toContain("<!-- igniter:over-budget -->");
+      expect(comment).toContain("5h02m");
+      expect(comment).toContain("4h");
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ over_budget: "1" });
+      expect(lines).toEqual([
+        "STA-1 over budget: 5h02m past 4h at stage build",
+        "STA-2 waiting: slots full (1 running)",
+      ]);
+      // Linear state and workspace unchanged.
+      expect(over.stateId).toBe(BUILDING);
+      expect(workspaces.workspaces[0]!.closed).toBe(false);
+      // Flagged already: the next poll posts nothing more, and the freed
+      // slot lets the next ticket claim.
+      const second = await watcher.pollOnce();
+      expect(second.claimed.map((t) => t.identifier)).toEqual(["STA-2"]);
+      expect(seen).toEqual(["STA-2"]);
+      expect(lines).toEqual([
+        "STA-1 over budget: 5h02m past 4h at stage build",
+        "STA-2 waiting: slots full (1 running)",
+        "STA-2 claimed: Ready to build → Building (slot 0)",
+        "STA-2 state: Ready to build → Building",
+      ]);
+      expect(over.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a lost budget token retries without duplicating the comment", async () => {
+    const { fake, client, resolved } = await setup(3, { max_hours: 4 });
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      const now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      // The token write fails, so the comment is never attempted.
+      workspaces.failMethods.add("workspace.report_metadata");
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("over_budget");
+      workspaces.failMethods.delete("workspace.report_metadata");
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.comments).toHaveLength(1);
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ over_budget: "1" });
+      expect(lines).toEqual(["STA-1 over budget: 5h02m past 4h at stage build"]);
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      expect(fake.world.issues[0]!.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a lost budget comment is posted verbatim on the next poll", async () => {
+    const { fake, client, resolved } = await setup(3, { max_hours: 4 });
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      const now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      // Token first, so it lands and frees the slot; the comment fails and
+      // is remembered.
+      fake.world.failNextComment = true;
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ over_budget: "1" });
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(lines).toEqual([]);
+      await watcher.pollOnce();
+      const issue = fake.world.issues[0]!;
+      expect(issue.comments).toHaveLength(1);
+      expect(issue.comments[0]!.body).toContain("<!-- igniter:over-budget -->");
+      expect(lines).toEqual(["STA-1 over budget: 5h02m past 4h at stage build"]);
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+      expect(issue.comments).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a cleared over_budget token drops the pending comment instead of undoing the clear", async () => {
+    const { fake, client, resolved } = await setup(3, { max_hours: 4 });
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const seeded = workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      const now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      fake.world.failNextComment = true;
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({ over_budget: "1" });
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      // The owner resumes out-of-band, clearing the token. The retry must
+      // not write it back (re-holding the slot), post the stale comment,
+      // or log a contradictory line.
+      await workspaces.reportMetadata(seeded.workspaceId, { over_budget: null });
+      await watcher.pollOnce();
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("over_budget");
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+  test("acceptance and delivered stages are never over budget", async () => {
+    const { fake, client, resolved } = await setup(3, { max_hours: 4 });
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      addIssue(fake.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "acceptance",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      workspaces.seedWorkspace("STA-2", {
+        ticket: "STA-2",
+        stage: "delivered",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        started_at: "2026-09-05T06:58:00.000Z",
+      });
+      const now = Date.parse("2026-09-05T12:00:00.000Z");
+      const { watcher, lines } = watch(client, resolved, { workspaces, now: () => now });
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      expect(workspaces.tokensFor("STA-1")).not.toHaveProperty("over_budget");
+      expect(workspaces.tokensFor("STA-2")).not.toHaveProperty("over_budget");
+      expect(fake.world.issues[0]!.comments).toHaveLength(0);
+      expect(fake.world.issues[1]!.comments).toHaveLength(0);
+    } finally {
+      fake.stop();
+    }
+  });
+
+describe("workspace lifecycle", () => {
+  test("a non-started state closes the workspace within one poll", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      const states: [string, string][] = [
+        ["STA-1", DONE],
+        ["STA-2", CANCELED],
+        ["STA-3", "st-todo"],
+        ["STA-4", READY],
+        ["STA-5", "st-backlog"],
+      ];
+      for (const [identifier, stateId] of states) {
+        addIssue(fake.world, { identifier, stateId, priority: 1, description: "no sections" });
+      }
+      const workspaces = new FakeWorkspaces();
+      for (const [identifier] of states) workspaces.seedWorkspace(identifier);
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(workspaces.workspaces.every((w) => w.closed)).toBe(true);
+      // Claiming runs before the lifecycle: the Ready ticket without
+      // criteria gets its one-time nudge first.
+      expect(lines).toEqual([
+        "STA-4 skipped: no acceptance criteria",
+        "STA-1 workspace closed (ws-1)",
+        "STA-2 workspace closed (ws-2)",
+        "STA-3 workspace closed (ws-3)",
+        "STA-4 workspace closed (ws-4)",
+        "STA-5 workspace closed (ws-5)",
+      ]);
+      for (const [identifier, stateId] of states) {
+        const issue = fake.world.issues.find((i) => i.identifier === identifier)!;
+        expect(issue.stateId).toBe(stateId);
+      }
+      for (const identifier of ["STA-1", "STA-2", "STA-3", "STA-5"]) {
+        expect(fake.world.issues.find((i) => i.identifier === identifier)!.comments).toHaveLength(0);
+      }
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a started ticket keeps its workspace", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(workspaces.workspaces[0]!.closed).toBe(false);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+describe("acceptance labels", () => {
+  test("reaching acceptance removes agent-failed and keeps other labels", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      fake.world.labels.push({ id: "label-7", name: "agent-failed", teamId: "team-1" });
+      fake.world.labels.push({ id: "label-9", name: "keep", teamId: "team-1" });
+      addIssue(fake.world, {
+        identifier: "STA-1",
+        stateId: BUILDING,
+        priority: 1,
+        description: CRITERIA,
+        labelIds: ["label-7", "label-9"],
+      });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "acceptance",
+        stage_at: "2026-09-05T11:48:00.000Z",
+        started_at: "2026-09-05T11:47:00.000Z",
+      });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.labelIds).toEqual(["label-9"]);
+      expect(lines).toEqual(["STA-1 agent-failed label removed"]);
+      // Removed already: the next poll stays quiet.
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
     } finally {
       fake.stop();
     }

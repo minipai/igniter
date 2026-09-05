@@ -24,6 +24,7 @@ describe("parseDispatchConfig", () => {
       team: undefined,
       maxRunning: 3,
       maxHours: 4,
+      blockedMinutes: 20,
       linearOrg: "starcoder",
       listenHost: "127.0.0.1",
       listenPort: 4180,
@@ -37,6 +38,17 @@ describe("parseDispatchConfig", () => {
     const config = parseDispatchConfig({ project: "x", max_hours: 1.5, linear_org: "acme" });
     expect(config.maxHours).toBe(1.5);
     expect(config.linearOrg).toBe("acme");
+  });
+
+  test("accepts blocked_minutes, defaulting to 20", () => {
+    expect(parseDispatchConfig({ project: "x" }).blockedMinutes).toBe(20);
+    expect(parseDispatchConfig({ project: "x", blocked_minutes: 5 }).blockedMinutes).toBe(5);
+  });
+
+  test("rejects bad blocked_minutes values", () => {
+    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: 0 })).toThrow('"blocked_minutes"');
+    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: -2 })).toThrow('"blocked_minutes"');
+    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: "20" })).toThrow('"blocked_minutes"');
   });
 
   test("rejects bad max_hours values", () => {

@@ -31,11 +31,24 @@ import { appendFile } from "node:fs/promises";
 import type { DispatchConfig } from "./config.ts";
 import { LinearClient, LinearError, type LinearIssue } from "./linear.ts";
 import {
+  buildOverBudgetComment,
+  buildStalledComment,
+  FAILED_LABEL,
+  FAILED_MARKER,
+  failedMarker,
+  FALLBACK_FAIL_REASON,
+  failTicket,
+  formatDuration,
+} from "./recovery.ts";
+import {
   NoWorkspaces,
+  commanderName,
   extractRunningTickets,
+  overBudgetTickets,
   pausedTickets,
   ticketFromAgentName,
   tokensByTicket,
+  workspaceForTicket,
   type CommandWorkspaces,
   type WorkspaceSnapshot,
 } from "./workspaces.ts";
@@ -319,6 +332,7 @@ export interface WatcherOptions {
   sink?: ClaimSink;
   decisions?: DecisionLog;
   workspaces?: CommandWorkspaces;
+  now?: () => number;
 }
 
 export function defaultHost(): string {
@@ -348,6 +362,9 @@ function findWorkspaceId(snapshot: WorkspaceSnapshot, identifier: string): strin
   return agent?.workspaceId ?? null;
 }
 
+/** A Linear issue with its comments, as the recovery reactions read it. */
+type FullIssue = LinearIssue & { comments: { body: string }[] };
+
 export class Watcher {
   lastQueue: QueueEntry[] = [];
   lastPollAt: string | null = null;
@@ -359,6 +376,7 @@ export class Watcher {
   private readonly sink: ClaimSink;
   private readonly decisions: DecisionLog;
   private readonly workspaces: CommandWorkspaces;
+  private readonly now: () => number;
   /** Tickets handed off this run: Herdr has not necessarily caught up yet. */
   private readonly handedOff = new Set<string>();
   private wasFull = false;
@@ -369,6 +387,22 @@ export class Watcher {
    * fresh instead of diffing against a stale stage.
    */
   private readonly lastSeenStage = new Map<string, string>();
+  /**
+   * When each Commander agent was first seen `blocked`, in process memory
+   * only. Seeded silently on first sight like `lastSeenStage`: a restart
+   * starts the stall clock again instead of replaying history, while the
+   * `stalled` token keeps the one-comment-per-episode promise durable.
+   */
+  private readonly blockedSince = new Map<string, number>();
+  /**
+   * Comments built and tokened but not yet posted, with their log line.
+   * The token always goes out first — it frees the slot and is the
+   * duplicate guard — so when the comment write fails the next poll posts
+   * the stored text verbatim instead of building a duplicate. Process
+   * memory only; a restart in that window loses at most one comment.
+   */
+  private readonly pendingStallComment = new Map<string, { comment: string; line: string }>();
+  private readonly pendingBudgetComment = new Map<string, { comment: string; line: string }>();
 
   constructor(options: WatcherOptions) {
     this.client = options.client;
@@ -377,6 +411,7 @@ export class Watcher {
     this.sink = options.sink ?? logClaim;
     this.decisions = options.decisions ?? stdoutDecisions();
     this.workspaces = options.workspaces ?? NoWorkspaces;
+    this.now = options.now ?? Date.now;
   }
 
   async runningTickets(): Promise<LinearIssue[]> {
@@ -401,17 +436,21 @@ export class Watcher {
     // opening workspaces nobody asked for.
     let live: Set<string> | null = null;
     let paused = new Set<string>();
+    let overBudget = new Set<string>();
     let snapshot: WorkspaceSnapshot | null = null;
     try {
       snapshot = await this.workspaces.snapshot();
       live = extractRunningTickets(snapshot);
       paused = pausedTickets(snapshot);
+      overBudget = overBudgetTickets(snapshot);
     } catch (error) {
       console.warn(`herdr workspaces unreadable, adoption waiting: ${(error as Error).message}`);
     }
-    // A paused ticket keeps its workspace but frees its slot.
+    // A paused or over-budget ticket keeps its workspace but frees its slot.
+    const holdsSlot = (ticket: LinearIssue): boolean =>
+      !paused.has(ticket.identifier) && !overBudget.has(ticket.identifier);
     const activeCount = (tickets: LinearIssue[]): number =>
-      tickets.filter((t) => !paused.has(t.identifier)).length;
+      tickets.filter(holdsSlot).length;
 
     // The page's queue snapshot: pre-claim order with a reason per ticket.
     const candidates = sortCandidates(
@@ -435,12 +474,12 @@ export class Watcher {
     });
 
     // Adopt orphans oldest-first: building tickets with no live workspace and
-    // no handoff this run. Paused tickets keep their workspace and are never
-    // orphans. Budget counts adoptions that actually hand
-    // onward, so one unadoptable ticket can never starve the rest.
+    // no handoff this run. Paused and over-budget tickets keep their
+    // workspace and are never orphans. Budget counts adoptions that actually
+    // hand onward, so one unadoptable ticket can never starve the rest.
     const orphans = running.filter(
       (issue) =>
-        !paused.has(issue.identifier) &&
+        holdsSlot(issue) &&
         !this.handedOff.has(issue.id) &&
         !(live?.has(issue.identifier) ?? true),
     );
@@ -477,9 +516,9 @@ export class Watcher {
       }
     }
 
-    // Fill free slots in priority order; paused tickets hold no slot.
-    // Orphan adoptions above never changed membership, so the active count
-    // still stands.
+    // Fill free slots in priority order; paused and over-budget tickets hold
+    // no slot. Orphan adoptions above never changed membership, so the
+    // active count still stands.
     free = resolved.config.maxRunning - activeCount(running);
     for (const candidate of candidates) {
       if (free <= 0) break;
@@ -550,7 +589,13 @@ export class Watcher {
    * - Ready to merge + open workspace + stage not delivered → stamp stage
    *   delivered (dispatch is the only writer of it) and clear owner_pending.
    * - Every other stage change logs one `stage: old → new` line, except
-   *   `failed`, which STA-163 owns: it updates the map silently.
+   *   `failed`, which the failure reaction below owns (label, state move,
+   *   comment, workspace close) instead of a stage line.
+   *
+   * Then the recovery reactions, all judgment-free: they never decide a
+   * ticket failed, stalled, or over budget by the clock — they react to the
+   * Commander's own tokens (`stage=failed`, a `blocked` agent status, a
+   * `started_at` older than `max_hours`) and to the Linear state type.
    */
   private async trackStages(snapshot: WorkspaceSnapshot, running: LinearIssue[]): Promise<void> {
     const { resolved, client } = this;
@@ -565,7 +610,8 @@ export class Watcher {
         this.lastSeenStage.set(ticket, stage);
       } else if (previous !== stage) {
         this.lastSeenStage.set(ticket, stage);
-        // STA-163 owns failed handling; keep the map current without a line.
+        // The failure reaction below owns failed handling; keep the map
+        // current without a stage line.
         if (stage === "failed") continue;
         try {
           await this.decisions.record(ticket, `stage: ${previous} → ${stage}`);
@@ -594,51 +640,414 @@ export class Watcher {
       }
     }
 
+    // The review and merge lists feed both the moves below and the
+    // lifecycle reaction after them, so each is read once per poll. A list
+    // that fails skips its moves; claiming already went through.
+    let inReview: LinearIssue[] = [];
     try {
-      const inReview = await client.listIssuesByState(resolved.projectId, resolved.reviewStateId);
-      for (const issue of inReview) {
-        const tokens = byTicket.get(issue.identifier);
-        if (!tokens) continue;
-        const stage = tokens["stage"];
-        if (stage !== "build" && stage !== "verify") continue;
-        try {
-          await client.setIssueState(issue.id, resolved.buildingStateId);
-          await this.decisions.record(
-            issue.identifier,
-            `state: ${states.review} → ${states.building} (stage back to ${stage})`,
-          );
-        } catch (error) {
-          console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
-        }
-      }
+      inReview = await client.listIssuesByState(resolved.projectId, resolved.reviewStateId);
     } catch (error) {
       console.warn(`stage tracking skipped for review tickets: ${(error as Error).message}`);
     }
-
-    try {
-      const inMerge = await client.listIssuesByState(resolved.projectId, resolved.mergeStateId);
-      for (const issue of inMerge) {
-        const tokens = byTicket.get(issue.identifier);
-        if (!tokens) continue;
-        if (tokens["stage"] === "delivered") continue;
-        const workspaceId = findWorkspaceId(snapshot, issue.identifier);
-        if (!workspaceId) continue;
-        try {
-          await this.workspaces.reportMetadata(workspaceId, {
-            stage: "delivered",
-            stage_at: new Date().toISOString(),
-            owner_pending: null,
-          });
-          // The snapshot above still says acceptance: remember the stamp so
-          // the next poll does not replay it as a stage transition.
-          this.lastSeenStage.set(issue.identifier, "delivered");
-          await this.decisions.record(issue.identifier, `delivered: ${states.merge} → stage delivered`);
-        } catch (error) {
-          console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
-        }
+    for (const issue of inReview) {
+      const tokens = byTicket.get(issue.identifier);
+      if (!tokens) continue;
+      const stage = tokens["stage"];
+      if (stage !== "build" && stage !== "verify") continue;
+      try {
+        await client.setIssueState(issue.id, resolved.buildingStateId);
+        await this.decisions.record(
+          issue.identifier,
+          `state: ${states.review} → ${states.building} (stage back to ${stage})`,
+        );
+      } catch (error) {
+        console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
       }
+    }
+
+    let inMerge: LinearIssue[] = [];
+    try {
+      inMerge = await client.listIssuesByState(resolved.projectId, resolved.mergeStateId);
     } catch (error) {
       console.warn(`stage tracking skipped for merge tickets: ${(error as Error).message}`);
+    }
+    for (const issue of inMerge) {
+      const tokens = byTicket.get(issue.identifier);
+      if (!tokens) continue;
+      if (tokens["stage"] === "delivered") continue;
+      const workspaceId = findWorkspaceId(snapshot, issue.identifier);
+      if (!workspaceId) continue;
+      try {
+        await this.workspaces.reportMetadata(workspaceId, {
+          stage: "delivered",
+          stage_at: new Date().toISOString(),
+          owner_pending: null,
+        });
+        // The snapshot above still says acceptance: remember the stamp so
+        // the next poll does not replay it as a stage transition.
+        this.lastSeenStage.set(issue.identifier, "delivered");
+        await this.decisions.record(issue.identifier, `delivered: ${states.merge} → stage delivered`);
+      } catch (error) {
+        console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
+      }
+    }
+
+    // Recovery reactions on the same snapshot. One Linear read per ticket
+    // per poll at most: full issues are fetched through this cache.
+    const fetched = new Map<string, FullIssue | null>();
+    const fetchFull = async (ticket: string): Promise<FullIssue | null> => {
+      if (!fetched.has(ticket)) {
+        try {
+          fetched.set(ticket, await client.fetchIssue(ticket));
+        } catch (error) {
+          console.warn(`recovery read skipped for ${ticket}: ${(error as Error).message}`);
+          fetched.set(ticket, null);
+        }
+      }
+      return fetched.get(ticket) ?? null;
+    };
+    // Tickets already settled this poll (failed, workspace closed) are left
+    // alone by the later reactions.
+    const settled = new Set<string>();
+    try {
+      for (const ticket of await this.reactFailures(snapshot, byTicket, fetchFull)) settled.add(ticket);
+    } catch (error) {
+      console.warn(`failure reaction skipped: ${(error as Error).message}`);
+    }
+    try {
+      const known = new Set([
+        ...running.map((t) => t.identifier),
+        ...inReview.map((t) => t.identifier),
+        ...inMerge.map((t) => t.identifier),
+      ]);
+      await this.reactLifecycle(snapshot, byTicket, known, settled, fetchFull);
+    } catch (error) {
+      console.warn(`lifecycle reaction skipped: ${(error as Error).message}`);
+    }
+    try {
+      await this.reactStalled(snapshot, byTicket, settled, fetchFull);
+    } catch (error) {
+      console.warn(`stall reaction skipped: ${(error as Error).message}`);
+    }
+    try {
+      await this.reactOverBudget(snapshot, byTicket, settled, fetchFull);
+    } catch (error) {
+      console.warn(`budget reaction skipped: ${(error as Error).message}`);
+    }
+    try {
+      await this.reactAcceptanceLabels(byTicket, settled, fetchFull);
+    } catch (error) {
+      console.warn(`label reaction skipped: ${(error as Error).message}`);
+    }
+  }
+
+  /**
+   * `stage=failed` runs the same failure actions as `igniter fail`, with the
+   * reason from workspace metadata. Only a ticket still in active work (a
+   * started-type Linear state) is failed; anything else already moved on.
+   * Returns the tickets it acted on, so later reactions leave them alone.
+   *
+   * Nothing here is atomic, so the dedupe key is durable and per episode:
+   * the workspace's `stage_at` token, written together with `stage=failed`
+   * and stamped into the comment marker. A ticket that fails, returns to
+   * the queue, and fails again with the same reason is a new episode and
+   * reacts again. A half-written failure (label and state landed, comment
+   * lost) is admitted back even though the issue already sits in the
+   * failed state, as long as its workspace is still open and this
+   * episode's comment never landed; the label and state writes are
+   * idempotent, so the retry converges.
+   */
+  private async reactFailures(
+    snapshot: WorkspaceSnapshot,
+    byTicket: Map<string, Record<string, string>>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<Set<string>> {
+    const { resolved, client } = this;
+    const acted = new Set<string>();
+    for (const [ticket, tokens] of byTicket) {
+      if (tokens["stage"] !== "failed") continue;
+      const reason = tokens["reason"]?.trim() ? (tokens["reason"] as string).trim() : FALLBACK_FAIL_REASON;
+      const stageAt = tokens["stage_at"]?.trim() ? (tokens["stage_at"] as string).trim() : null;
+      const episodeMarker = failedMarker(stageAt);
+      try {
+        const full = await fetchFull(ticket);
+        if (!full) continue;
+        const reactedThisEpisode = stageAt
+          ? full.comments.some((c) => c.body.includes(episodeMarker))
+          : full.comments.some((c) => c.body.includes(FAILED_MARKER) && c.body.includes(reason));
+        if (reactedThisEpisode) continue;
+        const retryingHalfWritten =
+          full.state.id === resolved.failedStateId && workspaceForTicket(snapshot, ticket) !== undefined;
+        if (full.state.type !== "started" && !retryingHalfWritten) continue;
+        await failTicket(
+          { client, resolved, workspaces: this.workspaces, decisions: this.decisions },
+          full,
+          reason,
+          snapshot,
+          stageAt,
+        );
+        acted.add(ticket);
+      } catch (error) {
+        console.warn(`failure reaction skipped for ${ticket}: ${(error as Error).message}`);
+      }
+    }
+    return acted;
+  }
+
+  /**
+   * The workspace follows the Linear state type: a ticket with an open
+   * workspace whose state is anything but `started` (completed, canceled,
+   * duplicate, unstarted, backlog, triage) gets its workspace closed. The
+   * worktree stays. Started tickets keep their workspace, and so does every
+   * ticket in the building/review/merge lists, which are active by shape.
+   */
+  private async reactLifecycle(
+    snapshot: WorkspaceSnapshot,
+    byTicket: Map<string, Record<string, string>>,
+    known: Set<string>,
+    settled: Set<string>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<void> {
+    for (const ticket of byTicket.keys()) {
+      if (known.has(ticket) || settled.has(ticket)) continue;
+      try {
+        const full = await fetchFull(ticket);
+        if (!full) continue;
+        if (full.state.type === undefined || full.state.type === "started") continue;
+        const workspace = workspaceForTicket(snapshot, ticket);
+        if (!workspace) continue;
+        await this.workspaces.close(workspace.workspaceId);
+        settled.add(ticket);
+        await this.decisions.record(ticket, `workspace closed (${workspace.workspaceId})`);
+      } catch (error) {
+        console.warn(`lifecycle reaction skipped for ${ticket}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Post a comment stored when its token went out but the comment write
+   * failed. The entry is only valid while its token still reads '1' in
+   * this poll's snapshot: when the token was cleared meanwhile (`igniter
+   * resume` clears over_budget), the episode is over, so drop the stale
+   * comment instead of undoing the clear — no token write, no comment, no
+   * line. Otherwise re-assert the token (idempotent), post the stored text
+   * verbatim, then log the stored line: exactly one comment and one line
+   * per episode. Throws on any failure; the caller keeps the entry and
+   * retries next poll.
+   */
+  private async postPendingComment(
+    snapshot: WorkspaceSnapshot,
+    ticket: string,
+    tokenKey: string,
+    pending: Map<string, { comment: string; line: string }>,
+    tokens: Record<string, string>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<void> {
+    const entry = pending.get(ticket);
+    if (entry === undefined) return;
+    if (tokens[tokenKey] !== "1") {
+      pending.delete(ticket);
+      return;
+    }
+    const full = await fetchFull(ticket);
+    if (!full) throw new Error(`issue ${ticket} unreadable`);
+    const workspace = workspaceForTicket(snapshot, ticket);
+    if (workspace) {
+      await this.workspaces.reportMetadata(workspace.workspaceId, { [tokenKey]: "1" });
+    }
+    await this.client.addComment(full.id, entry.comment);
+    pending.delete(ticket);
+    await this.decisions.record(ticket, entry.line);
+  }
+
+  /**
+   * A Commander agent continuously `blocked` past `blocked_minutes` gets one
+   * issue comment (where it is stuck plus the pane's last 20 lines) and
+   * `stalled=1`. Leaving `blocked` clears `stalled` back to null. One
+   * comment per blocked episode: the token is the durable guard and goes
+   * out before the comment, so a new episode after a recovery comments
+   * again. Linear state and workspace never change here.
+   */
+  private async reactStalled(
+    snapshot: WorkspaceSnapshot,
+    byTicket: Map<string, Record<string, string>>,
+    settled: Set<string>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<void> {
+    const { resolved, client } = this;
+    const thresholdMs = resolved.config.blockedMinutes * 60_000;
+    const now = this.now();
+    for (const [ticket, tokens] of byTicket) {
+      if (settled.has(ticket)) continue;
+      try {
+        const agent = snapshot.agents.find((a) => a.name === commanderName(ticket));
+        if (agent?.agentStatus === "blocked") {
+          const since = this.blockedSince.get(ticket) ?? now;
+          this.blockedSince.set(ticket, since);
+          if (now - since > thresholdMs) {
+            if (this.pendingStallComment.has(ticket)) {
+              try {
+                await this.postPendingComment(snapshot, ticket, "stalled", this.pendingStallComment, tokens, fetchFull);
+              } catch (error) {
+                console.warn(`stall comment retry skipped for ${ticket}: ${(error as Error).message}`);
+              }
+              continue;
+            }
+            if (tokens["stalled"] !== "1") {
+              const workspace = workspaceForTicket(snapshot, ticket)
+                ?? snapshot.workspaces.find((w) => w.workspaceId === agent.workspaceId);
+              if (!workspace) continue;
+              // Token first: it is the duplicate guard, so it must land
+              // before the comment is attempted.
+              try {
+                await this.workspaces.reportMetadata(workspace.workspaceId, { stalled: "1" });
+              } catch (error) {
+                console.warn(`stall token skipped for ${ticket}: ${(error as Error).message}`);
+                continue;
+              }
+              const full = await fetchFull(ticket);
+              if (!full) continue;
+              let paneTail = "";
+              try {
+                paneTail = await this.workspaces.readPane(agent.paneId, 20);
+              } catch {
+                paneTail = "";
+              }
+              const blockedFor = formatDuration(now - since);
+              const line = `stalled: commander blocked for ${blockedFor} at stage ${tokens["stage"] ?? "?"}`;
+              const comment = buildStalledComment(agent.name, tokens["stage"] ?? null, blockedFor, paneTail);
+              try {
+                await client.addComment(full.id, comment);
+              } catch (error) {
+                // The token is set; remember the text and post it next
+                // poll verbatim instead of building a duplicate.
+                this.pendingStallComment.set(ticket, { comment, line });
+                console.warn(`stall comment skipped for ${ticket}: ${(error as Error).message}`);
+                continue;
+              }
+              await this.decisions.record(ticket, line);
+            }
+          }
+        } else {
+          this.blockedSince.delete(ticket);
+          this.pendingStallComment.delete(ticket);
+          if (tokens["stalled"] === "1") {
+            const workspace = workspaceForTicket(snapshot, ticket);
+            if (!workspace) continue;
+            await this.workspaces.reportMetadata(workspace.workspaceId, { stalled: null });
+            await this.decisions.record(ticket, "stalled cleared");
+          }
+        }
+      } catch (error) {
+        console.warn(`stall reaction skipped for ${ticket}: ${(error as Error).message}`);
+      }
+    }
+    for (const ticket of [...this.blockedSince.keys()]) {
+      if (!byTicket.has(ticket)) this.blockedSince.delete(ticket);
+    }
+    for (const ticket of [...this.pendingStallComment.keys()]) {
+      if (!byTicket.has(ticket)) this.pendingStallComment.delete(ticket);
+    }
+  }
+
+  /**
+   * A workspace alive past `max_hours` (from `started_at`) whose stage has
+   * not reached acceptance gets one issue comment and `over_budget=1`, and
+   * stops counting against `max_running` — the same mechanism `paused=1`
+   * uses. The token goes out before the comment: it frees the slot and is
+   * the duplicate guard, so a lost comment is posted next poll verbatim.
+   * Blocked and over-budget are not failures: Linear state and workspace
+   * never change here, and `igniter resume` clears the token.
+   */
+  private async reactOverBudget(
+    snapshot: WorkspaceSnapshot,
+    byTicket: Map<string, Record<string, string>>,
+    settled: Set<string>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<void> {
+    const { resolved, client } = this;
+    const budgetMs = resolved.config.maxHours * 3600_000;
+    const now = this.now();
+    for (const [ticket, tokens] of byTicket) {
+      if (settled.has(ticket)) continue;
+      if (this.pendingBudgetComment.has(ticket)) {
+        try {
+          await this.postPendingComment(snapshot, ticket, "over_budget", this.pendingBudgetComment, tokens, fetchFull);
+        } catch (error) {
+          console.warn(`budget comment retry skipped for ${ticket}: ${(error as Error).message}`);
+        }
+        continue;
+      }
+      if (tokens["over_budget"] === "1") continue;
+      const stage = tokens["stage"];
+      // A ticket waiting on the owner (or delivered) is never over budget —
+      // the same predicate the status page shows as OVER.
+      if (stage === "acceptance" || stage === "delivered") continue;
+      const startedMs = tokens["started_at"] ? Date.parse(tokens["started_at"]) : NaN;
+      if (!Number.isFinite(startedMs)) continue;
+      const elapsedMs = now - startedMs;
+      if (!(elapsedMs > budgetMs)) continue;
+      try {
+        const full = await fetchFull(ticket);
+        if (!full || full.state.type !== "started") continue;
+        const workspace = workspaceForTicket(snapshot, ticket);
+        if (workspace) {
+          try {
+            await this.workspaces.reportMetadata(workspace.workspaceId, { over_budget: "1" });
+          } catch (error) {
+            console.warn(`budget token skipped for ${ticket}: ${(error as Error).message}`);
+            continue;
+          }
+        }
+        const elapsed = formatDuration(elapsedMs);
+        const line = `over budget: ${elapsed} past ${resolved.config.maxHours}h at stage ${stage ?? "?"}`;
+        const comment = buildOverBudgetComment(elapsed, resolved.config.maxHours, stage ?? null);
+        try {
+          await client.addComment(full.id, comment);
+        } catch (error) {
+          // The token is set; remember the text and post it next poll
+          // verbatim instead of building a duplicate.
+          this.pendingBudgetComment.set(ticket, { comment, line });
+          console.warn(`budget comment skipped for ${ticket}: ${(error as Error).message}`);
+          continue;
+        }
+        await this.decisions.record(ticket, line);
+      } catch (error) {
+        console.warn(`budget reaction skipped for ${ticket}: ${(error as Error).message}`);
+      }
+    }
+    for (const ticket of [...this.pendingBudgetComment.keys()]) {
+      if (!byTicket.has(ticket)) this.pendingBudgetComment.delete(ticket);
+    }
+  }
+
+  /**
+   * A previously failed ticket reaching `stage=acceptance` loses the
+   * `agent-failed` label. Label presence is the record: no label, no read
+   * beyond the one fetch, no line.
+   */
+  private async reactAcceptanceLabels(
+    byTicket: Map<string, Record<string, string>>,
+    settled: Set<string>,
+    fetchFull: (ticket: string) => Promise<FullIssue | null>,
+  ): Promise<void> {
+    for (const [ticket, tokens] of byTicket) {
+      if (settled.has(ticket) || tokens["stage"] !== "acceptance") continue;
+      try {
+        const full = await fetchFull(ticket);
+        if (!full) continue;
+        const labels = full.labels ?? [];
+        const failedId = labels.find((l) => l.name === FAILED_LABEL)?.id;
+        if (!failedId) continue;
+        await this.client.setIssueLabels(
+          full.id,
+          labels.map((l) => l.id).filter((id) => id !== failedId),
+        );
+        await this.decisions.record(ticket, "agent-failed label removed");
+      } catch (error) {
+        console.warn(`label reaction skipped for ${ticket}: ${(error as Error).message}`);
+      }
     }
   }
 

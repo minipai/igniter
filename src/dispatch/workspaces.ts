@@ -147,6 +147,25 @@ export function pausedTickets(snapshot: WorkspaceSnapshot): Set<string> {
   return paused;
 }
 
+/** Tickets whose workspace metadata carries `over_budget=1`. */
+export function overBudgetTickets(snapshot: WorkspaceSnapshot): Set<string> {
+  const overBudget = new Set<string>();
+  for (const [ticket, tokens] of tokensByTicket(snapshot)) {
+    if (tokens["over_budget"] === "1") overBudget.add(ticket);
+  }
+  return overBudget;
+}
+
+/** The open workspace behind a ticket: label or ticket token, whichever matches first. */
+export function workspaceForTicket(
+  snapshot: WorkspaceSnapshot,
+  identifier: string,
+): SnapshotWorkspace | undefined {
+  return snapshot.workspaces.find(
+    (w) => w.label === identifier || w.tokens["ticket"] === identifier,
+  );
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   promise.catch(() => {});
   let timer: ReturnType<typeof setTimeout> | undefined;

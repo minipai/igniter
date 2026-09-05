@@ -237,6 +237,27 @@ describe("status", () => {
     }
   });
 
+  test("an over-budget building ticket holds no slot in the header", async () => {
+    const h = await harness(1);
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        stage_at: "2026-09-05T11:00:00.000Z",
+        started_at: "2026-09-05T11:00:00.000Z",
+        over_budget: "1",
+      });
+      const out = await runCommand(["status"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("0 / 1 slots");
+      expect(out.text).toContain("over_budget");
+      expect((out.data as { slots: { used: number; max: number } }).slots).toEqual({ used: 0, max: 1 });
+    } finally {
+      h.stop();
+    }
+  });
+
   test("an unreachable Herdr lists Linear tickets without workspace info", async () => {
     const h = await harness();
     try {
@@ -439,6 +460,20 @@ describe("start", () => {
     }
   });
 
+  test("an over-budget ticket frees its slot for start", async () => {
+    const h = await harness(1);
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", over_budget: "1" });
+      const out = await runCommand(["start", "STA-2"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(h.world.issues[1]!.stateId).toBe(BUILDING);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("missing criteria leaves a nudge and refuses", async () => {
     const h = await harness();
     try {
@@ -592,6 +627,21 @@ describe("pause and resume", () => {
       expect(out.text).toContain("at max_running (1)");
       expect(out.text).toContain("STA-2");
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ paused: "1" });
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("an over-budget other frees its slot for resume", async () => {
+    const h = await harness(1);
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      addIssue(h.world, { identifier: "STA-2", stateId: BUILDING, priority: 1, description: CRITERIA });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build", paused: "1" });
+      h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2", stage: "build", over_budget: "1" });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("resumed STA-1");
     } finally {
       h.stop();
     }

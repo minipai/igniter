@@ -11,8 +11,14 @@ team: Starcoder
 max_running: 3
 
 # Budget per ticket in hours. A ticket running past it is flagged OVER and
-# over_budget; the slot stays until the ticket is paused, failed, or done.
+# over_budget; over_budget frees the slot like paused=1 (another ticket may
+# claim it) until `igniter resume` clears it. Linear state and workspace stay.
 max_hours: 4
+
+# Stuck Commander detection in minutes. A commander agent `blocked` longer
+# than this gets one issue comment and stalled=1; answering the Commander
+# clears it back to null. Linear state and workspace stay.
+blocked_minutes: 20
 
 # Web/API bind address. Never 0.0.0.0; the factory host uses its Tailscale IP.
 # `--port` / `IGNITER_PORT` still override the port portion.

@@ -25,9 +25,16 @@ import {
 import type { DispatchConfig } from "./config.ts";
 import { LinearClient } from "./linear.ts";
 import {
+  failTicket,
+  formatDuration,
+  type FailureDeps,
+} from "./recovery.ts";
+import {
   commanderName,
+  overBudgetTickets,
   pausedTickets,
   tokensByTicket,
+  workspaceForTicket,
   type CommandWorkspaces,
   type WorkspaceSnapshot,
 } from "./workspaces.ts";
@@ -40,8 +47,8 @@ import {
 
 export type { CommandResult };
 
-export const FAILED_MARKER = "<!-- igniter:failed -->";
-export const FAILED_LABEL = "agent-failed";
+/** Whole minutes/hours Durations for agents: 12s, 34m, 2h, 1h12m, 5h02m. */
+export { formatDuration };
 
 export interface CommandContext {
   client: LinearClient;
@@ -123,17 +130,6 @@ export function runCommand(argv: string[], ctx: CommandContext): Promise<Command
   }
 }
 
-/** Whole minutes/hours Durations for agents: 12s, 34m, 2h, 1h12m, 5h02m. */
-export function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `${hours}h` : `${hours}h${String(minutes).padStart(2, "0")}m`;
-}
-
 function agoText(at: string | null, now: number): string {
   if (!at) return "never";
   const ms = now - Date.parse(at);
@@ -170,9 +166,7 @@ export interface StatusData {
 }
 
 function findWorkspace(snapshot: WorkspaceSnapshot, identifier: string) {
-  return snapshot.workspaces.find(
-    (w) => w.label === identifier || w.tokens["ticket"] === identifier,
-  );
+  return workspaceForTicket(snapshot, identifier);
 }
 
 async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
@@ -217,7 +211,9 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
     const paused = tk["paused"] === "1";
     const stalled = tk["stalled"] === "1";
     const overBudget = tk["over_budget"] === "1";
-    if (paused && buildingIds.has(issue.id)) pausedCount += 1;
+    // Paused and over-budget tickets keep their workspace but hold no
+    // slot; one ticket frees at most one slot even when both flags are set.
+    if ((paused || overBudget) && buildingIds.has(issue.id)) pausedCount += 1;
     const stage = tk["stage"] ?? null;
     const stageAt = tk["stage_at"] ?? null;
     const startedAt = tk["started_at"] ?? null;
@@ -329,8 +325,10 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     snapshot = null;
   }
   const paused = snapshot ? pausedTickets(snapshot) : new Set<string>();
+  const overBudget = snapshot ? overBudgetTickets(snapshot) : new Set<string>();
   const running = await client.listIssuesByState(resolved.projectId, resolved.buildingStateId);
-  const active = running.filter((t) => !paused.has(t.identifier));
+  // Paused and over-budget tickets keep their workspace but hold no slot.
+  const active = running.filter((t) => !paused.has(t.identifier) && !overBudget.has(t.identifier));
 
   const alreadyBuilding = full.state.id === resolved.buildingStateId;
   if (alreadyBuilding && snapshot && findWorkspace(snapshot, full.identifier)) {
@@ -493,8 +491,9 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
     return fail(`no workspace for ${full.identifier}; use \`igniter start ${full.identifier}\``);
   }
   const paused = pausedTickets(snapshot);
+  const overBudget = overBudgetTickets(snapshot);
   const running = await client.listIssuesByState(resolved.projectId, resolved.buildingStateId);
-  const others = running.filter((t) => t.id !== full.id && !paused.has(t.identifier));
+  const others = running.filter((t) => t.id !== full.id && !paused.has(t.identifier) && !overBudget.has(t.identifier));
   if (others.length >= resolved.config.maxRunning) {
     await decisions.record(
       full.identifier,
@@ -546,13 +545,6 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
 // fail
 // ---------------------------------------------------------------------------
 
-export function buildFailedComment(reason: string, paneTail: string): string {
-  const tail = paneTail.trimEnd();
-  return tail
-    ? `${FAILED_MARKER}\n${reason}\n\n\`\`\`\n${tail}\n\`\`\`\n`
-    : `${FAILED_MARKER}\n${reason}\n`;
-}
-
 async function failCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   const reasonFlag = takeFlag(args, "reason");
@@ -577,49 +569,8 @@ async function failCommand(args: string[], ctx: CommandContext): Promise<Command
   } catch {
     snapshot = null;
   }
-  const workspace = snapshot ? findWorkspace(snapshot, full.identifier) : undefined;
-  let paneTail = "";
-  if (workspace && snapshot) {
-    const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
-    const pane = agent ?? snapshot.panes.find((p) => p.workspaceId === workspace.workspaceId);
-    if (pane) {
-      try {
-        paneTail = await ctx.workspaces.readPane(pane.paneId, 80);
-      } catch {
-        paneTail = "";
-      }
-    }
-  }
-
-  try {
-    // Label first: a failure here leaves Linear untouched, while anything
-    // after the state move would leave the ticket half-failed.
-    const failedLabel = (await client.lookupIssueLabel(FAILED_LABEL))
-      ?? (await client.createIssueLabel(resolved.teamId, FAILED_LABEL));
-    await client.setIssueState(full.id, resolved.failedStateId);
-    const existingIds = (full.labels ?? []).map((l) => l.id);
-    if (!existingIds.includes(failedLabel.id)) {
-      await client.setIssueLabels(full.id, [...existingIds, failedLabel.id]);
-    }
-    await client.addComment(full.id, buildFailedComment(reason, paneTail));
-  } catch (error) {
-    await decisions.record(full.identifier, `fail failed: ${(error as Error).message}`);
-    return fail(`fail failed: ${(error as Error).message}`);
-  }
-  await decisions.record(full.identifier, `failed: ${reason}`);
-  if (!workspace) {
-    return { ok: true, text: `failed ${full.identifier}: ${reason} (no workspace to close)` };
-  }
-  // The worktree stays: failed work never vanishes, and a later resume or a
-  // human picks the checkout up again. Only the Herdr workspace closes.
-  try {
-    await ctx.workspaces.close(workspace.workspaceId);
-  } catch (error) {
-    await decisions.record(full.identifier, `workspace close failed: ${(error as Error).message}`);
-    return { ok: true, text: `failed ${full.identifier}: ${reason}; workspace close failed: ${(error as Error).message}` };
-  }
-  await decisions.record(full.identifier, `workspace closed (${workspace.workspaceId})`);
-  return { ok: true, text: `failed ${full.identifier}: ${reason}; workspace ${workspace.workspaceId} closed` };
+  const deps: FailureDeps = { client, resolved, workspaces: ctx.workspaces, decisions };
+  return failTicket(deps, full, reason, snapshot);
 }
 
 // ---------------------------------------------------------------------------
