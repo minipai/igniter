@@ -252,6 +252,10 @@ The Builder token count is attached when STA-159's
 `scripts/opencode-session-usage.sh` is present; its absence is not an
 error. Outside Herdr the command is a silent no-op.
 
+`review_count` and `verify_count` are cumulative across Owner Send
+backs: they describe the ticket's history, not the current run. Never
+use them as budget counters (see Budgets).
+
 ## Builder
 
 As the first action of this stage, run `igniter stage build`.
@@ -261,9 +265,11 @@ Create the Builder tab first. Start its agent as
 (The Commander tab itself is named `commander-<ticket>` by the
 runner.)
 
-The Builder model is the `builder` id from config unless the feature is
+The Builder model is the full `models.builder` id from
+`.igniter/config.yaml`, passed in the work order, unless the feature is
 complex or open-ended, or repeated implementation failure warrants
-switching to the `escalate` id. Keep OpenCode as the Builder harness.
+switching to the full `models.escalate` id from the same file. Keep
+OpenCode as the Builder harness.
 
 Take the Builder id from the work order, then verify that
 OpenCode lists that model id before creating the Builder tab. If it
@@ -284,6 +290,9 @@ the owner again.
 Ask the owner before approving broader filesystem access, writes outside the
 target repository, credential or secret access, destructive actions, or
 unrelated network access. Never start Builder with OpenCode `--auto`.
+
+Outside the pre-authorized scope above, never answer an approval on the
+run's behalf: pause and hand the screen to the Owner (see Budgets).
 
 When delegating to the Builder, provide:
 
@@ -324,6 +333,9 @@ without losing the run:
    already did before writing anything.
 4. Continue from the current stage; do not restart from plan.
 
+A provider-quota model switch (see Budgets) follows these same steps:
+it is a continuation, not a failure.
+
 ## Builder handoff
 
 Start Reviewer only after the Builder reports that it has:
@@ -359,11 +371,15 @@ Create Reviewer in a separate Herdr tab. Skip this whole section when the
 project settings say `skip: review`. Start its agent as
 `reviewer-<ticket>` so the board can match the pane to the ticket.
 
-The Reviewer model is the `reviewer` id from config. Choose the
-`escalate` id when feature complexity or review findings warrant a
-stronger Reviewer model.
+The Reviewer model is the full `models.reviewer` id from
+`.igniter/config.yaml`, passed in the work order. Choose the full
+`models.escalate` id from the same file when feature complexity or
+review findings warrant a stronger Reviewer model.
 
-Run Claude Code as a read-only one-shot review.
+Run Claude Code as a read-only one-shot review, always with
+`--max-budget-usd` set. The cap is an owner setting carried in the work
+order; when the work order names none, the Commander states in the
+completion report the cap it used.
 
 When starting Reviewer, provide:
 
@@ -388,7 +404,9 @@ A clean review may simply report that no actionable defects were found.
 ## Triage and corrections
 
 Evaluate each Reviewer finding against the feature request, plan, acceptance
-criteria, and repository rules.
+criteria, and repository rules. Apply the severity threshold in Budgets
+before sending anything back: only findings worth another round go to
+the Builder.
 
 Send accepted findings back to the original Builder.
 
@@ -410,6 +428,70 @@ After each completed review round — one Reviewer run plus triage,
 whatever the finding count — send accepted findings back to Builder,
 then have Builder re-enter build with `igniter stage build` before it
 starts the corrections.
+
+## Budgets
+
+One delivery run must always end unattended: either it succeeds or it
+stops with a stated reason. The Commander enforces the six budgets
+below by following this section; no other enforcement exists. Every
+budget is per run: after an Owner Send back, all counters restart from
+zero. A threshold named in the Commander's work order overrides the
+default below. The workspace metadata counters (`review_count`,
+`verify_count`, `tokens`) are cumulative across Send backs and are
+never budget inputs: the Commander counts review rounds and fixes
+itself.
+
+- **Time.** Signal: `herdr agent prompt --wait --timeout`, and the
+  `agent_prompt_stalled` event. On a timeout, read the pane output
+  (`herdr agent read`) first and judge from what the agent actually
+  produced; a genuinely stalled prompt counts as one failure.
+- **Rounds.** Signal: the Commander's own count. Default: at most 2
+  review rounds (one Reviewer run plus triage counts as one round); the
+  same finding gets at most 3 Builder fixes. Over the limit, switch to
+  the `models.escalate` model from `.igniter/config.yaml` once; over
+  the limit again, stop with
+  `igniter stage failed --reason "round budget spent"`.
+- **Tokens.** Signal: `scripts/opencode-session-usage.sh <repo path>
+  <since ms>` over the OpenCode session table (`tokens_input`,
+  completed compactions from `part` rows). Default: stop when input
+  tokens exceed 2M or compactions reach 2. Stop with
+  `igniter stage failed --reason "token budget spent"`.
+- **Progress.** Signal: `git diff --stat` unchanged across two
+  consecutive rounds, or the same test failure message twice; always
+  compare `herdr agent read` output for change as well, never timeout
+  alone. Either pattern means the run is stuck: stop with
+  `igniter stage failed --reason "no progress"`.
+- **Scope.** Signal: the committed diff exceeds 500 lines, or touches a
+  system area the plan did not list. Park the run for an owner decision
+  with `igniter stage pause --reason "scope <what grew>"`; when the
+  owner decides and the run continues, clear the park with
+  `igniter stage resume`. Do not shrink scope unilaterally or keep
+  building past it.
+- **Quota.** Signal: a provider error in the Builder pane (rate limit,
+  free limit reached). Quota exhaustion is not a run failure: the
+  account is spent, not the ticket. Switch the Builder model and
+  continue from the current stage without redoing work: first the same
+  model on its paid channel, and only then the `models.escalate` model
+  from `.igniter/config.yaml`. Switching for difficulty stays separate:
+  a stronger model because the feature is hard is complexity, not quota.
+  Every switch follows the Builder restart steps, so the replacement
+  Builder is always told the tree may be half-changed and uncommitted
+  and must read `git diff` first.
+
+Severity: which findings are worth another round. The Commander takes a
+Reviewer finding back to the Builder only when it would break an
+acceptance criterion or a user would actually hit it. Below-threshold
+findings are not dropped: they go into the completion report or become
+new Linear tickets, and they never consume a round. When the round
+budget is exhausted, every unfixed finding becomes a ticket instead of
+another fix round; the completion report lists those tickets. Stopping
+is the point of the budget.
+
+Approvals: the Commander never answers an approval on the run's behalf.
+A Builder permission prompt outside the pre-authorized scope (see
+Builder permission prompts), or any owner decision, means pausing with
+`igniter stage pause --reason "<what needs approval>"` and handing the
+screen to the Owner.
 
 ## Commander acceptance
 
@@ -517,6 +599,11 @@ Report:
 - the feature branch;
 - checkpoint and correction commits;
 - important Reviewer findings and accepted corrections;
+- tickets opened for findings left unfixed when the round budget ran
+  out, including below-threshold findings filed as tickets;
+- model switches: the original model, the replacement, and whether the
+  reason was quota or complexity;
+- the budget that triggered a stop, when the run stopped on one;
 - checks completed;
 - Commander acceptance results and the recording location, or the reason
   recording was unavailable;
