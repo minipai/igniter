@@ -910,7 +910,7 @@ export class Watcher {
               if (!full) continue;
               let paneTail = "";
               try {
-                paneTail = await this.workspaces.readPane(agent.paneId, 20);
+                paneTail = (await this.workspaces.readPane(agent.paneId, 20)).text;
               } catch {
                 paneTail = "";
               }

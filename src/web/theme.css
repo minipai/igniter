@@ -6,8 +6,9 @@
  *          them to --color-* in its base.css, so any shadcn/tweakcn theme drops in here.
  * Layer 3: project component CSS (igniter.css) only reads var(--color-*) and var(--spacing).
  *
- * Extra semantic names not in shadcn: --success, --warning (+ foregrounds), exposed as
- * --color-success / --color-warning through the @theme inline block at the end.
+ * Extra semantic names not in shadcn: --success, --warning (+ foregrounds),
+ * --terminal (+ foreground, muted), exposed as --color-success /
+ * --color-warning / --color-terminal-* through the @theme inline block.
  */
 
 :root {
@@ -32,6 +33,9 @@
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.64 0.15 70);
   --warning-foreground: oklch(0.2 0.03 70);
+  --terminal: oklch(0.235 0.012 60);
+  --terminal-foreground: oklch(0.88 0.012 80);
+  --terminal-muted: oklch(0.56 0.02 70);
   --border: oklch(0.89 0.012 80);
   --input: oklch(0.87 0.014 80);
   --ring: oklch(0.6 0.03 70);
@@ -71,6 +75,9 @@
   --success-foreground: oklch(0.15 0.03 150);
   --warning: oklch(0.8 0.14 80);
   --warning-foreground: oklch(0.2 0.03 80);
+  --terminal: oklch(0.155 0.008 60);
+  --terminal-foreground: oklch(0.9 0.012 80);
+  --terminal-muted: oklch(0.6 0.02 70);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 14%);
   --ring: oklch(0.6 0.03 70);
@@ -97,5 +104,8 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-terminal: var(--terminal);
+  --color-terminal-foreground: var(--terminal-foreground);
+  --color-terminal-muted: var(--terminal-muted);
   --color-destructive-foreground: var(--destructive-foreground);
 }

@@ -117,7 +117,7 @@ export async function failTicket(
     const pane = agent ?? snapshot.panes.find((p) => p.workspaceId === workspace.workspaceId);
     if (pane) {
       try {
-        paneTail = await deps.workspaces.readPane(pane.paneId, 80);
+        paneTail = (await deps.workspaces.readPane(pane.paneId, 80)).text;
       } catch {
         paneTail = "";
       }

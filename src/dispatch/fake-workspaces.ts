@@ -34,6 +34,8 @@ export class FakeWorkspaces implements CommandWorkspaces {
   kinds: string[] = [...KNOWN_AGENT_KINDS];
   /** Pane output served back by readPane, keyed by pane id. */
   paneText: Record<string, string> = {};
+  /** Output revisions served back by readPane; tests bump one to fake new output. */
+  paneRevision: Record<string, number> = {};
   calls: FakeCall[] = [];
   snapshotCalls = 0;
   /** Throw from every method whose name appears here. */
@@ -113,10 +115,19 @@ export class FakeWorkspaces implements CommandWorkspaces {
     agent.inbox.push(text);
   }
 
-  async readPane(paneId: string, lines: number): Promise<string> {
+  /** Raw keys sent to a pane, in order. Tests assert the answer key landed. */
+  sentKeys: { paneId: string; keys: string[] }[] = [];
+
+  async sendKeys(paneId: string, keys: string[]): Promise<void> {
+    this.calls.push({ method: "pane.send_keys", params: { pane_id: paneId, keys } });
+    this.failWhen("pane.send_keys");
+    this.sentKeys.push({ paneId, keys: [...keys] });
+  }
+
+  async readPane(paneId: string, lines: number): Promise<{ text: string; revision: number | null }> {
     this.calls.push({ method: "pane.read", params: { pane_id: paneId, lines } });
     this.failWhen("pane.read");
-    return this.paneText[paneId] ?? "";
+    return { text: this.paneText[paneId] ?? "", revision: this.paneRevision[paneId] ?? 0 };
   }
 
   async reportMetadata(workspaceId: string, tokens: Record<string, string | null>): Promise<void> {

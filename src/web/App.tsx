@@ -1,31 +1,17 @@
-import { createSignal } from "solid-js";
+import { onSettled } from "solid-js";
 import { Router } from "./router";
 
 export default function App() {
-  const [dark, setDark] = createSignal(false);
-
-  function toggleTheme(event: SubmitEvent): void {
-    event.preventDefault();
-    const next = !dark();
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-  }
-
-  return (
-    <Router>
-      {(props) => (
-        <>
-          <header class="topbar">
-            <span class="font-semibold text-sm">igniter</span>
-            <form onSubmit={toggleTheme}>
-              <button class="btn" data-variant="outline" data-size="sm" type="submit">
-                {dark() ? "Light" : "Dark"}
-              </button>
-            </form>
-          </header>
-          {props.children}
-        </>
-      )}
-    </Router>
-  );
+  onSettled(() => {
+    // Dark mode is html.dark (AGENTS.md): follow the OS, no button.
+    // jsdom has no matchMedia; there the page stays light.
+    if (typeof window.matchMedia !== "function") return;
+    const root = document.documentElement;
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const sync = () => root.classList.toggle("dark", query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  });
+  return <Router>{(props) => <>{props.children}</>}</Router>;
 }

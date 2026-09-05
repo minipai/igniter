@@ -51,9 +51,18 @@ export interface CommandWorkspaces extends RunningWorkspaces {
   close(workspaceId: string): Promise<void>;
   startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void>;
   prompt(agentName: string, text: string): Promise<void>;
-  readPane(paneId: string, lines: number): Promise<string>;
+  /** Send raw keys (e.g. y/n answers) straight to a pane. */
+  sendKeys(paneId: string, keys: string[]): Promise<void>;
+  readPane(paneId: string, lines: number): Promise<PaneRead>;
   reportMetadata(workspaceId: string, tokens: Record<string, string | null>): Promise<void>;
   agentKinds(): Promise<string[]>;
+}
+
+/** Recent pane output with the output revision that produced it. A null
+ *  revision means the backend did not report one; compare text instead. */
+export interface PaneRead {
+  text: string;
+  revision: number | null;
 }
 
 export const NoWorkspaces: CommandWorkspaces = {
@@ -70,6 +79,9 @@ export const NoWorkspaces: CommandWorkspaces = {
   },
   prompt: async () => {
     throw new Error("herdr is not wired: cannot prompt an agent");
+  },
+  sendKeys: async () => {
+    throw new Error("herdr is not wired: cannot send keys to a pane");
   },
   readPane: async () => {
     throw new Error("herdr is not wired: cannot read a pane");
@@ -326,14 +338,20 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
     prompt: async (agentName, text) => {
       await call("agent.prompt", { target: agentName, text });
     },
+    sendKeys: async (paneId, keys) => {
+      await call("pane.send_keys", { pane_id: paneId, keys });
+    },
     readPane: async (paneId, lines) => {
       const read = (await call("pane.read", {
         pane_id: paneId,
         source: "recent",
         strip_ansi: true,
         lines,
-      })) as { read?: { text?: string } };
-      return read.read?.text ?? "";
+      })) as { read?: { text?: string; revision?: unknown } };
+      return {
+        text: read.read?.text ?? "",
+        revision: typeof read.read?.revision === "number" ? read.read.revision : null,
+      };
     },
     reportMetadata: async (workspaceId, tokens) => {
       await call("workspace.report_metadata", {

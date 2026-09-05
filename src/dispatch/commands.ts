@@ -64,7 +64,7 @@ export interface CommandContext {
 }
 
 const TOP_USAGE =
-  "usage: igniter <status|start <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL>";
+  "usage: igniter <status|start <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n>";
 
 function usage(command: string): string {
   switch (command) {
@@ -80,6 +80,8 @@ function usage(command: string): string {
       return "usage: igniter fail <ticket> --reason TEXT";
     case "restart":
       return "usage: igniter restart <ticket> --builder <model>";
+    case "answer":
+      return "usage: igniter answer <ticket> y|n";
     default:
       return TOP_USAGE;
   }
@@ -123,6 +125,8 @@ export function runCommand(argv: string[], ctx: CommandContext): Promise<Command
       return failCommand(args, ctx);
     case "restart":
       return restartCommand(args, ctx);
+    case "answer":
+      return answerCommand(args, ctx);
     default:
       return Promise.resolve(fail(
         name === undefined ? TOP_USAGE : `unknown command "${name}"; ${TOP_USAGE}`,
@@ -169,7 +173,17 @@ function findWorkspace(snapshot: WorkspaceSnapshot, identifier: string) {
   return workspaceForTicket(snapshot, identifier);
 }
 
-async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
+export interface StatusCollection {
+  data: StatusData;
+  /** Null when Herdr is unreachable: tickets carry no workspace info. */
+  snapshot: WorkspaceSnapshot | null;
+  herdrNote: string | null;
+}
+
+/** Shared collection behind `igniter status` and the board snapshot: Linear
+ *  says which tickets are building or in review, one Herdr snapshot says
+ *  which of those are actually running. */
+export async function collectStatus(ctx: CommandContext): Promise<StatusCollection> {
   const { client, resolved } = ctx;
   const now = ctx.now?.() ?? Date.now();
   const max = resolved.config.maxRunning;
@@ -241,10 +255,19 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
   });
 
   const used = building.length - pausedCount;
-  const header = `${used} / ${max} slots · last Linear poll ${agoText(lastPollAt, now)}`;
+  const data: StatusData = { slots: { used, max }, lastPollAt, tickets };
+  return { data, snapshot, herdrNote };
+}
+
+async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
+  const { resolved } = ctx;
+  const now = ctx.now?.() ?? Date.now();
+  const { data, snapshot, herdrNote } = await collectStatus(ctx);
+  const lastPollAt = data.lastPollAt;
+  const header = `${data.slots.used} / ${data.slots.max} slots · last Linear poll ${agoText(lastPollAt, now)}`;
   const lines = [header];
   if (herdrNote) lines.push(herdrNote);
-  for (const ticket of tickets) {
+  for (const ticket of data.tickets) {
     if (!snapshot) {
       lines.push(`${ticket.identifier}  no workspace info`);
       continue;
@@ -269,13 +292,73 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
       `   commander ${ticket.commander}${tail}`,
     );
   }
-  const data: StatusData = { slots: { used, max }, lastPollAt, tickets };
   return { ok: true, text: lines.join("\n"), data };
+}
+
+// ---------------------------------------------------------------------------
+// answer
+// ---------------------------------------------------------------------------
+
+async function answerCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
+  const { client, resolved, decisions } = ctx;
+  if (args.length !== 2 || !args[0] || args[0].startsWith("--") || (args[1] !== "y" && args[1] !== "n")) {
+    return fail(usage("answer"));
+  }
+  const identifier = args[0] as string;
+  const key = args[1] as string;
+  const full = await client.fetchIssue(identifier);
+  if (!full) {
+    await decisions.record(identifier, `answer failed: ticket "${identifier}" was not found in Linear`);
+    return fail(`ticket "${identifier}" was not found in Linear`);
+  }
+  if (full.projectId !== resolved.projectId) {
+    await decisions.record(full.identifier, `answer failed: not in project "${resolved.config.project}"`);
+    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
+  }
+  let snapshot: WorkspaceSnapshot;
+  try {
+    snapshot = await ctx.workspaces.snapshot();
+  } catch (error) {
+    await decisions.record(full.identifier, "answer failed: herdr unreachable");
+    return fail(`herdr unreachable: ${(error as Error).message}`);
+  }
+  const workspace = findWorkspace(snapshot, full.identifier);
+  if (!workspace) {
+    await decisions.record(full.identifier, "answer failed: no workspace");
+    return fail(`no workspace for ${full.identifier}`);
+  }
+  const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
+  if (!agent) {
+    await decisions.record(full.identifier, "answer failed: no live commander");
+    return fail(`no live commander for ${full.identifier}`);
+  }
+  try {
+    await ctx.workspaces.sendKeys(agent.paneId, answerKeysFor(workspace.tokens["commander"], key));
+  } catch (error) {
+    await decisions.record(full.identifier, `answer failed: ${(error as Error).message}`);
+    return fail(`answer failed: ${(error as Error).message}`);
+  }
+  const verdict = key === "y" ? "allowed once" : "denied";
+  const sent = answerKeysFor(workspace.tokens["commander"], key).join("+");
+  await decisions.record(full.identifier, `answered ${key} (${verdict}, sent ${sent})`);
+  return { ok: true, text: `answered ${key} for ${full.identifier} (${verdict}, sent ${sent}); commander pane received the key` };
 }
 
 // ---------------------------------------------------------------------------
 // start
 // ---------------------------------------------------------------------------
+
+/**
+ * The keys an answer sends, by the commander's agent kind (workspace
+ * `commander` token). Claude Code answers its numbered permission dialog
+ * with enter/esc; every other kind gets the literal y/n key.
+ */
+export function answerKeysFor(kind: string | undefined, key: string): string[] {
+  if ((kind ?? "").toLowerCase() === "claude") {
+    return [key === "y" ? "enter" : "esc"];
+  }
+  return [key];
+}
 
 async function startCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;

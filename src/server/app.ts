@@ -2,10 +2,15 @@ import { buildHealth } from "./health";
 import { createEventStream } from "./events";
 import { LinearError } from "../dispatch/linear.ts";
 import { type DispatchApi } from "../dispatch/claims.ts";
+import { type BoardHub, type BoardSnapshot } from "./board.ts";
 
 export interface AppOptions {
   distDir: string;
   dispatch?: DispatchApi;
+  /** Board snapshot for GET /api/board; null while dispatch is starting. */
+  board?: () => Promise<BoardSnapshot | null>;
+  hub?: BoardHub;
+  heartbeatMs?: number;
 }
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -60,6 +65,17 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       const limit = Math.max(1, Math.min(Number(new URL(req.url).searchParams.get("limit") ?? 100) || 100, 1000));
       return json({ lines: await dispatch.activity(limit) });
     }
+    if (pathname === "/api/board" && req.method === "GET") {
+      if (!options.board) return json({ error: "dispatch not running" }, 503);
+      let snapshot: BoardSnapshot | null;
+      try {
+        snapshot = await options.board();
+      } catch (error) {
+        return json({ error: (error as Error).message }, 500);
+      }
+      if (!snapshot) return json({ error: "dispatch still starting; retry shortly" }, 503);
+      return json(snapshot);
+    }
     if (pathname === "/api/command" && req.method === "POST") {
       if (!dispatch) return json({ ok: false, text: "dispatch not running" }, 503);
       let body: unknown;
@@ -84,7 +100,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       }
     }
     if (pathname === "/events") {
-      return createEventStream(req.signal);
+      return createEventStream(req.signal, options.hub, { heartbeatMs: options.heartbeatMs });
     }
     if (pathname === "/api" || pathname === "/api/" || pathname.startsWith("/api/")) {
       return json({ error: "not found" }, 404);

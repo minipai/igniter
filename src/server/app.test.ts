@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./app";
 import { buildHealth } from "./health";
+import { SSE_HEARTBEAT_MS } from "./events";
+import { SSE_IDLE_TIMEOUT_S } from "./serve";
 
 function fixtureDist(): string {
   const dir = mkdtempSync(join(tmpdir(), "igniter-dist-"));
@@ -19,6 +21,10 @@ describe("health", () => {
 });
 
 describe("app routes", () => {
+  test("the heartbeat beats comfortably inside the server idle timeout", () => {
+    expect(SSE_IDLE_TIMEOUT_S).toBeLessThanOrEqual(255);
+    expect(SSE_HEARTBEAT_MS).toBeLessThan(SSE_IDLE_TIMEOUT_S * 1000);
+  });
   test("/api/health returns Bun JSON", async () => {
     const app = createApp({ distDir: fixtureDist() });
     const res = await app(new Request("http://localhost/api/health"));

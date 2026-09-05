@@ -13,11 +13,20 @@ import {
   type ResolvedDispatch,
   type WatchHandle,
 } from "./dispatch/claims.ts";
-import { createWorkspaceSink, runCommand } from "./dispatch/commands.ts";
+import { createWorkspaceSink, collectStatus, runCommand } from "./dispatch/commands.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
+import {
+  buildBoardSnapshot,
+  createBoardHub,
+  createPaneOutputCache,
+  readRulesText,
+  startHerdrBoardFeed,
+  withBoardEvents,
+  type BoardSnapshot,
+} from "./server/board.ts";
 import { runStage } from "./stage/stage.ts";
 
 function flagValue(name: string): string | undefined {
@@ -60,8 +69,10 @@ async function serveCommand(): Promise<void> {
   const client = new LinearClient({ apiKey: requireLinearApiKey() });
   const port = resolvePort(config.listenPort);
   const logPath = `${repoRoot().replace(/\/+$/, "")}/.igniter/dispatch.log`;
-  const decisions = createDispatchLog(logPath);
+  const hub = createBoardHub();
+  const decisions = withBoardEvents(createDispatchLog(logPath), hub);
   const workspaces = createHerdrWorkspaces();
+  const outputs = createPaneOutputCache({ workspaces });
   const claimLock = createClaimLock();
 
   // The server starts before Linear validation finishes (an unreachable
@@ -99,9 +110,71 @@ async function serveCommand(): Promise<void> {
       );
     },
   };
-  const server = startServer({ port, hostname: config.listenHost, dispatch });
+  const server = startServer({
+    port,
+    hostname: config.listenHost,
+    dispatch,
+    hub,
+    board: async (): Promise<BoardSnapshot | null> => {
+      const watcher = holder.current;
+      if (!watcher) return null;
+      const statusCtx = {
+        client,
+        resolved: watcher.resolved,
+        host,
+        decisions,
+        workspaces,
+        sink,
+        repoRoot: root,
+        lastPollAt: () => watcher.lastPollAt,
+      };
+      let collected;
+      try {
+        collected = await collectStatus(statusCtx);
+      } catch {
+        // Linear or Herdr down: the page still shows queue, activity, and
+        // rules with an empty rail instead of a 503.
+        collected = {
+          data: {
+            slots: { used: 0, max: watcher.resolved.config.maxRunning },
+            lastPollAt: watcher.lastPollAt,
+            tickets: [],
+          },
+          snapshot: null,
+          herdrNote: null,
+        };
+      }
+      if (collected.snapshot) {
+        const live = new Set(
+          collected.data.tickets.filter((t) => t.hasWorkspace).map((t) => t.identifier.toLowerCase()),
+        );
+        await Promise.allSettled(
+          collected.snapshot.agents
+            .filter((agent) => [...live].some((id) => agent.name.endsWith(`-${id}`)))
+            .map((agent) => outputs.refresh(agent.paneId)),
+        );
+      }
+      const [activity, rules] = await Promise.all([
+        readActivityTail(logPath, 100).catch(() => [] as string[]),
+        readRulesText(root),
+      ]);
+      return buildBoardSnapshot({
+        status: collected.data,
+        snapshot: collected.snapshot,
+        queue: watcher.lastQueue,
+        // Newest decision first, like the Activity view shows them.
+        activity: [...activity].reverse(),
+        rules,
+        host,
+        maxHours: watcher.resolved.config.maxHours,
+        linearOrg: watcher.resolved.config.linearOrg,
+        outputs: outputs.outputs,
+      });
+    },
+  });
   console.log(`igniter serving on http://${config.listenHost}:${server.port} (watching ${config.project})`);
   let watch: WatchHandle | null = null;
+  let feed: { stop: () => void } | null = null;
   let stopping = false;
   const stop = () => {
     if (stopping) {
@@ -113,6 +186,7 @@ async function serveCommand(): Promise<void> {
       try {
         await watch?.stop();
       } finally {
+        feed?.stop();
         server.stop();
         process.exit(0);
       }
@@ -149,6 +223,16 @@ async function serveCommand(): Promise<void> {
   // The watch loop and the commands share the watcher — and the lock — so
   // there is ever exactly one claimant in the process.
   watch = startWatch({ watcher, lock: claimLock });
+  // Poll completions reach the page over SSE so its "last Linear poll"
+  // seconds reset without polling.
+  const pollOnce = watcher.pollOnce.bind(watcher);
+  watcher.pollOnce = async () => {
+    const result = await pollOnce();
+    hub.emit("poll", { lastPollAt: watcher.lastPollAt });
+    return result;
+  };
+  const feedHandle = startHerdrBoardFeed({ hub, outputs });
+  feed = feedHandle;
   console.log(`watch live: claiming from ${config.states.queued}`);
 }
 
@@ -207,7 +291,7 @@ function devCommand(): void {
   });
 }
 
-const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart"];
+const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart", "answer"];
 
 async function versionCommand(): Promise<void> {
   const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
@@ -232,13 +316,14 @@ try {
   } else if (command === "stage") {
     process.exit(await runStage(["stage", ...process.argv.slice(3)]));
   } else {
-    console.error("usage: igniter <serve|dev|status|start|stage|pause|resume|fail|restart> [--port N]");
+    console.error("usage: igniter <serve|dev|status|start|stage|pause|resume|fail|restart|answer> [--port N]");
     console.error("  serve [--no-watch] [--port N]");
     console.error("  status");
     console.error("  start <ticket> [--agent <kind>] [--builder <model>]");
     console.error("  pause <ticket> | resume <ticket>");
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");
+    console.error("  answer <ticket> y|n");
     console.error("  stage <plan|build|verify|acceptance|failed|pause|resume> [--reason TEXT]");
     console.error("  --version, -v");
     process.exit(1);
