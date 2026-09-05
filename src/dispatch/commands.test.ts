@@ -251,6 +251,39 @@ describe("status", () => {
     }
   });
 
+  test("a ready-to-merge ticket shows while its workspace is open, and drops off without one", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-180", stateId: "st-merge", priority: 1, description: CRITERIA, title: "Merging" });
+      h.workspaces.seedWorkspace("STA-180", {
+        ticket: "STA-180",
+        stage: "delivered",
+        stage_at: "2026-09-05T11:48:00.000Z",
+        started_at: "2026-09-05T11:47:00.000Z",
+      }, { commanderStatus: "done" });
+      addIssue(h.world, { identifier: "STA-181", stateId: "st-merge", priority: 1, description: CRITERIA, title: "Closed" });
+      const out = await runCommand(["status"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("0 / 3 slots");
+      expect(out.text).toContain("STA-180  Ready to merge  13m / 4h   stage delivered · 12m   commander done");
+      expect(out.text).not.toContain("STA-181");
+      const data = out.data as { slots: { used: number; max: number }; tickets: Record<string, unknown>[] };
+      expect(data.slots).toEqual({ used: 0, max: 3 });
+      expect(data.tickets.map((t) => t["identifier"])).toEqual(["STA-180"]);
+      expect(data.tickets[0]).toMatchObject({
+        identifier: "STA-180",
+        title: "Merging",
+        state: "Ready to merge",
+        hasWorkspace: true,
+        stage: "delivered",
+        commander: "done",
+        over: false,
+      });
+    } finally {
+      h.stop();
+    }
+  });
+
   test("a review-state ticket shows with its workspace and takes no slot", async () => {
     const h = await harness();
     try {

@@ -22,7 +22,7 @@ import {
   type ResolvedDispatch,
 } from "./claims";
 import { parseDispatchConfig } from "./config";
-import { LinearClient, LinearError, requireLinearApiKey } from "./linear";
+import { LinearClient, LinearError, requireLinearApiKey, type LinearIssue } from "./linear";
 import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from "./fake-linear";
 import { createWorkspaceSink } from "./commands";
 import { FakeGit } from "./fake-git";
@@ -31,6 +31,8 @@ import type { CommandWorkspaces } from "./workspaces";
 
 const READY = "st-ready";
 const BUILDING = "st-building";
+const REVIEW = "st-review";
+const MERGE = "st-merge";
 const DONE = "st-done";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 
@@ -143,6 +145,33 @@ describe("validateStartup", () => {
       await expect(
         validateStartup(client, parseDispatchConfig({ project: "igniter" })),
       ).rejects.toThrow('spans 2 teams; set "team"');
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a merge state of the wrong workflow type fails startup", async () => {
+    const world = standardWorld("test-key");
+    world.statesByTeam["team-1"] = world.statesByTeam["team-1"]!.map((s) =>
+      s.id === "st-merge" ? { ...s, type: "completed" } : s,
+    );
+    const fake = startFakeLinear(world);
+    try {
+      const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+      await expect(
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('status "Ready to merge" (states.merge) must be a started-type state on team "Starcoder"');
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("an unknown merge state name fails startup", async () => {
+    const { fake, client } = await setup();
+    try {
+      await expect(
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder", states: { merge: "Nope" } })),
+      ).rejects.toThrow('status "Nope" (states.merge) does not exist on team "Starcoder"');
     } finally {
       fake.stop();
     }
@@ -415,6 +444,287 @@ describe("paused tickets and slots", () => {
   });
 });
 
+describe("stage tracking", () => {
+  test("building + acceptance/owner pending moves to review with one line, then stays quiet", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "acceptance",
+        stage_at: "2026-09-05T11:48:00.000Z",
+        owner_pending: "1",
+      });
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+      const result = await watcher.pollOnce();
+      expect(result.claimed).toEqual([]);
+      expect(seen).toEqual([]);
+      expect(fake.world.issues[0]!.stateId).toBe(REVIEW);
+      expect(lines).toEqual(["STA-1 state: Building → Ready to review (stage acceptance, owner pending)"]);
+      expect(workspaces.snapshotCalls).toBe(1);
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(REVIEW);
+      expect(lines).toHaveLength(1);
+      expect(workspaces.snapshotCalls).toBe(2);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("building at acceptance without owner pending stays put", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "acceptance" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("review + stage back to build moves to building with one line", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build", review_count: "1" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(lines).toEqual(["STA-1 state: Ready to review → Building (stage back to build)"]);
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(lines).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("review + stage back to verify moves to building", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "verify", verify_count: "1" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+      expect(lines).toEqual(["STA-1 state: Ready to review → Building (stage back to verify)"]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("review + stage acceptance stays in review", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "acceptance", owner_pending: "1" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(REVIEW);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("ready to merge + open workspace stamps delivered once and clears owner pending", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: MERGE, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const seeded = workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "acceptance",
+        stage_at: "2026-09-05T10:00:00.000Z",
+        owner_pending: "1",
+      });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      const tokens = workspaces.tokensFor("STA-1");
+      expect(tokens["stage"]).toBe("delivered");
+      expect(tokens).not.toHaveProperty("owner_pending");
+      expect(tokens["stage_at"]).toBeDefined();
+      expect(tokens["stage_at"]).not.toBe("2026-09-05T10:00:00.000Z");
+      expect(lines).toEqual(["STA-1 delivered: Ready to merge → stage delivered"]);
+      expect(fake.world.issues[0]!.stateId).toBe(MERGE);
+      const reports = () => workspaces.calls.filter((c) => c.method === "workspace.report_metadata");
+      expect(reports()).toHaveLength(1);
+      expect(reports()[0]!.params).toMatchObject({
+        workspace_id: seeded.workspaceId,
+        tokens: { stage: "delivered", owner_pending: null },
+      });
+      // Idempotent: the next poll writes no metadata and logs nothing more.
+      await watcher.pollOnce();
+      expect(reports()).toHaveLength(1);
+      expect(lines).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a stage change between polls logs exactly one stage line; first sight is silent", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      const workspaceId = workspaces.workspaces[0]!.workspaceId;
+      await workspaces.reportMetadata(workspaceId, { stage: "verify" });
+      await watcher.pollOnce();
+      expect(lines).toEqual(["STA-1 stage: build → verify"]);
+      await watcher.pollOnce();
+      expect(lines).toHaveLength(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("tickets with no workspace are never moved and never get metadata", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      addIssue(fake.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA });
+      addIssue(fake.world, { identifier: "STA-3", stateId: MERGE, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues.map((i) => [i.identifier, i.stateId])).toEqual([
+        ["STA-1", BUILDING],
+        ["STA-2", REVIEW],
+        ["STA-3", MERGE],
+      ]);
+      expect(workspaces.calls).toEqual([]);
+      expect(lines.filter((l) => /state:|delivered:|stage:/.test(l))).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("an unreadable Herdr skips tracking while claiming goes on", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: READY, priority: 1, description: CRITERIA });
+      addIssue(fake.world, {
+        identifier: "STA-2",
+        stateId: BUILDING,
+        priority: 1,
+        description: CRITERIA,
+        comments: [{ id: "c-claim", body: `${CLAIM_MARKER}\nClaimed by host=h slot=0 at 2026-09-04T00:00:01.000Z.` }],
+      });
+      const workspaces = new FakeWorkspaces();
+      workspaces.failMethods.add("snapshot");
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+      const result = await watcher.pollOnce();
+      expect(result.claimed.map((t) => t.identifier)).toEqual(["STA-1"]);
+      expect(seen).toEqual(["STA-1"]);
+      // STA-2 counts as present while Herdr is unreadable: no adoption.
+      expect(result.running).toContain("STA-2");
+      expect(lines).toEqual([
+        "STA-1 claimed: Ready to build → Building (slot 1)",
+        "STA-1 state: Ready to build → Building",
+      ]);
+      expect(workspaces.snapshotCalls).toBe(1);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("review + stage delivered stays in review with no lines", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "delivered",
+        stage_at: "2026-09-05T11:48:00.000Z",
+      });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(REVIEW);
+      expect(lines).toEqual([]);
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(REVIEW);
+      expect(lines).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a Linear failure inside tracking does not break claiming; the next poll tracks", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-9", stateId: READY, priority: 1, description: CRITERIA });
+      addIssue(fake.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build", review_count: "1" });
+      // Only the tracking lists fail: building/queued reads stay healthy so
+      // claiming in the same poll must go through.
+      const healthy = client.listIssuesByState.bind(client);
+      let failTracking = true;
+      client.listIssuesByState = async (
+        projectId: string,
+        stateId: string,
+        first?: number,
+      ): Promise<LinearIssue[]> => {
+        if (failTracking && (stateId === resolved.reviewStateId || stateId === resolved.mergeStateId)) {
+          throw new LinearError(500, "tracking list failed");
+        }
+        return healthy(projectId, stateId, first);
+      };
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+      const result = await watcher.pollOnce();
+      expect(result.claimed.map((t) => t.identifier)).toEqual(["STA-9"]);
+      expect(seen).toEqual(["STA-9"]);
+      expect(fake.world.issues.find((i) => i.identifier === "STA-9")!.stateId).toBe(BUILDING);
+      // Tracking never ran its moves: STA-1 is still in review, untouched.
+      expect(fake.world.issues.find((i) => i.identifier === "STA-1")!.stateId).toBe(REVIEW);
+      expect(lines).toEqual([
+        "STA-9 claimed: Ready to build → Building (slot 0)",
+        "STA-9 state: Ready to build → Building",
+      ]);
+      expect(workspaces.snapshotCalls).toBe(1);
+      // Healthy again: the next poll tracks normally.
+      failTracking = false;
+      await watcher.pollOnce();
+      expect(fake.world.issues.find((i) => i.identifier === "STA-1")!.stateId).toBe(BUILDING);
+      expect(lines).toContain("STA-1 state: Ready to review → Building (stage back to build)");
+      expect(workspaces.snapshotCalls).toBe(2);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("failed stages log no stage line; STA-163 owns them", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1", stage: "build" });
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      const workspaceId = workspaces.workspaces[0]!.workspaceId;
+      await workspaces.reportMetadata(workspaceId, { stage: "failed" });
+      await watcher.pollOnce();
+      expect(lines).toEqual([]);
+      expect(fake.world.issues[0]!.stateId).toBe(BUILDING);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
 describe("decision log", () => {
   test("decisions append to the file and print; polls stay silent; restarts keep history", async () => {
     const { fake, client, resolved } = await setup();
@@ -619,6 +929,7 @@ describe("hung Linear", () => {
       buildingStateId: "st-building",
       reviewStateId: "st-review",
       failedStateId: "st-todo",
+      mergeStateId: "st-merge",
     };
   }
 

@@ -185,7 +185,8 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
   // Review tickets keep an open workspace while the owner looks at them, so
   // they stay visible here; only building tickets ever hold slots.
   const inReview = await client.listIssuesByState(resolved.projectId, resolved.reviewStateId);
-  const listed = [...building, ...inReview];
+  const inMerge = await client.listIssuesByState(resolved.projectId, resolved.mergeStateId);
+  const listed = [...building, ...inReview, ...inMerge];
   const buildingIds = new Set(building.map((t) => t.id));
 
   let snapshot: WorkspaceSnapshot | null = null;
@@ -203,7 +204,14 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
   };
 
   let pausedCount = 0;
-  const tickets: StatusTicketData[] = listed.map((issue) => {
+  // Ready to merge tickets show only while their workspace is still open;
+  // one without a workspace is done and drops off the list.
+  const visible = listed.filter((issue) => {
+    if (issue.state.id !== resolved.mergeStateId) return true;
+    if (!snapshot) return false;
+    return findWorkspace(snapshot, issue.identifier) !== undefined;
+  });
+  const tickets: StatusTicketData[] = visible.map((issue) => {
     const workspace = snapshot ? findWorkspace(snapshot, issue.identifier) : undefined;
     const tk = tokens.get(issue.identifier) ?? workspace?.tokens ?? {};
     const paused = tk["paused"] === "1";

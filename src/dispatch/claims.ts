@@ -34,7 +34,10 @@ import {
   NoWorkspaces,
   extractRunningTickets,
   pausedTickets,
+  ticketFromAgentName,
+  tokensByTicket,
   type CommandWorkspaces,
+  type WorkspaceSnapshot,
 } from "./workspaces.ts";
 
 export const POLL_INTERVAL_MS = 30_000;
@@ -53,6 +56,7 @@ export interface ResolvedDispatch {
   buildingStateId: string;
   reviewStateId: string;
   failedStateId: string;
+  mergeStateId: string;
 }
 
 /** What the commands and the watch hand to the sink for every claimed ticket. */
@@ -161,11 +165,16 @@ export async function validateStartup(client: LinearClient, config: DispatchConf
     teamName = team.name;
   }
   const states = await client.teamStates(teamId);
-  const stateId = (role: string, name: string): string => {
+  const stateId = (role: string, name: string, type?: string): string => {
     const state = states.find((s) => s.name === name);
     if (!state) {
       throw new Error(
         `config error: status "${name}" (${role}) does not exist on team "${teamName}" (check .igniter/config.yaml)`,
+      );
+    }
+    if (type !== undefined && state.type !== type) {
+      throw new Error(
+        `config error: status "${name}" (${role}) must be a ${type}-type state on team "${teamName}" (got "${state.type}")`,
       );
     }
     return state.id;
@@ -179,6 +188,10 @@ export async function validateStartup(client: LinearClient, config: DispatchConf
     buildingStateId: stateId("states.building", config.states.building),
     reviewStateId: stateId("states.review", config.states.review),
     failedStateId: stateId("states.failed", config.states.failed),
+    // Ready to merge is owner acceptance, not active work: it must sit on a
+    // started-type workflow state, so dispatch never mistakes a done ticket
+    // for one awaiting merge.
+    mergeStateId: stateId("states.merge", config.states.merge, "started"),
   };
 }
 
@@ -323,6 +336,18 @@ export function logClaim(claim: ClaimedTicket): void {
   );
 }
 
+/** Workspace id behind a ticket, with the same precedence as tokensByTicket. */
+function findWorkspaceId(snapshot: WorkspaceSnapshot, identifier: string): string | null {
+  for (const workspace of snapshot.workspaces) {
+    if (workspace.tokens["ticket"] === identifier) return workspace.workspaceId;
+  }
+  for (const workspace of snapshot.workspaces) {
+    if (workspace.label === identifier) return workspace.workspaceId;
+  }
+  const agent = snapshot.agents.find((a) => ticketFromAgentName(a.name) === identifier);
+  return agent?.workspaceId ?? null;
+}
+
 export class Watcher {
   lastQueue: QueueEntry[] = [];
   lastPollAt: string | null = null;
@@ -337,6 +362,13 @@ export class Watcher {
   /** Tickets handed off this run: Herdr has not necessarily caught up yet. */
   private readonly handedOff = new Set<string>();
   private wasFull = false;
+  /**
+   * Last stage seen per ticket, in process memory only. Seeded silently on
+   * first sight so a restart never replays history as new transitions;
+   * entries for vanished workspaces are dropped so a later rerun starts
+   * fresh instead of diffing against a stale stage.
+   */
+  private readonly lastSeenStage = new Map<string, string>();
 
   constructor(options: WatcherOptions) {
     this.client = options.client;
@@ -369,8 +401,9 @@ export class Watcher {
     // opening workspaces nobody asked for.
     let live: Set<string> | null = null;
     let paused = new Set<string>();
+    let snapshot: WorkspaceSnapshot | null = null;
     try {
-      const snapshot = await this.workspaces.snapshot();
+      snapshot = await this.workspaces.snapshot();
       live = extractRunningTickets(snapshot);
       paused = pausedTickets(snapshot);
     } catch (error) {
@@ -476,6 +509,18 @@ export class Watcher {
       }
     }
 
+    // Tracking mirrors Commander stage reports into Linear (building →
+    // review, review → building, Ready to merge → stage delivered). It runs
+    // after claiming on the same single snapshot, and its failures never
+    // break claiming: the next poll retries.
+    if (snapshot) {
+      try {
+        await this.trackStages(snapshot, running);
+      } catch (error) {
+        console.warn(`stage tracking skipped: ${(error as Error).message}`);
+      }
+    }
+
     // Slots-full is a transition, not a poll heartbeat: one line when the
     // queue blocks, silence while it stays blocked.
     const claimedIds = new Set(claimed.map((t) => t.id));
@@ -493,6 +538,108 @@ export class Watcher {
 
     this.lastPollAt = new Date().toISOString();
     return { claimed, running: running.map((t) => t.identifier) };
+  }
+
+  /**
+   * Mirror Commander stage reports into Linear, using the poll's single
+   * snapshot. Only tickets with a workspace are ever touched.
+   *
+   * - Building + stage acceptance + owner pending → review.
+   * - Review + stage back to build/verify (owner sent it back in the pane)
+   *   → building. Review tickets at acceptance or delivered stay put.
+   * - Ready to merge + open workspace + stage not delivered → stamp stage
+   *   delivered (dispatch is the only writer of it) and clear owner_pending.
+   * - Every other stage change logs one `stage: old → new` line, except
+   *   `failed`, which STA-163 owns: it updates the map silently.
+   */
+  private async trackStages(snapshot: WorkspaceSnapshot, running: LinearIssue[]): Promise<void> {
+    const { resolved, client } = this;
+    const states = resolved.config.states;
+    const byTicket = tokensByTicket(snapshot);
+
+    for (const [ticket, tokens] of byTicket) {
+      const stage = tokens["stage"];
+      if (stage === undefined) continue;
+      const previous = this.lastSeenStage.get(ticket);
+      if (previous === undefined) {
+        this.lastSeenStage.set(ticket, stage);
+      } else if (previous !== stage) {
+        this.lastSeenStage.set(ticket, stage);
+        // STA-163 owns failed handling; keep the map current without a line.
+        if (stage === "failed") continue;
+        try {
+          await this.decisions.record(ticket, `stage: ${previous} → ${stage}`);
+        } catch (error) {
+          console.warn(`stage tracking skipped for ${ticket}: ${(error as Error).message}`);
+        }
+      }
+    }
+    for (const ticket of [...this.lastSeenStage.keys()]) {
+      if (!byTicket.has(ticket)) this.lastSeenStage.delete(ticket);
+    }
+
+    for (const issue of running) {
+      if (issue.state.id !== resolved.buildingStateId) continue;
+      const tokens = byTicket.get(issue.identifier);
+      if (!tokens) continue;
+      if (tokens["stage"] !== "acceptance" || tokens["owner_pending"] !== "1") continue;
+      try {
+        await client.setIssueState(issue.id, resolved.reviewStateId);
+        await this.decisions.record(
+          issue.identifier,
+          `state: ${states.building} → ${states.review} (stage acceptance, owner pending)`,
+        );
+      } catch (error) {
+        console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
+      }
+    }
+
+    try {
+      const inReview = await client.listIssuesByState(resolved.projectId, resolved.reviewStateId);
+      for (const issue of inReview) {
+        const tokens = byTicket.get(issue.identifier);
+        if (!tokens) continue;
+        const stage = tokens["stage"];
+        if (stage !== "build" && stage !== "verify") continue;
+        try {
+          await client.setIssueState(issue.id, resolved.buildingStateId);
+          await this.decisions.record(
+            issue.identifier,
+            `state: ${states.review} → ${states.building} (stage back to ${stage})`,
+          );
+        } catch (error) {
+          console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`stage tracking skipped for review tickets: ${(error as Error).message}`);
+    }
+
+    try {
+      const inMerge = await client.listIssuesByState(resolved.projectId, resolved.mergeStateId);
+      for (const issue of inMerge) {
+        const tokens = byTicket.get(issue.identifier);
+        if (!tokens) continue;
+        if (tokens["stage"] === "delivered") continue;
+        const workspaceId = findWorkspaceId(snapshot, issue.identifier);
+        if (!workspaceId) continue;
+        try {
+          await this.workspaces.reportMetadata(workspaceId, {
+            stage: "delivered",
+            stage_at: new Date().toISOString(),
+            owner_pending: null,
+          });
+          // The snapshot above still says acceptance: remember the stamp so
+          // the next poll does not replay it as a stage transition.
+          this.lastSeenStage.set(issue.identifier, "delivered");
+          await this.decisions.record(issue.identifier, `delivered: ${states.merge} → stage delivered`);
+        } catch (error) {
+          console.warn(`stage tracking skipped for ${issue.identifier}: ${(error as Error).message}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`stage tracking skipped for merge tickets: ${(error as Error).message}`);
+    }
   }
 
   /**

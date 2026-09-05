@@ -70,6 +70,16 @@ describe("parseDispatchConfig", () => {
     expect(() => parseDispatchConfig({})).toThrow('"project" is required');
   });
 
+  test("states.merge defaults to Ready to merge and must not equal building or review", () => {
+    expect(parseDispatchConfig({ project: "x" }).states.merge).toBe("Ready to merge");
+    expect(() =>
+      parseDispatchConfig({ project: "x", states: { merge: "Building" } }),
+    ).toThrow('"states.merge" ("Building") must not equal');
+    expect(() =>
+      parseDispatchConfig({ project: "x", states: { merge: "Ready to review" } }),
+    ).toThrow('"states.merge" ("Ready to review") must not equal');
+  });
+
   test("states.failed equal to states.queued fails startup parsing", () => {
     expect(() =>
       parseDispatchConfig({ project: "x", states: { queued: "Todo", failed: "Todo" } }),
@@ -87,7 +97,7 @@ describe("parseDispatchConfig", () => {
       'unknown models role "hal" (known: builder, reviewer, escalate)',
     );
     expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
-      'unknown states role "later" (known: queued, building, review, failed)',
+      'unknown states role "later" (known: queued, building, review, failed, merge)',
     );
   });
 });

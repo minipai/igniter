@@ -14,6 +14,7 @@ export interface DispatchStates {
   building: string;
   review: string;
   failed: string;
+  merge: string;
 }
 
 export interface DispatchConfig {
@@ -39,6 +40,7 @@ export const DEFAULT_STATES: DispatchStates = {
   building: "Building",
   review: "Ready to review",
   failed: "Todo",
+  merge: "Ready to merge",
 };
 export const DEFAULT_MODELS: DispatchModels = {
   builder: "opencode/muse-spark-1.3-contributor-free",
@@ -113,8 +115,8 @@ function parseStates(raw: unknown): DispatchStates {
   if (!isRecord(raw)) fail(`"states" must be a map of role to Linear status name`);
   const states: DispatchStates = { ...DEFAULT_STATES };
   for (const [key, value] of Object.entries(raw)) {
-    if (key !== "queued" && key !== "building" && key !== "review" && key !== "failed") {
-      fail(`unknown states role "${key}" (known: queued, building, review, failed)`);
+    if (key !== "queued" && key !== "building" && key !== "review" && key !== "failed" && key !== "merge") {
+      fail(`unknown states role "${key}" (known: queued, building, review, failed, merge)`);
     }
     if (typeof value !== "string" || value.trim() === "") {
       fail(`states."${key}" must be a non-empty status name`);
@@ -151,6 +153,11 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (states.failed === states.queued) {
     fail(
       `"states.failed" ("${states.failed}") must not equal "states.queued": a failed ticket dropped back into the queue state would be re-claimed forever`,
+    );
+  }
+  if (states.merge === states.building || states.merge === states.review) {
+    fail(
+      `"states.merge" ("${states.merge}") must not equal "states.building" or "states.review": the merge state marks owner acceptance, not active work`,
     );
   }
   return {
