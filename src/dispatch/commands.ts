@@ -756,7 +756,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `\n` +
     `Models for this run:\n` +
     `- Builder: ${input.builderModel}\n` +
-    `- Reviewer: ${input.reviewerModel}\n` +
+    `- Acceptance agent (models.reviewer): ${input.reviewerModel}\n` +
     `- Escalate: ${input.escalateModel}\n` +
     `Start the Builder with the Builder model unless the run rules say otherwise.\n` +
     `\n` +

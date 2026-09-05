@@ -22,7 +22,7 @@ back to the defaults there.
 ## Checks
 
 - `bun run check` (typecheck plus `bun test src/server` plus vitest).
-- All of it is mandatory and green before review.
+- All of it is mandatory and green before independent acceptance.
 
 ## Acceptance
 
@@ -42,8 +42,8 @@ A diff touching these pauses the run for the owner.
 
 ## Stages
 
-No skips, no added steps. Every run goes through full review and a recorded
-acceptance.
+No skips, no added steps. Every run goes through independent black-box
+acceptance with recorded evidence.
 
 ## Conventions
 
@@ -57,4 +57,5 @@ See AGENTS.md. In short:
   `diffwalk publish`, and put the printed link on the Linear issue.
 - Landing: rebase the commit onto local `main`. Do not push; the owner
   pushes.
-- Owner accepts by moving the ticket to Ready to merge in Linear.
+- Owner accepts by moving the ticket from the configured review state to
+  Ready to merge in Linear.
