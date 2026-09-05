@@ -39,13 +39,13 @@ interface Harness {
   stop: () => void;
 }
 
-async function harness(maxRunning = 3, maxHours = 4): Promise<Harness & { client: LinearClient; resolved: ResolvedDispatch; world: ReturnType<typeof standardWorld> }> {
+async function harness(maxRunning = 3, maxHours = 4, extra: Record<string, unknown> = {}): Promise<Harness & { client: LinearClient; resolved: ResolvedDispatch; world: ReturnType<typeof standardWorld> }> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
   const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
   const resolved = await validateStartup(
     client,
-    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning, max_hours: maxHours }),
+    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning, max_hours: maxHours, ...extra }),
   );
   const lines: string[] = [];
   const workspaces = new FakeWorkspaces();
@@ -869,6 +869,93 @@ describe("work order", () => {
       expect(h.lines).toContainEqual(
         expect.stringContaining("STA-1 handoff failed:"),
       );
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a configured delivery document tells the commander to read it, not search", () => {
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      builderModel: "b-model",
+      reviewerModel: "r-model",
+      escalateModel: "e-model",
+      delivery: "CONTRIBUTING.md",
+    });
+    expect(order).toContain("Project settings: read `CONTRIBUTING.md` (relative to the repo root)");
+    expect(order).toContain("Do not search for another one.");
+    expect(order).not.toContain("No delivery document is configured");
+  });
+
+  test("an unset delivery tells the commander to search, write back, and report", () => {
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      builderModel: "b-model",
+      reviewerModel: "r-model",
+      escalateModel: "e-model",
+    });
+    expect(order).toContain("No delivery document is configured in `.igniter/config.yaml`.");
+    expect(order).toContain("Search the repository for the document");
+    expect(order).toContain("name the document you used in the completion report");
+    expect(order).not.toContain("Do not search for another one.");
+  });
+
+  test("the claim sink carries the configured delivery document to the commander", async () => {
+    const h = await harness(3, 4, { delivery: "CONTRIBUTING.md" });
+    try {
+      addIssue(h.world, { identifier: "STA-176", stateId: TODO, priority: 1, description: CRITERIA, title: "Dispatch commands" });
+      const out = await runCommand(["start", "STA-176"], h.ctx);
+      expect(out.ok).toBe(true);
+      const inbox = h.workspaces.promptsFor("commander-sta-176");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("Project settings: read `CONTRIBUTING.md`");
+      expect(inbox[0]).toContain("Do not search for another one.");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("the claim sink tells the commander to search when no delivery is configured", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-176", stateId: TODO, priority: 1, description: CRITERIA, title: "Dispatch commands" });
+      const out = await runCommand(["start", "STA-176"], h.ctx);
+      expect(out.ok).toBe(true);
+      const inbox = h.workspaces.promptsFor("commander-sta-176");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("No delivery document is configured");
+      expect(inbox[0]).toContain("Search the repository for the document");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a resumed run carries the configured delivery document", async () => {
+    const h = await harness(3, 4, { delivery: "CONTRIBUTING.md" });
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA, title: "Gone commander" });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        stage: "build",
+        review_count: "2",
+        verify_count: "1",
+        commander: "codex",
+        paused: "1",
+      }, { commander: false });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("Project settings: read `CONTRIBUTING.md`");
+      expect(inbox[0]).toContain("This is a resumed run.");
     } finally {
       h.stop();
     }

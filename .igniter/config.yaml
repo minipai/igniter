@@ -24,6 +24,12 @@ blocked_minutes: 20
 # `--port` / `IGNITER_PORT` still override the port portion.
 listen: 127.0.0.1:3457
 
+# Delivery document: the project-settings file the Commander reads at the
+# start of a run (path relative to the repo root). When set, the Commander
+# reads this file directly; when absent, it searches the repo for the
+# document and writes the found path back here.
+delivery: docs/delivery.md
+
 # Linear state display names: igniter's vocabulary on the left, whatever
 # this Linear workspace calls it on the right. Dispatch validates all four
 # at startup.

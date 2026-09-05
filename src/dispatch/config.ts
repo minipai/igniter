@@ -1,5 +1,6 @@
 // Dispatch settings from `.igniter/config.yaml`. Commander run settings
-// live in `docs/delivery.md`; this file never carries them.
+// live in the delivery document named by the `delivery` field; this file
+// never carries them.
 // File-level loading and validation only; Linear-backed checks (status names,
 // project existence) live in claims.ts so they can fail startup with context.
 
@@ -29,6 +30,10 @@ export interface DispatchConfig {
   states: DispatchStates;
   herdrRemote?: string;
   models: DispatchModels;
+  /** Delivery document path relative to the repo root, naming the file the
+   *  Commander reads as its project settings. Absent means the Commander
+   *  searches the repository for the document itself. */
+  delivery?: string;
 }
 
 export const DEFAULT_MAX_RUNNING = 3;
@@ -183,6 +188,7 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     states,
     herdrRemote: optionalText(raw, "herdr_remote"),
     models: parseModels(raw["models"]),
+    delivery: optionalText(raw, "delivery"),
   };
 }
 
@@ -199,5 +205,12 @@ export async function loadDispatchConfig(repoRoot: string): Promise<DispatchConf
   } catch (error) {
     fail(`.igniter/config.yaml is not valid YAML: ${(error as Error).message}`);
   }
-  return parseDispatchConfig(raw);
+  const config = parseDispatchConfig(raw);
+  if (config.delivery !== undefined) {
+    const candidate = `${repoRoot.replace(/\/+$/, "")}/${config.delivery}`;
+    if (!(await Bun.file(candidate).exists())) {
+      fail(`"delivery" names "${config.delivery}" which does not exist under ${repoRoot}`);
+    }
+  }
+  return config;
 }

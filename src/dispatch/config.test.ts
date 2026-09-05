@@ -31,7 +31,20 @@ describe("parseDispatchConfig", () => {
       states: DEFAULT_STATES,
       herdrRemote: undefined,
       models: DEFAULT_MODELS,
+      delivery: undefined,
     });
+  });
+
+  test("accepts a delivery path, defaulting to absent", () => {
+    expect(parseDispatchConfig({ project: "x" }).delivery).toBeUndefined();
+    expect(parseDispatchConfig({ project: "x", delivery: "CONTRIBUTING.md" }).delivery).toBe(
+      "CONTRIBUTING.md",
+    );
+  });
+
+  test("rejects bad delivery values", () => {
+    expect(() => parseDispatchConfig({ project: "x", delivery: "" })).toThrow('"delivery"');
+    expect(() => parseDispatchConfig({ project: "x", delivery: 42 })).toThrow('"delivery"');
   });
 
   test("accepts max_hours and linear_org", () => {
@@ -126,6 +139,22 @@ describe("loadDispatchConfig", () => {
   test("missing file fails with a clear message", async () => {
     const dir = mkdtempSync(join(tmpdir(), "igniter-noconfig-"));
     await expect(loadDispatchConfig(dir)).rejects.toThrow(".igniter/config.yaml not found");
+  });
+
+  test("delivery names a file that must exist under the repo root", async () => {
+    const dir = configDir('project: igniter\ndelivery: CONTRIBUTING.md\n');
+    await expect(loadDispatchConfig(dir)).rejects.toThrow(
+      'config error: "delivery" names "CONTRIBUTING.md"',
+    );
+    writeFileSync(join(dir, "CONTRIBUTING.md"), "# Contributing\n");
+    const config = await loadDispatchConfig(dir);
+    expect(config.delivery).toBe("CONTRIBUTING.md");
+  });
+
+  test("delivery is optional at load", async () => {
+    const dir = configDir("project: igniter\n");
+    const config = await loadDispatchConfig(dir);
+    expect(config.delivery).toBeUndefined();
   });
 });
 

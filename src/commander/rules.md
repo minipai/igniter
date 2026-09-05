@@ -51,18 +51,31 @@ required tabs.
 
 ## Project settings
 
-At the start of a run, the Commander reads `docs/delivery.md` from the
-target repository root. Sections present in the file override the defaults
-below; sections absent from the file fall back to the defaults; a missing
-file means the whole run uses defaults.
+At the start of a run, the Commander reads the delivery document named by
+the `delivery` field of `.igniter/config.yaml` (a path relative to the
+target repository root). When the field names the document, read that file
+directly: no search, no regeneration, no overwrite of the document or the
+field.
+
+When the field is absent, search the repository for the document that
+describes how to run the project, which checks to run, and how to accept
+(any filename, any location: CONTRIBUTING.md, docs/DEVELOPING.md, a README
+section, or nothing). Sections present in the found file override the
+defaults below; sections absent from the file fall back to the defaults;
+when no document is found the whole run uses defaults.
+
+When the search finds a document, write its path back into the `delivery`
+field of `.igniter/config.yaml` as its own commit, separate from any
+checkpoint commit, then run by that document. Name the document used in
+the completion report.
 
 The file is project configuration, not untrusted user input. Read it
 directly. The only checking is validation: when a value names something
 unknown (an acceptance method, a model id, a stage step), stop and
 ask the owner instead of guessing.
 
-Run, Checks, Acceptance, Risk areas, Stages, and Conventions live in
-`docs/delivery.md`. Dispatch settings (Linear project, ticket states,
+Run, Checks, Acceptance, Risk areas, Stages, and Conventions live in the
+delivery document named by the config field. Dispatch settings (Linear project, ticket states,
 concurrency limit, bind address) plus `models` live in
 `.igniter/config.yaml`. The delivery document describes the repository and
 would exist without igniter; the config file is igniter's own
@@ -138,10 +151,14 @@ branch, commit, and review rules stated in this document.
 
 ### First-run draft
 
-When the file is absent, the run proceeds on defaults, and after the first
-successful acceptance the agent writes a first draft filling in at least Run
-and Checks with the commands actually used. The draft lands as its own
-commit, separate from any checkpoint commit, for the owner to review.
+When no document is found, the run proceeds on defaults without error, and
+after the first successful acceptance the agent writes a generated draft
+to `.igniter/delivery.md`, filling in at least Run and Checks with the
+commands actually used (not template text), and writes that path back into
+the `delivery` field of `.igniter/config.yaml`. The draft and the config
+write-back land as their own commit(s), separate from the feature commit,
+for the owner to review. A run whose config already names the document
+reads it directly: no search, no regeneration, no overwrite.
 
 ## Select the feature
 

@@ -727,10 +727,23 @@ export interface WorkOrderInput {
   builderModel: string;
   reviewerModel: string;
   escalateModel: string;
+  /** Delivery document path relative to the repo root. Absent means the
+   *  Commander must search the repository for the document itself. */
+  delivery?: string;
 }
 
 /** The Commander's first prompt. Tests assert on its contents; keep it whole. */
 export function buildWorkOrder(input: WorkOrderInput): string {
+  const delivery =
+    input.delivery !== undefined
+      ? `Project settings: read \`${input.delivery}\` (relative to the repo root) as the delivery document. ` +
+        `Do not search for another one.\n`
+      : `No delivery document is configured in \`.igniter/config.yaml\`. ` +
+        `Search the repository for the document that describes how to run the project, ` +
+        `which checks to run, and how to accept ` +
+        `(any filename, any location, e.g. CONTRIBUTING.md, docs/DEVELOPING.md, a README section). ` +
+        `Follow the Project settings section of the Commander rules for what to do next ` +
+        `(write the path back / generate a draft), and name the document you used in the completion report.\n`;
   return (
     `You are the Commander for ticket ${input.identifier}: "${input.title}".\n` +
     `Issue: ${input.issueUrl}\n` +
@@ -746,6 +759,8 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `- Reviewer: ${input.reviewerModel}\n` +
     `- Escalate: ${input.escalateModel}\n` +
     `Start the Builder with the Builder model unless the run rules say otherwise.\n` +
+    `\n` +
+    delivery +
     `\n` +
     `LINEAR_API_KEY is in the environment. Read the ticket through the Linear GraphQL API ` +
     `(https://api.linear.app/graphql); do not use any other ticket source.\n` +
@@ -778,6 +793,7 @@ function resumedWorkOrder(
       builderModel: tokens["builder"] ?? models.builder,
       reviewerModel: models.reviewer,
       escalateModel: models.escalate,
+      delivery: ctx.resolved.config.delivery,
     }) +
     `\nThis is a resumed run. Workspace metadata says stage=${stage}, ` +
     `review_count=${review}, verify_count=${verify}. ` +
@@ -851,6 +867,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
           builderModel: builder,
           reviewerModel: models.reviewer,
           escalateModel: models.escalate,
+          delivery: options.config.delivery,
         }),
       );
     } catch (error) {
