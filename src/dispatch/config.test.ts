@@ -29,6 +29,7 @@ describe("parseDispatchConfig", () => {
       listenPort: 4180,
       states: DEFAULT_STATES,
       progress: DEFAULT_PROGRESS,
+      targetBranch: "main",
       herdrRemote: undefined,
       commander: DEFAULT_COMMANDER_CONFIG,
       delivery: undefined,
@@ -69,6 +70,16 @@ describe("parseDispatchConfig", () => {
     const config = parseDispatchConfig({ project: "x", max_running: 2, linear_org: "acme" });
     expect(config.maxRunning).toBe(2);
     expect(config.linearOrg).toBe("acme");
+  });
+
+  test("target_branch defaults to main and accepts an override", () => {
+    expect(parseDispatchConfig({ project: "x" }).targetBranch).toBe("main");
+    expect(parseDispatchConfig({ project: "x", target_branch: "trunk" }).targetBranch).toBe("trunk");
+  });
+
+  test("rejects bad target_branch values", () => {
+    expect(() => parseDispatchConfig({ project: "x", target_branch: "" })).toThrow('"target_branch"');
+    expect(() => parseDispatchConfig({ project: "x", target_branch: 42 })).toThrow('"target_branch"');
   });
 
   test("accepts a full file", () => {

@@ -21,7 +21,7 @@ import type { LinearClient, LinearComment, LinearIssue, LinearLabel } from "./li
 import type { ResolvedDispatch, DecisionLog, CommandResult, ClaimSink, ClaimedTicket } from "./claims.ts";
 import { WorkspaceSinkError } from "./claims.ts";
 import type { CommandWorkspaces, SnapshotWorkspace } from "./workspaces.ts";
-import { ticketWorktree, type GitRunner } from "./worktrees.ts";
+import { cleanupTicketCheckout, ticketWorktree, type GitRunner } from "./worktrees.ts";
 import { LinearError } from "./linear.ts";
 
 export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done";
@@ -1314,7 +1314,31 @@ export async function normalizeOwnerMove(
     } catch (error) {
       throw new ProtocolError(`landed but workspace close failed: ${(error as Error).message}`);
     }
-    return { ok: true, text: `done: Deliver+Complete → Done (delivery receipt ${submission} binds ${checkpoint}); workspace closed` };
+    // The Done landing stands whatever happens below: cleanup only
+    // recycles the checkout and never rolls the ticket back. Every
+    // Activity record here is guarded, so even a logging failure cannot
+    // turn this landed Done into a throw.
+    let cleanupNote = "checkout cleanup skipped";
+    try {
+      const cleanup = await cleanupTicketCheckout(deps.git, deps.repoRoot, full.identifier, {
+        checkpoint,
+        targetBranch: deps.resolved.config.targetBranch,
+      });
+      try {
+        await deps.decisions.record(full.identifier, cleanup.detail);
+      } catch {
+        // The detail is lost but the landing stands; the next line still
+        // names the outcome.
+      }
+      cleanupNote = cleanup.ok ? "checkout cleaned" : "checkout kept";
+    } catch (error) {
+      try {
+        await deps.decisions.record(full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
+      } catch {
+        // Logging must never fail a validated Done.
+      }
+    }
+    return { ok: true, text: `done: Deliver+Complete → Done (delivery receipt ${submission} binds ${checkpoint}); workspace closed; ${cleanupNote}` };
   }
   return fail(
     `${full.identifier}: owner moved ${metaStatus} → ${linearStatus}, which matches no approved handoff; ignoring`,

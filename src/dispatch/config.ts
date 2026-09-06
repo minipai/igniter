@@ -56,6 +56,12 @@ export interface DispatchConfig {
   listenPort: number;
   states: DispatchStates;
   progress: DispatchProgress;
+  /**
+   * Branch a delivery lands on. Done-ticket cleanup only removes the
+   * ticket worktree and its local feature branch once the delivered
+   * checkpoint reads back from here. Defaults to "main".
+   */
+  targetBranch: string;
   herdrRemote?: string;
   commander: CommanderConfig;
   /** Delivery document path relative to the repo root, naming the file the
@@ -66,6 +72,8 @@ export interface DispatchConfig {
 
 export const DEFAULT_MAX_RUNNING = 3;
 export const DEFAULT_LINEAR_ORG = "starcoder";
+/** Branch deliveries land on when `target_branch` is absent. */
+export const DEFAULT_TARGET_BRANCH = "main";
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 export const DEFAULT_LISTEN_PORT = 4180;
 export const DEFAULT_STATES: DispatchStates = {
@@ -302,6 +310,7 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     listenPort: port,
     states,
     progress,
+    targetBranch: optionalText(raw, "target_branch") ?? DEFAULT_TARGET_BRANCH,
     herdrRemote: optionalText(raw, "herdr_remote"),
     commander: parseAgents(raw["agents"]),
     delivery: optionalText(raw, "delivery"),

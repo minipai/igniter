@@ -22,6 +22,7 @@ import {
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
 import { FakeWorkspaces } from "./fake-workspaces";
+import { ticketWorktree } from "./worktrees";
 
 const BACKLOG = "st-backlog";
 const TODO = "st-todo";
@@ -750,6 +751,65 @@ describe("owner moves", () => {
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
       expect(h.workspaces.workspaces.find((w) => w.label === "STA-1")!.closed).toBe(true);
       expect(h.lines).toContainEqual(expect.stringContaining("STA-1 done: Deliver+Complete → Done"));
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("completion removes the ticket worktree and branch after landing", async () => {
+    const h = await harness();
+    try {
+      await toReviewComplete(h, "STA-1");
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
+      await watcherOf(h).pollOnce();
+      await wsCmd(h, "STA-1", ["begin"]);
+      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
+      // The checkout the sink opened: listed on the ticket branch, clean,
+      // checkpoint landed on the target branch.
+      const derived = ticketWorktree(h.ctx.repoRoot, "STA-1");
+      h.git.worktreeList =
+        `worktree ${derived.path}\nHEAD ${HEAD}\nbranch refs/heads/${derived.branch}\n`;
+      h.git.branches = [derived.branch];
+      h.git.ancestors = new Set([`${HEAD} main`, `${derived.branch} main`]);
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
+      await watcherOf(h).pollOnce();
+      expect(issueOf(h, "STA-1").labelIds).toEqual([]);
+      expect(h.workspaces.workspaces.find((w) => w.label === "STA-1")!.closed).toBe(true);
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 done: Deliver+Complete → Done"));
+      expect(h.lines).toContainEqual(expect.stringContaining("removed worktree and merged branch"));
+      expect(h.git.worktreeList).not.toContain(derived.path);
+      expect(h.git.branches).not.toContain(derived.branch);
+      for (const cmd of h.git.commands) {
+        expect(cmd.args).not.toContain("--force");
+        expect(cmd.args).not.toContain("-D");
+      }
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("completion keeps a dirty worktree but still lands Done", async () => {
+    const h = await harness();
+    try {
+      await toReviewComplete(h, "STA-1");
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
+      await watcherOf(h).pollOnce();
+      await wsCmd(h, "STA-1", ["begin"]);
+      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
+      const derived = ticketWorktree(h.ctx.repoRoot, "STA-1");
+      h.git.worktreeList =
+        `worktree ${derived.path}\nHEAD ${HEAD}\nbranch refs/heads/${derived.branch}\n`;
+      h.git.branches = [derived.branch];
+      h.git.ancestors = new Set([`${HEAD} main`, `${derived.branch} main`]);
+      h.git.statusPorcelain = " M feature.txt\n";
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
+      await watcherOf(h).pollOnce();
+      expect(issueOf(h, "STA-1").labelIds).toEqual([]);
+      expect(h.workspaces.workspaces.find((w) => w.label === "STA-1")!.closed).toBe(true);
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 done: Deliver+Complete → Done"));
+      expect(h.lines).toContainEqual(expect.stringContaining("uncommitted changes"));
+      expect(h.git.worktreeList).toContain(derived.path);
+      expect(h.git.branches).toContain(derived.branch);
     } finally {
       h.stop();
     }
