@@ -14,10 +14,19 @@ export interface FakeComment {
   body: string;
 }
 
+export interface FakeAttachment {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  url: string;
+  metadata: Record<string, unknown>;
+}
+
 export interface FakeLabel {
   id: string;
   name: string;
   teamId: string;
+  parentId: string | null;
 }
 
 export interface FakeIssue {
@@ -31,6 +40,7 @@ export interface FakeIssue {
   projectId: string;
   labelIds: string[];
   comments: FakeComment[];
+  attachments: FakeAttachment[];
 }
 
 export interface FakeTeam {
@@ -79,12 +89,22 @@ export function standardStates(): FakeState[] {
   return [
     { id: "st-backlog", name: "Backlog", type: "backlog" },
     { id: "st-todo", name: "Todo", type: "unstarted" },
-    { id: "st-ready", name: "Ready to build", type: "unstarted" },
-    { id: "st-building", name: "Building", type: "started" },
-    { id: "st-review", name: "Ready to review", type: "started" },
-    { id: "st-merge", name: "Ready to merge", type: "started" },
+    { id: "st-build", name: "Build", type: "started" },
+    { id: "st-review", name: "Review", type: "started" },
+    { id: "st-deliver", name: "Deliver", type: "started" },
     { id: "st-done", name: "Done", type: "completed" },
     { id: "st-canceled", name: "Canceled", type: "canceled" },
+  ];
+}
+
+/** The Progress label group plus its four labels, as the protocol expects. */
+export function standardProgressLabels(): FakeLabel[] {
+  return [
+    { id: "label-progress", name: "Progress", teamId: "team-1", parentId: null },
+    { id: "label-pending", name: "Pending", teamId: "team-1", parentId: "label-progress" },
+    { id: "label-in-progress", name: "In progress", teamId: "team-1", parentId: "label-progress" },
+    { id: "label-complete", name: "Complete", teamId: "team-1", parentId: "label-progress" },
+    { id: "label-blocked", name: "Blocked", teamId: "team-1", parentId: "label-progress" },
   ];
 }
 
@@ -95,14 +115,15 @@ export function standardWorld(apiKey = "test-key"): FakeLinearWorld {
     statesByTeam: { "team-1": standardStates() },
     projects: [{ id: "proj-1", name: "igniter", slugId: "igniter", teamIds: ["team-1"] }],
     issues: [],
-    labels: [],
+    labels: standardProgressLabels(),
   };
 }
 
-let labelCounter = 0;
+let labelCounter = 100;
 
 let issueCounter = 0;
 let commentCounter = 0;
+let attachmentCounter = 0;
 let clock = 0;
 
 function nextUpdatedAt(): string {
@@ -126,6 +147,7 @@ export function addIssue(
     projectId: issue.projectId ?? "proj-1",
     labelIds: issue.labelIds ?? [],
     comments: issue.comments ?? [],
+    attachments: issue.attachments ?? [],
   };
   world.issues.push(full);
   return full;
@@ -145,6 +167,7 @@ function stateType(world: FakeLinearWorld, teamId: string, stateId: string): str
  * keeps client queries honest about Linear's published types.
  */
 const EXPECTED_VARIABLES: { match: string; vars: Record<string, string>; absent?: string[] }[] = [
+  { match: "attachmentCreate", vars: { input: "AttachmentCreateInput!" } },
   { match: "commentCreate", vars: { issueId: "String!", body: "String!" } },
   { match: "labelIds", vars: { id: "String!", labelIds: "[String!]!" } },
   { match: "issueUpdate", vars: { id: "String!", stateId: "String!" } },
@@ -219,10 +242,55 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
         if (rawBody.includes(world.apiKey)) sawKeyOutsideHeader = true;
         const { query, variables } = JSON.parse(rawBody) as {
           query: string;
-          variables: Record<string, string | number>;
+          variables: Record<string, unknown>;
         };
         const mismatch = variableMismatch(query);
         if (mismatch) return Response.json({ errors: [{ message: mismatch }] });
+
+        if (query.includes("attachmentCreate")) {
+          const input = variables["input"];
+          if (typeof input !== "object" || input === null || Array.isArray(input)) {
+            return Response.json({ errors: [{ message: "input must be an object" }] });
+          }
+          const fields = input as Record<string, unknown>;
+          const issueRef = String(fields["issueId"] ?? "");
+          const url = String(fields["url"] ?? "");
+          const title = String(fields["title"] ?? "");
+          if (!issueRef || !url || !title) {
+            return Response.json({ errors: [{ message: "issueId, url, and title are required" }] });
+          }
+          const issue = world.issues.find((i) => i.id === issueRef)
+            ?? world.issues.find((i) => i.identifier === issueRef);
+          if (!issue) return Response.json({ errors: [{ message: "issue not found" }] });
+          const metadata = (fields["metadata"] !== undefined ? fields["metadata"] : {}) as Record<string, unknown>;
+          const subtitle = fields["subtitle"] !== undefined && fields["subtitle"] !== null
+            ? String(fields["subtitle"])
+            : null;
+          // Like the real API: (issueId, url) is idempotent — a second
+          // create with the same url updates the stored record instead of
+          // adding another one.
+          const existing = issue.attachments.find((a) => a.url === url);
+          if (existing) {
+            existing.title = title;
+            existing.subtitle = subtitle;
+            existing.metadata = { ...(metadata as Record<string, unknown>) };
+            return Response.json({
+              data: { attachmentCreate: { success: true, attachment: { ...existing } } },
+            });
+          }
+          attachmentCounter += 1;
+          const attachment: FakeAttachment = {
+            id: `attachment-${attachmentCounter}`,
+            title,
+            subtitle,
+            url,
+            metadata: { ...(metadata as Record<string, unknown>) },
+          };
+          issue.attachments.push(attachment);
+          return Response.json({
+            data: { attachmentCreate: { success: true, attachment: { ...attachment } } },
+          });
+        }
 
         if (query.includes("commentCreate")) {
           if (world.failNextComment) {
@@ -262,7 +330,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
           const name = String(variables["name"]);
           const teamId = String(variables["teamId"]);
           labelCounter += 1;
-          const label = { id: `label-${labelCounter}`, name, teamId };
+          const label = { id: `label-${labelCounter}`, name, teamId, parentId: null as string | null };
           world.labels.push(label);
           return Response.json({ data: { issueLabelCreate: { success: true, issueLabel: label } } });
         }
@@ -274,6 +342,20 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
             .slice(0, 1)
             .map((l) => ({ id: l.id, name: l.name }));
           return Response.json({ data: { issueLabels: { nodes } } });
+        }
+
+        if (query.includes("attachments") && !query.includes("attachmentCreate")) {
+          const byId = world.issues.find((i) => i.id === variables["id"]);
+          const issue = byId ?? world.issues.find((i) => i.identifier === variables["id"]);
+          if (!issue) return Response.json({ data: { issue: null } });
+          return Response.json({
+            data: {
+              issue: {
+                id: issue.id,
+                attachments: { nodes: issue.attachments.map((a) => ({ ...a })) },
+              },
+            },
+          });
         }
 
         if (query.includes("issue(")) {
@@ -311,7 +393,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
         if (query.includes("issues(")) {
           const nodes = world.issues
             .filter((i) => i.projectId === variables["projectId"] && i.stateId === variables["stateId"])
-            .map((i) => shape(i, world));
+            .map((i) => ({ ...shape(i, world), labels: { nodes: labelNodes(i, world) } }));
           return Response.json({ data: { issues: { nodes } } });
         }
 
@@ -319,6 +401,29 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
           const teamId = String(variables["teamId"]);
           const states = world.statesByTeam[teamId];
           if (!states) return Response.json({ data: { team: null } });
+          if (query.includes("labels")) {
+            return Response.json({
+              data: {
+                team: {
+                  id: teamId,
+                  labels: {
+                    nodes: world.labels
+                      .filter((l) => l.teamId === teamId || l.teamId === "")
+                      .map((l) => ({
+                        id: l.id,
+                        name: l.name,
+                        parent: l.parentId
+                          ? (() => {
+                            const parent = world.labels.find((p) => p.id === l.parentId);
+                            return parent ? { id: parent.id, name: parent.name } : null;
+                          })()
+                          : null,
+                      })),
+                  },
+                },
+              },
+            });
+          }
           return Response.json({ data: { team: { id: teamId, states: { nodes: states } } } });
         }
 
@@ -362,6 +467,13 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
     },
     stop: () => server.stop(),
   };
+}
+
+function labelNodes(issue: FakeIssue, world: FakeLinearWorld): { id: string; name: string }[] {
+  return issue.labelIds
+    .map((id) => world.labels.find((l) => l.id === id))
+    .filter((l) => l !== undefined)
+    .map((l) => ({ id: l.id, name: l.name }));
 }
 
 function shape(issue: FakeIssue, world: FakeLinearWorld) {

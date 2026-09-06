@@ -12,6 +12,7 @@ import {
   defaultHost,
   readActivityTail,
   validateStartup,
+  type CommandCallOptions,
   type CommandResult,
   type DispatchApi,
 } from "../dispatch/claims";
@@ -23,14 +24,16 @@ import { FakeGit } from "../dispatch/fake-git";
 import { FakeWorkspaces } from "../dispatch/fake-workspaces";
 import { startServer } from "./serve";
 
-const READY = "st-ready";
-const BUILDING = "st-building";
 const TODO = "st-todo";
+const BUILD = "st-build";
+const PENDING = "label-pending";
+const IN_PROGRESS = "label-in-progress";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 
 interface Served {
   base: string;
   world: ReturnType<typeof standardWorld>;
+  workspaces: FakeWorkspaces;
   stop: () => void;
 }
 
@@ -46,18 +49,13 @@ async function serve(): Promise<Served> {
   const logPath = join(dir, "dispatch.log");
   const decisions = createDispatchLog(logPath, () => {});
   const workspaces = new FakeWorkspaces();
-  const sink = createWorkspaceSink({
-    workspaces,
-    config: resolved.config,
-    repoRoot: dir,
-    readApiKey: () => "test-key",
-    runGit: new FakeGit(),
-  });
-  const watcher = new Watcher({ client, resolved, host: "h", decisions, workspaces, sink });
+  const git = new FakeGit();
+  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot: dir, runGit: git });
+  const watcher = new Watcher({ client, resolved, host: "h", decisions, workspaces, sink, git, repoRoot: dir });
   const api: DispatchApi = {
     queue: () => ({ lastPollAt: watcher.lastPollAt, order: watcher.lastQueue }),
     activity: (limit) => readActivityTail(logPath, limit),
-    command: (argv: string[]): Promise<CommandResult> =>
+    command: (argv: string[], options: CommandCallOptions = {}): Promise<CommandResult> =>
       runCommand(argv, {
         client,
         resolved,
@@ -66,13 +64,15 @@ async function serve(): Promise<Served> {
         workspaces,
         sink,
         repoRoot: dir,
+        git,
         lastPollAt: () => watcher.lastPollAt,
-      }),
+      }, options),
   };
   const server = startServer({ port: 0, dispatch: api });
   return {
     base: `http://localhost:${server.port}`,
     world,
+    workspaces,
     stop: () => {
       server.stop();
       fake.stop();
@@ -80,11 +80,15 @@ async function serve(): Promise<Served> {
   };
 }
 
-async function postCommand(base: string, argv: string[]): Promise<{ status: number; payload: { ok: boolean; text: string; data?: unknown } }> {
+async function postCommand(
+  base: string,
+  argv: string[],
+  options: CommandCallOptions = {},
+): Promise<{ status: number; payload: { ok: boolean; text: string; data?: unknown } }> {
   const res = await fetch(`${base}/api/command`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ argv }),
+    body: JSON.stringify({ argv, ...options }),
   });
   return { status: res.status, payload: (await res.json()) as { ok: boolean; text: string; data?: unknown } };
 }
@@ -93,7 +97,7 @@ describe("POST /api/command", () => {
   test("status, start, pause, and resume round-trip through HTTP", async () => {
     const served = await serve();
     try {
-      addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA });
+      addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
 
       const started = await postCommand(served.base, ["start", "STA-1"]);
       expect(started.status).toBe(200);
@@ -120,6 +124,38 @@ describe("POST /api/command", () => {
     }
   });
 
+  test("workspace commands round-trip with a workspace id and stdin input", async () => {
+    const served = await serve();
+    try {
+      addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      await postCommand(served.base, ["start", "STA-1"]);
+      const wsId = served.workspaces.workspaces[0]!.workspaceId;
+
+      const state = await postCommand(served.base, ["state", "--json"], { workspaceId: wsId });
+      expect(state.payload.ok).toBe(true);
+      expect(state.payload.text).toContain('"status": "build"');
+
+      // No workspace id: refused, never a dispatch command.
+      const naked = await postCommand(served.base, ["begin"]);
+      expect(naked.payload.ok).toBe(false);
+      expect(naked.payload.text).toContain("Herdr workspace only");
+
+      const blocked = await postCommand(served.base, ["block", "--reason", "waiting"], { workspaceId: wsId });
+      expect(blocked.payload.ok).toBe(true);
+      expect(served.world.issues[0]!.labelIds).toEqual(["label-blocked"]);
+
+      const unblocked = await postCommand(served.base, ["unblock"], { workspaceId: wsId });
+      expect(unblocked.payload.ok).toBe(true);
+
+      const begun = await postCommand(served.base, ["begin"], { workspaceId: wsId });
+      expect(begun.payload.ok).toBe(true);
+      expect(served.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      void BUILD;
+    } finally {
+      served.stop();
+    }
+  });
+
   test("refusals answer ok:false with text", async () => {
     const served = await serve();
     try {
@@ -136,9 +172,9 @@ describe("POST /api/command", () => {
       expect(sloppy.status).toBe(400);
       expect(((await sloppy.json()) as { ok: boolean }).ok).toBe(false);
 
-      addIssue(served.world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
-      addIssue(served.world, { identifier: "STA-2", stateId: BUILDING, priority: 1, description: CRITERIA });
-      addIssue(served.world, { identifier: "STA-3", stateId: TODO, priority: 1, description: CRITERIA });
+      addIssue(served.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      addIssue(served.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      addIssue(served.world, { identifier: "STA-3", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const full = await postCommand(served.base, ["start", "STA-3"]);
       expect(full.payload.ok).toBe(false);
       expect(full.payload.text).toContain("max_running");
@@ -150,7 +186,7 @@ describe("POST /api/command", () => {
   test("GET /api/queue and /api/activity still work", async () => {
     const served = await serve();
     try {
-      addIssue(served.world, { identifier: "STA-1", stateId: READY, priority: 1, description: CRITERIA });
+      addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const before = (await (await fetch(`${served.base}/api/queue`)).json()) as {
         lastPollAt: null;
         order: unknown[];
@@ -159,7 +195,7 @@ describe("POST /api/command", () => {
 
       await postCommand(served.base, ["start", "STA-1"]);
       const activity = (await (await fetch(`${served.base}/api/activity?limit=10`)).json()) as { lines: string[] };
-      expect(activity.lines[0]).toMatch(/STA-1 claimed: Ready to build → Building \(slot 0\)/);
+      expect(activity.lines[0]).toMatch(/STA-1 claimed: Todo → Build \(slot 0\)/);
     } finally {
       served.stop();
     }

@@ -80,7 +80,6 @@ function boardFixture(options: FixtureOptions = {}) {
     host: "minipc",
     usedSlots: 2,
     maxRunning: 3,
-    maxHours: 4,
     linearOrg: "starcoder",
     lastPollAt: options.lastPollAt ?? new Date(Date.now() - 12_000).toISOString(),
     needsYou: approvals.length,

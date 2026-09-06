@@ -14,6 +14,8 @@ export class FakeGit implements GitRunner {
   worktreeList = "";
   /** Branches `rev-parse --verify refs/heads/<branch>` answers for. */
   branches: string[] = [];
+  /** HEAD sha served for `git rev-parse HEAD` in any cwd. */
+  head = "abc123def456";
   /** Methods (first arg) that fail, e.g. ["worktree"]. */
   failOn: string[] = [];
   failMessage = "fatal: fake git exploded";
@@ -28,6 +30,7 @@ export class FakeGit implements GitRunner {
     }
     if (args[0] === "rev-parse") {
       const ref = String(args[args.length - 1]);
+      if (ref === "HEAD") return { stdout: `${this.head}\n`, stderr: "" };
       const branch = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
       if (this.branches.includes(branch)) return { stdout: "abc123\n", stderr: "" };
       throw new Error(`fatal: Needed a single revision: ${ref}`);

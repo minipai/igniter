@@ -59,7 +59,7 @@ change.
 No pull requests. Review happens through diffwalk: capture the ticket commit
 with `diffwalk inspect`, author the explanations, run `diffwalk check`, then
 `diffwalk publish` and put the printed link on the Linear issue. Once the
-owner moves the ticket to Ready to merge, rebase the commit onto local `main`.
+owner moves the ticket to Deliver, rebase the commit onto local `main`.
 Do not push; the owner pushes. `.diffwalk/` stays out of git.
 
 ## Acceptance evidence

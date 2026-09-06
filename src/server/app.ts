@@ -84,14 +84,23 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       } catch {
         return json({ ok: false, text: "expected a JSON body { argv: string[] }" }, 400);
       }
-      const argv = typeof body === "object" && body !== null
-        ? (body as Record<string, unknown>)["argv"]
+      const record = typeof body === "object" && body !== null
+        ? (body as Record<string, unknown>)
         : undefined;
+      const argv = record?.["argv"];
       if (!Array.isArray(argv) || !argv.every((entry): entry is string => typeof entry === "string")) {
         return json({ ok: false, text: "expected a JSON body { argv: string[] }" }, 400);
       }
+      const workspaceId = record?.["workspaceId"];
+      if (workspaceId !== undefined && typeof workspaceId !== "string") {
+        return json({ ok: false, text: "workspaceId must be a string" }, 400);
+      }
+      const input = record?.["input"];
+      if (input !== undefined && typeof input !== "string") {
+        return json({ ok: false, text: "input must be a string" }, 400);
+      }
       try {
-        const out = await dispatch.command(argv);
+        const out = await dispatch.command(argv, { workspaceId, input });
         return json({ ok: out.ok, text: out.text, ...(out.data !== undefined ? { data: out.data } : {}) });
       } catch (error) {
         const message = (error as Error).message;

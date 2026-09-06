@@ -45,7 +45,6 @@ interface BoardData {
   host: string;
   usedSlots: number;
   maxRunning: number;
-  maxHours: number;
   linearOrg: string;
   lastPollAt: string | null;
   needsYou: number;
@@ -292,7 +291,7 @@ function TicketStage(props: {
           <div class="blockbar-text">
             <div class="lab">Quiet for {fmtQuietAge(props.ticket.stageAgeMs)}</div>
             <p class="ask">{props.ticket.panes.commander.name} isn't blocked — it just isn't moving</p>
-            <p class="from">stalled, not failed — the workspace stays open; only max_hours counts as failure</p>
+            <p class="from">stalled, not failed — the workspace stays open; park it with block when it needs a person</p>
           </div>
           <div class="acts">
             <button class="btn" data-size="sm" type="button" disabled title="Pane takeover ships with STA-165">

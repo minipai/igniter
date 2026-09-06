@@ -10,11 +10,11 @@ Deliver exactly one feature through this workflow:
 ```text
 Commander
   ↓
-project settings + plan + feature branch
+project settings + work order + workspace commands
   ↓
 Builder — Herdr tab
   ↓
-implementation + checks + self-acceptance
+implementation + checks + self-acceptance + build submit
   ↓
 checkpoint commit
   ↓
@@ -22,7 +22,7 @@ Linear review phase
   ↓
 Acceptance agent — separate Herdr tab
   ↓
-independent black-box acceptance + Linear receipt
+independent black-box acceptance + review submit
   ↓
 Builder fixes failed criteria + follow-up commit(s)
   ↓
@@ -137,13 +137,13 @@ pauses and the decision goes to the owner.
 Steps to skip or add, for example `skip: review`, `skip: recording`, or
 `after acceptance: deploy staging`.
 
-Default: no skips and no added steps. The five stages themselves — plan,
-build, verify, acceptance, delivered — always run and can never be skipped;
-only steps inside them can be skipped or added.
+Default: no skips and no added steps. The run always goes through build,
+independent acceptance, and delivery; only steps inside them can be skipped
+or added.
 
 - `skip: review` retains its existing spelling but means no independent
   Acceptance agent tab is started. The Commander performs the same black-box
-  verification itself, and the workspace metadata keeps `review_count=0`.
+  verification itself.
 - `skip: recording` means acceptance runs without a recording, and the
   completion report names the project configuration as the reason.
 
@@ -175,48 +175,46 @@ unfinished item from the repository's active task source.
 
 Inspect the current branch and working tree and preserve unrelated user work.
 
-## Plan
+## Workspace commands
 
-As the first action of this stage, run `igniter stage plan`.
+The ticket's machine state lives in Linear (status plus Progress), and the
+only way to read or move it is the workspace commands. They reach the
+dispatch server; never call Linear directly, never use MCP, and never write
+a Linear receipt by hand. The server picks the submit schema from the
+Linear status; the payload kind only rejects wrong data.
 
-For a non-trivial feature, inspect enough of the existing implementation to
-identify the relevant system boundaries, likely integration points, and
-important risks. Name the risk areas the plan touches; when any of them
-matches a listed Risk area, say so in the plan.
+- `igniter state --json` reads the ticket once: identifier, title,
+  description, observable acceptance criteria, status, Progress,
+  checkpoint, latest receipt identity, the legal next commands, and the
+  current stage's submit schema. It is the only ticket read and the first
+  action of every run, retry, and recovery.
+- `igniter begin` moves the current Progress from Pending to In progress.
+  The status never changes. The first claim already lands in Build +
+  In progress, so the Builder never begins first; Review, Deliver, and a
+  sent-back Build do.
+- `igniter submit --input -` reads versioned JSON on stdin:
+  - Build: checkpoint, required checks, per-criterion self-acceptance, and
+    reproduction steps. Lands in Review + Pending. The receipt proves a
+    version was delivered for acceptance, never that it passed.
+  - Review PASS: per-criterion expected, actual, evidence, and environment.
+    Lands in Review + Complete. Only a complete PASS with evidence for every
+    criterion produces Complete.
+  - Review FAIL: the same reproducible failures with evidence. Returns to
+    Build + Pending.
+  - Deliver: checkpoint, commit lineage, merge preparation, and the steps
+    still left for the owner. Lands in Deliver + Complete.
+- `igniter block --reason "<phrase>"` keeps the status, moves Progress to
+  Blocked with the reason, and frees a Build slot. Blocked is an external
+  condition, never an acceptance verdict.
+- `igniter unblock` returns from Blocked to Pending and clears the reason.
+  It never jumps straight to In progress; the agent begins again.
 
-Prepare the Builder plan with this template:
-
-```text
-## Goal
-
-Describe the observable behavior that should change.
-
-## Relevant system areas
-
-Identify the components, state boundaries, services, data flows, or
-integration points likely involved.
-
-## Approach
-
-Describe the intended implementation direction at a high level. Focus on how
-the relevant system areas should connect or change. Leave exact files, code
-structure, and implementation details to the Builder.
-
-## Risks
-
-List the important failure modes, lifecycle issues, compatibility concerns,
-races, or assumptions the Builder should verify.
-
-## Acceptance
-
-List the concrete conditions that must be true when the feature is complete.
-```
-
-Keep the plan short enough to guide implementation without replacing the
-Builder's own investigation.
-
-Provide direction and likely implementation strategy; leave exact
-implementation decisions to the Builder.
+The owner moves the ticket in Linear directly: from Review + Complete to
+Deliver for approval (or back to Build to send back), and from Deliver +
+Complete to Done once the change has truly landed. Dispatch normalizes the
+Progress on each move and refuses anything the current receipt does not
+cover. A new checkpoint invalidates older approvals: after any new commit,
+the run submits build again before acceptance can pass.
 
 ## Feature branch
 
@@ -227,7 +225,9 @@ never create another branch or worktree. Keep implementation and acceptance
 correction commits for the feature on this branch.
 
 A resumed run reuses the same worktree with its checkpoint commits intact:
-read `git diff` and the branch log before writing anything.
+read `git diff` and the branch log before writing anything. Run
+`igniter state --json` first and continue from the status, Progress, and
+checkpoint it reports.
 
 Never reset, clean, discard, or overwrite unrelated user work. If the
 worktree prevents safe work, surface the conflict to the owner.
@@ -244,45 +244,10 @@ Create tabs without stealing focus and retain the IDs of tabs created by
 this workflow.
 
 If separate Builder and Acceptance agent tabs cannot be created, stop because the
-required workflow topology is unavailable, then report the stop with
-`igniter stage failed --reason "<short phrase>"`.
-
-## Workspace metadata
-
-At every stage transition, the Commander reports the step with the
-igniter CLI as its first action, so the runner and the board know
-which ticket is at which step without parsing terminal output. The
-command resolves the ticket itself and always reports under source
-`igniter`; each call site below only names the step:
-
-- `igniter stage <plan|build|verify|acceptance|failed>` writes that
-  exact stage. `failed` requires `--reason "<phrase>"`; `acceptance`
-  closes the Commander's run with owner acceptance pending.
-- `igniter stage verify` increments `verify_count` once per
-  independent acceptance attempt. `igniter stage build` starts with
-  `review_count=0`; every later build entry increments this legacy counter
-  when the Builder returns to correct a failed acceptance criterion. The key
-  name is retained for compatibility and is not an Acceptance agent budget.
-  These commands count calls, so they are not idempotent: report a
-  stage exactly once on entering it. Two consecutive `igniter stage
-  build` calls mean the run entered build twice.
-- `igniter stage pause --reason "<phrase>"` parks the run for an owner
-  decision and `igniter stage resume` clears the park when the run
-  continues. The stage stays where the run stopped.
-- The Commander never reports `delivered`: after the owner accepts,
-  the runner reports that.
-
-The Builder token count is attached when STA-159's
-`scripts/opencode-session-usage.sh` is present; its absence is not an
-error. Outside Herdr the command is a silent no-op.
-
-`review_count` and `verify_count` are cumulative across Owner Send
-backs: they describe the ticket's history, not the current run. Never
-use them as limits or as proof that an acceptance attempt occurred.
+required workflow topology is unavailable, then park the ticket with
+`igniter block --reason "<short phrase>"`.
 
 ## Builder
-
-As the first action of this stage, run `igniter stage build`.
 
 Create the Builder tab first. Start its agent as
 `builder-<ticket>` so the board can match the pane to the ticket.
@@ -297,9 +262,8 @@ OpenCode as the Builder harness.
 
 Take the Builder id from the work order, then verify that
 OpenCode lists that model id before creating the Builder tab. If it
-is unavailable, stop and report that instead of silently substituting
-another model, then report the stop with
-`igniter stage failed --reason "<short phrase>"`.
+is unavailable, stop and park the ticket with
+`igniter block --reason "<short phrase>"`.
 
 ### Builder permission prompts
 
@@ -322,9 +286,6 @@ Ask the owner before approving broader filesystem access, writes outside the
 target repository, credential or secret access, destructive actions, or
 unrelated network access. Never start Builder with OpenCode `--auto`.
 
-Outside the pre-authorized scope above, never answer an approval on the
-run's behalf: pause and hand the screen to the Owner (see Run limits).
-
 When delegating to the Builder, provide:
 
 - the feature request;
@@ -340,6 +301,8 @@ Require the Builder to:
 - run appropriate tests and repository-required checks;
 - exercise every observable acceptance criterion through the real UI, CLI,
   or public API named by the project settings;
+- submit the build receipt with `igniter submit --input -` (checkpoint,
+  checks, per-criterion self-acceptance, reproduction steps);
 - fix failures found during that self-acceptance;
 - inspect the final diff;
 - create a local checkpoint commit when the implementation is ready for
@@ -358,6 +321,9 @@ Let the Builder own detailed investigation and implementation choices.
 Allow it an uninterrupted implementation turn while it remains responsive
 and on scope.
 
+The Builder's evidence is self-acceptance, never an independent approval:
+only the Acceptance agent's PASS receipt moves the ticket to Review + Complete.
+
 ## Builder restart
 
 When dispatch says to restart the Builder with a new model
@@ -370,7 +336,8 @@ without losing the run:
    warning: the work tree may be half-changed and uncommitted, so the new
    Builder must read `git diff` first to see what the previous Builder
    already did before writing anything.
-4. Continue from the current stage; do not restart from plan.
+4. Continue from the current status and Progress; run `igniter state --json`
+   first instead of restarting the feature.
 
 A provider-quota model switch (see Run limits) follows these same steps:
 it is a continuation, not a failure.
@@ -382,9 +349,10 @@ Start independent acceptance only after the Builder reports that it has:
 1. completed implementation;
 2. completed tests and required checks;
 3. exercised every observable acceptance criterion through the public path;
-4. recorded self-acceptance results and exact reproduction instructions;
-5. inspected the final diff; and
-6. created the checkpoint commit.
+4. submitted the build receipt and landed in Review + Pending;
+5. recorded self-acceptance results and exact reproduction instructions;
+6. inspected the final diff; and
+7. created the checkpoint commit.
 
 Treat that commit as the exact acceptance snapshot.
 
@@ -396,39 +364,25 @@ and tests intended for acceptance are represented by committed changes.
 
 Before starting independent acceptance, compare the committed diff against the
 Risk areas paths from the project settings. When the diff touches a listed
-path, pause the run and hand the decision to the owner instead of starting
-acceptance:
-
-```bash
-igniter stage pause --reason "risk path <path>"
-```
+path, park the run with `igniter block --reason "risk path <path>"` and hand
+the decision to the owner instead of starting acceptance.
 
 When the owner decides and the run continues, clear the park with
-`igniter stage resume`.
+`igniter unblock` followed by `igniter begin`.
 
-After the Builder handoff and any Risk area decision are complete, the
-Commander moves the Linear issue to the configured review state. Projects that
-name workflow states by phase use `Review`; the state means the checkpoint is
-in the review phase, not that the Acceptance agent or Owner has approved it.
-This transition is the Builder's delivery signal. Keep the issue in that state
-while the agent tests and while the Owner considers a passing result.
+After the Builder handoff, the ticket sits in Review + Pending: the
+Builder's delivery signal. The Builder submit moved it there. Keep the
+issue in that state while the agent tests and while the Owner considers a
+passing result.
 
-## Optional code audit
-
-There is no code audit by default. When a Risk area pauses the run, the Owner
-may explicitly request one bounded read-only audit of the committed checkpoint.
-Project settings may also require such an audit. Only that optional auditor may
-inspect source files, git history, or the diff. It is separate from independent
-acceptance and never expands into automatic audit rounds.
-
-When an audit reports a security, data-integrity, or acceptance-blocking defect,
-pause for the Owner to choose whether the Builder corrects it. A corrected
-checkpoint must still pass independent black-box acceptance.
+There is no code audit by default. Only the Owner may explicitly request a
+bounded read-only look at the committed checkpoint, and that look never
+substitutes for black-box acceptance.
 
 ## Independent acceptance
 
-As the first action of every acceptance attempt, run `igniter stage verify`.
-Create the Acceptance agent in a separate Herdr tab unless project settings say
+Run `igniter begin` first so the ticket reads Review + In progress, then
+create the Acceptance agent in a separate Herdr tab unless project settings say
 `skip: review`; the existing agent name remains `reviewer-<ticket>` so the board
 can match the pane to the ticket.
 
@@ -458,31 +412,26 @@ captured evidence. Implementation guesses, architecture advice, file-and-line
 findings, and hypothetical failures are not acceptance findings. Environment or
 tool failures are reported separately and do not fail a product criterion.
 
-The agent produces the evidence required by the Acceptance settings and ends a
-complete report with `ACCEPTANCE_COMPLETE`. Herdr `done` means only that the
-agent's current turn ended; without the complete report and marker, inspect its
-output and request the specific missing result instead of treating the task as
-complete or sending a generic `continue`.
+The agent submits its verdict with `igniter submit --input -` as a review
+receipt: one result per criterion with expected, actual, evidence, and
+environment. A PASS with complete evidence lands the ticket in Review +
+Complete; a FAIL with reproducible evidence returns it to Build + Pending.
+The agent ends a complete report with `ACCEPTANCE_COMPLETE`. Herdr `done`
+means only that the agent's current turn ended; without the complete report
+and marker, inspect its output and request the specific missing result instead
+of treating the task as complete or sending a generic `continue`.
 
-After a complete attempt, post one ordinary Markdown Linear comment using the
-exact heading `Agent acceptance: PASS` or `Agent acceptance: FAIL`, followed by
-the checkpoint commit, one result per criterion, evidence locations, and any
-environment failure. This fixed text format is the durable human-readable Agent
-receipt; Linear does not provide a comment schema for it. Read the comment back
-after publishing and verify that its checkpoint and result are intact.
+After a complete attempt, the review receipt is an ordinary Markdown Linear
+comment using the exact heading `Agent acceptance: PASS` or
+`Agent acceptance: FAIL`, followed by the checkpoint commit, one result per
+criterion, evidence locations, and any environment failure. This fixed text
+format is the durable human-readable Agent receipt; Linear does not provide
+a comment schema for it. Read the comment back after publishing and verify
+that its checkpoint and result are intact.
 
-For a passing receipt, run `igniter stage acceptance` after the comment is
-verified. The workspace `stage=acceptance` plus `owner_pending=1` is the live
-machine signal that the Agent finished and the Owner is next; the Linear issue
-remains in the configured review state. A receipt applies only to its named
-checkpoint. Any later feature change invalidates it and requires another
-acceptance attempt.
-
-When the project has review-handoff label automation, a verified pass applies
-`Awaiting owner` as the human-visible signal. Apply it only after the receipt
-and workspace metadata are durable, and clear it whenever the checkpoint
-changes or the issue leaves the review state. Do not use `Done` or `Passed` for
-this handoff: those names hide whether the Agent or the Owner finished.
+A receipt applies only to its named checkpoint. Any later feature change
+invalidates it and requires another build submit plus another acceptance
+attempt.
 
 When project settings say `skip: review`, the Commander follows this exact
 black-box protocol itself. A clean attempt reports every criterion as passed;
@@ -490,19 +439,18 @@ it does not perform a compensating source review.
 
 ## Acceptance failures and corrections
 
-Send only reproducible failed criteria back to the original Builder. Before the
-Builder starts corrections, move the Linear issue back to the configured
-building state and re-enter build with `igniter stage build`. Require the
-Builder to fix those failures, update tests when appropriate, rerun required
-checks and self-acceptance, inspect the diff, and create follow-up commits. A
-new complete Builder handoff moves the issue to the configured review state
-again.
+Send only reproducible failed criteria back to the original Builder. Before
+the Builder starts corrections, the ticket is already back in Build +
+Pending from the FAIL receipt. Require the Builder to fix those failures,
+update tests when appropriate, rerun required checks and self-acceptance,
+submit a new build receipt, inspect the diff, and create follow-up commits.
+A new complete Builder handoff lands the issue in Review + Pending again.
 
-On the new checkpoint, start another acceptance attempt with `igniter stage
-verify`. Recheck the failed criteria plus a short smoke check of previously
-passing critical behavior; do not reopen passed criteria for exploratory
-testing. Continue while the Builder makes relevant progress. There is no
-acceptance round budget.
+On the new checkpoint, the Acceptance agent begins again and submits
+another review receipt. Recheck the failed criteria plus a short smoke check
+of previously passing critical behavior; do not reopen passed criteria for
+exploratory testing. Continue while the Builder makes relevant progress.
+There is no acceptance round budget.
 
 A failure of an original acceptance criterion belongs to the current ticket.
 Never turn it into a follow-up ticket and mark the current feature accepted.
@@ -511,29 +459,24 @@ Only the Owner may explicitly waive or change a criterion.
 ## Run limits
 
 Run limits stop broken automation; they never decide whether the feature is
-accepted. `review_count`, `verify_count`, and token metadata are observability,
-not quality gates.
+accepted. There are no round budgets, counters, or token reports.
 
 - **Time.** Use bounded waits for agent prompts. On timeout, read the pane first;
   stop only when it is genuinely stalled, not merely because Herdr reported
   `done`, `blocked`, or an expired wait.
-- **Progress.** Stop with `igniter stage failed --reason "no progress"` when the
+- **Progress.** Park with `igniter block --reason "no progress"` when the
   same observable acceptance failure remains after two relevant correction
   attempts, or when two correction attempts produce no relevant behavior or
   diff change. Report the failed criterion and evidence.
-- **Tokens.** Use `scripts/opencode-session-usage.sh <repo path> <since ms>` when
-  present. Stop with `igniter stage failed --reason "token limit"` when input
-  exceeds 2M tokens or compactions reach 2; this reports an automation limit,
-  not a product failure.
 - **Scope.** When the committed diff exceeds 500 lines or touches an unplanned
-  system area, pause with `igniter stage pause --reason "scope <what grew>"` and
+  system area, park with `igniter block --reason "scope <what grew>"` and
   wait for the Owner. Do not shrink scope or continue unilaterally.
 - **Quota.** Provider quota is not a ticket failure. Restart the Builder with the
   same model on its paid channel, then `models.escalate`, preserving the current
-  tree and stage. If no configured model is available, stop and name the
+  tree and checkpoint. If no configured model is available, stop and name the
   infrastructure failure.
 - **Approvals.** Never answer an approval outside the Builder's pre-authorized
-  scope. Pause with `igniter stage pause --reason "<what needs approval>"` and
+  scope. Park with `igniter block --reason "<what needs approval>"` and
   hand the screen to the Owner.
 
 After independent acceptance passes, the Commander confirms required checks,
@@ -601,13 +544,19 @@ produced.
 After the verified passing Agent receipt:
 
 1. Keep the feature pending until the owner reviews the evidence and
-   confirms success by moving the Linear issue from the configured review
-   state to `Ready to merge`. That transition is the Owner receipt.
-2. Update local task state afterward when applicable.
+   confirms success by moving the Linear issue from Review + Complete to
+   Deliver. That move is the Owner receipt.
+2. Run the deliver submit (`igniter begin`, then the deliver receipt) so the
+   ticket reads Deliver + Complete with its lineage and remaining owner steps.
+3. Keep the feature pending again until the owner confirms the change has
+   truly landed (push, deploy) by moving the issue to Done. That second
+   move closes the run, clears Progress, and closes the workspace.
+4. Update local task state afterward when applicable.
 
 Do not land a ticket whose latest passing Agent receipt names a different
-checkpoint or is missing. If the Owner requests changes, return to Building,
-invalidate the receipt, and repeat Builder handoff and independent acceptance.
+checkpoint or is missing. If the Owner requests changes, the send-back
+returns the ticket to Build + Pending, the receipt is invalidated, and the
+run repeats Builder handoff and independent acceptance.
 
 Checkpoint commits and Acceptance agent results are not owner acceptance.
 
@@ -633,10 +582,10 @@ Report:
 - checkpoint and correction commits;
 - Builder self-acceptance results;
 - independent acceptance results for every criterion and any corrections;
-- any optional code audit requested by the Owner and its outcome;
 - model switches: the original model, the replacement, and whether the
   reason was quota or complexity;
-- the run limit or failed criterion that stopped automation, when applicable;
+- the receipt per stage (build, review PASS/FAIL, deliver) with its
+  checkpoint and submission identity;
 - checks completed;
 - validated evidence and its published location, or the reason
   recording was unavailable;

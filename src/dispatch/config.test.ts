@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DEFAULT_MODELS,
+  DEFAULT_PROGRESS,
   DEFAULT_STATES,
   loadDispatchConfig,
   parseDispatchConfig,
@@ -23,15 +24,32 @@ describe("parseDispatchConfig", () => {
       project: "igniter",
       team: undefined,
       maxRunning: 3,
-      maxHours: 4,
-      blockedMinutes: 20,
       linearOrg: "starcoder",
       listenHost: "127.0.0.1",
       listenPort: 4180,
       states: DEFAULT_STATES,
+      progress: DEFAULT_PROGRESS,
       herdrRemote: undefined,
       models: DEFAULT_MODELS,
       delivery: undefined,
+    });
+  });
+
+  test("defaults name the six statuses and the Progress group", () => {
+    expect(DEFAULT_STATES).toEqual({
+      backlog: "Backlog",
+      todo: "Todo",
+      build: "Build",
+      review: "Review",
+      deliver: "Deliver",
+      done: "Done",
+    });
+    expect(DEFAULT_PROGRESS).toEqual({
+      group: "Progress",
+      pending: "Pending",
+      in_progress: "In progress",
+      complete: "Complete",
+      blocked: "Blocked",
     });
   });
 
@@ -47,27 +65,10 @@ describe("parseDispatchConfig", () => {
     expect(() => parseDispatchConfig({ project: "x", delivery: 42 })).toThrow('"delivery"');
   });
 
-  test("accepts max_hours and linear_org", () => {
-    const config = parseDispatchConfig({ project: "x", max_hours: 1.5, linear_org: "acme" });
-    expect(config.maxHours).toBe(1.5);
+  test("accepts max_running and linear_org", () => {
+    const config = parseDispatchConfig({ project: "x", max_running: 2, linear_org: "acme" });
+    expect(config.maxRunning).toBe(2);
     expect(config.linearOrg).toBe("acme");
-  });
-
-  test("accepts blocked_minutes, defaulting to 20", () => {
-    expect(parseDispatchConfig({ project: "x" }).blockedMinutes).toBe(20);
-    expect(parseDispatchConfig({ project: "x", blocked_minutes: 5 }).blockedMinutes).toBe(5);
-  });
-
-  test("rejects bad blocked_minutes values", () => {
-    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: 0 })).toThrow('"blocked_minutes"');
-    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: -2 })).toThrow('"blocked_minutes"');
-    expect(() => parseDispatchConfig({ project: "x", blocked_minutes: "20" })).toThrow('"blocked_minutes"');
-  });
-
-  test("rejects bad max_hours values", () => {
-    expect(() => parseDispatchConfig({ project: "x", max_hours: 0 })).toThrow('"max_hours"');
-    expect(() => parseDispatchConfig({ project: "x", max_hours: -2 })).toThrow('"max_hours"');
-    expect(() => parseDispatchConfig({ project: "x", max_hours: "4" })).toThrow('"max_hours"');
   });
 
   test("accepts a full file", () => {
@@ -77,10 +78,19 @@ describe("parseDispatchConfig", () => {
       max_running: 2,
       listen: "192.168.8.8:4180",
       states: {
-        queued: "Ready to build",
-        building: "Building",
-        review: "Ready to review",
-        failed: "Todo",
+        backlog: "Backlog",
+        todo: "Todo",
+        build: "Build",
+        review: "Review",
+        deliver: "Deliver",
+        done: "Done",
+      },
+      progress: {
+        group: "Progress",
+        pending: "Pending",
+        in_progress: "In progress",
+        complete: "Complete",
+        blocked: "Blocked",
       },
       herdr_remote: "art@192.168.88.8",
       models: { builder: "custom/builder" },
@@ -95,20 +105,37 @@ describe("parseDispatchConfig", () => {
     expect(() => parseDispatchConfig({})).toThrow('"project" is required');
   });
 
-  test("states.merge defaults to Ready to merge and must not equal building or review", () => {
-    expect(parseDispatchConfig({ project: "x" }).states.merge).toBe("Ready to merge");
+  test("the old stage roles fail parsing, so an old config cannot start", () => {
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { merge: "Building" } }),
-    ).toThrow('"states.merge" ("Building") must not equal');
+      parseDispatchConfig({ project: "x", states: { queued: "Ready to build" } }),
+    ).toThrow('unknown states role "queued"');
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { merge: "Ready to review" } }),
-    ).toThrow('"states.merge" ("Ready to review") must not equal');
+      parseDispatchConfig({ project: "x", states: { building: "Building" } }),
+    ).toThrow('unknown states role "building"');
+    expect(() =>
+      parseDispatchConfig({ project: "x", states: { failed: "Todo" } }),
+    ).toThrow('unknown states role "failed"');
+    expect(() =>
+      parseDispatchConfig({ project: "x", states: { merge: "Ready to merge" } }),
+    ).toThrow('unknown states role "merge"');
   });
 
-  test("states.failed equal to states.queued fails startup parsing", () => {
+  test("duplicate status names fail parsing", () => {
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { queued: "Todo", failed: "Todo" } }),
-    ).toThrow("must not equal");
+      parseDispatchConfig({ project: "x", states: { todo: "Build" } }),
+    ).toThrow("six distinct Linear statuses");
+  });
+
+  test("duplicate progress labels fail parsing", () => {
+    expect(() =>
+      parseDispatchConfig({ project: "x", progress: { complete: "Pending" } }),
+    ).toThrow("four distinct Linear labels");
+  });
+
+  test("unknown progress roles fail parsing", () => {
+    expect(() => parseDispatchConfig({ project: "x", progress: { queued: "Q" } })).toThrow(
+      'unknown progress role "queued"',
+    );
   });
 
   test("rejects a 0.0.0.0 bind", () => {
@@ -122,7 +149,7 @@ describe("parseDispatchConfig", () => {
       'unknown models role "hal" (known: builder, reviewer, escalate)',
     );
     expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
-      'unknown states role "later" (known: queued, building, review, failed, merge)',
+      'unknown states role "later" (known: backlog, todo, build, review, deliver, done)',
     );
   });
 });

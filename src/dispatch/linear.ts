@@ -56,9 +56,31 @@ export interface LinearLabel {
   name: string;
 }
 
+export interface LinearLabelNode {
+  id: string;
+  name: string;
+  parent: { id: string; name: string } | null;
+}
+
 export interface LinearComment {
   id: string;
   body: string;
+}
+
+export interface LinearAttachment {
+  id: string;
+  title: string;
+  subtitle: string | null;
+  url: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface LinearAttachmentCreateInput {
+  issueId: string;
+  url: string;
+  title: string;
+  subtitle?: string;
+  metadata?: Record<string, unknown>;
 }
 
 interface IssuePage extends Omit<LinearIssue, "labels"> {
@@ -94,7 +116,7 @@ const PROJECTS_QUERY = `query {
 
 const ISSUES_BY_STATE_QUERY = `query($projectId: ID!, $stateId: ID!, $first: Int!) {
   issues(filter: { project: { id: { eq: $projectId } }, state: { id: { eq: $stateId } } }, first: $first) {
-    nodes { id identifier title description priority updatedAt state { id name type } }
+    nodes { id identifier title description priority updatedAt state { id name type } labels { nodes { id name } } }
   }
 }`;
 
@@ -121,6 +143,24 @@ const COMMENT_CREATE_MUTATION = `mutation($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
     success comment { id }
   }
+}`;
+
+const ATTACHMENTS_QUERY = `query($id: String!) {
+  issue(id: $id) {
+    id attachments(first: 100) {
+      nodes { id title subtitle url metadata }
+    }
+  }
+}`;
+
+const ATTACHMENT_CREATE_MUTATION = `mutation($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) {
+    success attachment { id title subtitle url metadata }
+  }
+}`;
+
+const TEAM_LABELS_QUERY = `query($teamId: String!) {
+  team(id: $teamId) { id labels(first: 250) { nodes { id name parent { id name } } } }
 }`;
 
 const ISSUE_LABEL_LOOKUP_QUERY = `query($name: String!) {
@@ -244,13 +284,29 @@ export class LinearClient {
     }));
   }
 
+  /** Every label on the team, with its group parent when grouped. */
+  async teamLabels(teamId: string): Promise<LinearLabelNode[]> {
+    const data = await this.graphql<{
+      team: { labels: { nodes: { id: string; name: string; parent: { id: string; name: string } | null }[] } } | null;
+    }>(TEAM_LABELS_QUERY, { teamId });
+    if (!data.team) throw new LinearError(200, "Linear team lookup returned nothing");
+    return data.team.labels.nodes.map((l) => ({ id: l.id, name: l.name, parent: l.parent }));
+  }
+
   async listIssuesByState(projectId: string, stateId: string, first = 100): Promise<LinearIssue[]> {
-    const data = await this.graphql<{ issues: { nodes: LinearIssue[] } }>(ISSUES_BY_STATE_QUERY, {
+    const data = await this.graphql<{
+      issues: {
+        nodes: (Omit<LinearIssue, "labels"> & { labels?: { nodes: LinearLabel[] } })[];
+      };
+    }>(ISSUES_BY_STATE_QUERY, {
       projectId,
       stateId,
       first,
     });
-    return data.issues.nodes;
+    return data.issues.nodes.map(({ labels, ...issue }) => ({
+      ...issue,
+      labels: labels?.nodes ?? [],
+    }));
   }
 
   async fetchIssue(idOrIdentifier: string): Promise<(LinearIssue & { comments: LinearComment[] }) | null> {    // The claim protocol needs read-back to see every claim comment, so
@@ -298,6 +354,42 @@ export class LinearClient {
       throw new LinearError(200, "Linear refused the comment");
     }
     return data.commentCreate.comment.id;
+  }
+
+  /**
+   * List the issue's attachments with their metadata round-tripped.
+   * Evidence read-back reads this, never receipt prose.
+   */
+  async listAttachments(issueIdOrIdentifier: string): Promise<LinearAttachment[]> {
+    const data = await this.graphql<{
+      issue: { id: string; attachments: { nodes: LinearAttachment[] } } | null;
+    }>(ATTACHMENTS_QUERY, { id: issueIdOrIdentifier });
+    if (!data.issue) return [];
+    return data.issue.attachments.nodes;
+  }
+
+  /**
+   * Create an attachment, or update the one already stored under the same
+   * url on the same issue: Linear dedupes on (issueId, url), so a retried
+   * submit with the same evidence url updates instead of duplicating.
+   * Returns the attachment id.
+   */
+  async createAttachment(input: LinearAttachmentCreateInput): Promise<string> {
+    const data = await this.graphql<{
+      attachmentCreate: { success: boolean; attachment: { id: string } };
+    }>(ATTACHMENT_CREATE_MUTATION, {
+      input: {
+        issueId: input.issueId,
+        url: input.url,
+        title: input.title,
+        ...(input.subtitle !== undefined ? { subtitle: input.subtitle } : {}),
+        ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      },
+    });
+    if (!data.attachmentCreate.success) {
+      throw new LinearError(200, "Linear refused the attachment");
+    }
+    return data.attachmentCreate.attachment.id;
   }
 
   /**

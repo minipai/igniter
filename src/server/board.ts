@@ -72,7 +72,6 @@ export interface BoardSnapshot {
   host: string;
   usedSlots: number;
   maxRunning: number;
-  maxHours: number;
   linearOrg: string;
   lastPollAt: string | null;
   needsYou: number;
@@ -95,7 +94,6 @@ export interface BoardInputs {
   activity: string[];
   rules: string;
   host: string;
-  maxHours: number;
   linearOrg: string;
   outputs: Map<string, PaneOutput>;
   now?: () => number;
@@ -240,7 +238,6 @@ export function buildBoardSnapshot(inputs: BoardInputs): BoardSnapshot {
     host: inputs.host,
     usedSlots: inputs.status.slots.used,
     maxRunning: inputs.status.slots.max,
-    maxHours: inputs.maxHours,
     linearOrg: inputs.linearOrg,
     lastPollAt: inputs.status.lastPollAt,
     needsYou: tickets.filter((t) => t.block === "approval").length,

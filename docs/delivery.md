@@ -42,8 +42,8 @@ A diff touching these pauses the run for the owner.
 
 ## Stages
 
-No skips, no added steps. Every run goes through independent black-box
-acceptance with recorded evidence.
+No skips, no added steps. Every run goes through build, independent
+black-box acceptance with recorded evidence, and delivery.
 
 ## Conventions
 
@@ -57,5 +57,6 @@ See AGENTS.md. In short:
   `diffwalk publish`, and put the printed link on the Linear issue.
 - Landing: rebase the commit onto local `main`. Do not push; the owner
   pushes.
-- Owner accepts by moving the ticket from the configured review state to
-  Ready to merge in Linear.
+- Owner accepts by moving the ticket from Review + Complete to Deliver in
+  Linear; after the deliver receipt the owner confirms the landing and
+  moves it to Done.

@@ -7,18 +7,8 @@ project: igniter
 team: Starcoder
 
 # Parallel claim cap. When full, ready tickets wait; finishing one frees a slot.
-# Paused tickets keep their workspace but do not count against the cap.
+# Blocked tickets keep their workspace but do not count against the cap.
 max_running: 3
-
-# Budget per ticket in hours. A ticket running past it is flagged OVER and
-# over_budget; over_budget frees the slot like paused=1 (another ticket may
-# claim it) until `igniter resume` clears it. Linear state and workspace stay.
-max_hours: 4
-
-# Stuck Commander detection in minutes. A commander agent `blocked` longer
-# than this gets one issue comment and stalled=1; answering the Commander
-# clears it back to null. Linear state and workspace stay.
-blocked_minutes: 20
 
 # Web/API bind address. Never 0.0.0.0; the factory host uses its Tailscale IP.
 # `--port` / `IGNITER_PORT` still override the port portion.
@@ -30,15 +20,28 @@ listen: 127.0.0.1:3457
 # document and writes the found path back here.
 delivery: docs/delivery.md
 
-# Linear state display names: igniter's vocabulary on the left, whatever
-# this Linear workspace calls it on the right. Dispatch validates all four
-# at startup.
+# Linear status display names: igniter's vocabulary on the left, whatever
+# this Linear workspace calls it on the right. Dispatch validates all six
+# at startup, including their workflow types (backlog, unstarted, three
+# started, completed).
 states:
-  queued: Ready to build
-  building: Building
-  review: Ready to review
-  # Must not equal queued, or failed tickets would be re-claimed forever.
-  failed: Todo
+  backlog: Backlog
+  todo: Todo
+  build: Build
+  review: Review
+  deliver: Deliver
+  done: Done
+
+# Progress label group: the group name plus its four labels, shared across
+# all stages. Dispatch validates the group and every label's membership at
+# startup. Todo, Build, Review, and Deliver carry exactly one; Backlog and
+# Done carry none.
+progress:
+  group: Progress
+  pending: Pending
+  in_progress: In progress
+  complete: Complete
+  blocked: Blocked
 
 # Optional: `herdr --remote <value> --session factory` target for README.
 # herdr_remote: art@192.168.88.8

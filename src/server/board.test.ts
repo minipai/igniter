@@ -21,7 +21,7 @@ import { LinearClient } from "../dispatch/linear";
 import { addIssue, standardWorld, startFakeLinear } from "../dispatch/fake-linear";
 import { FakeWorkspaces } from "../dispatch/fake-workspaces";
 
-const BUILDING = "st-building";
+const BUILD = "st-build";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 const NOW = Date.parse("2026-09-05T12:00:00.000Z");
 const LAST_POLL = "2026-09-05T11:59:30.000Z";
@@ -39,23 +39,21 @@ async function harness(): Promise<Harness> {
   const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
   const resolved = await validateStartup(
     client,
-    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 2, max_hours: 4 }),
+    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 2 }),
   );
-  addIssue(world, { identifier: "STA-1", stateId: BUILDING, priority: 1, description: CRITERIA });
-  addIssue(world, { identifier: "STA-2", stateId: BUILDING, priority: 2, description: CRITERIA });
-  addIssue(world, { identifier: "STA-3", stateId: BUILDING, priority: 3, description: CRITERIA });
-  addIssue(world, { identifier: "STA-9", stateId: BUILDING, priority: 4, description: CRITERIA });
+  addIssue(world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: ["label-in-progress"] });
+  addIssue(world, { identifier: "STA-2", stateId: BUILD, priority: 2, description: CRITERIA, labelIds: ["label-in-progress"] });
+  addIssue(world, { identifier: "STA-3", stateId: BUILD, priority: 3, description: CRITERIA, labelIds: ["label-in-progress"] });
+  addIssue(world, { identifier: "STA-9", stateId: BUILD, priority: 4, description: CRITERIA, labelIds: ["label-in-progress"] });
   const lines: string[] = [];
   const workspaces = new FakeWorkspaces();
-  const started = (agoMs: number): string => new Date(NOW - agoMs).toISOString();
   // STA-1 waits on a person: commander blocked.
   const ws1 = workspaces.seedWorkspace(
     "STA-1",
     {
       ticket: "STA-1",
-      stage: "build",
-      stage_at: started(72 * 60_000),
-      started_at: started(72 * 60_000),
+      status: "build",
+      progress: "in_progress",
       commander: "claude",
       builder: "opencode",
     },
@@ -76,9 +74,8 @@ async function harness(): Promise<Harness> {
     "STA-2",
     {
       ticket: "STA-2",
-      stage: "verify",
-      stage_at: started(34 * 60_000),
-      started_at: started(222 * 60_000),
+      status: "build",
+      progress: "in_progress",
       commander: "codex",
       stalled: "1",
     },
@@ -89,9 +86,8 @@ async function harness(): Promise<Harness> {
     "STA-3",
     {
       ticket: "STA-3",
-      stage: "build",
-      stage_at: started(5 * 60_000),
-      started_at: started(40 * 60_000),
+      status: "build",
+      progress: "in_progress",
       commander: "claude",
     },
     { commanderStatus: "working", paneText: "[commander] delegating build task" },
@@ -130,10 +126,9 @@ async function boardInputs(h: Harness): Promise<BoardInputs> {
       { identifier: "STA-5", title: "Queued one", priority: 2, reason: "next" },
       { identifier: "STA-6", title: "Queued two", priority: 4, reason: "waiting, slots full" },
     ],
-    activity: ["2026-09-05T11:50:00.000Z STA-1 claimed: Ready to build → Building (slot 0)"],
+    activity: ["2026-09-05T11:50:00.000Z STA-1 claimed: Todo → Build (slot 0)"],
     rules: "# Commander rules\n",
     host: "minipc",
-    maxHours: 4,
     linearOrg: "starcoder",
     outputs,
     now: () => NOW,
@@ -171,7 +166,7 @@ describe("buildBoardSnapshot", () => {
       expect(quiet.block).toBe("quiet");
       expect(quiet.railState).toBe("stalled");
       expect(quiet.pulse).toContain("quiet");
-      expect(quiet.level).toBe("near");
+      expect(quiet.level).toBe("ok");
 
       const alive = board.tickets[2] as (typeof board.tickets)[number];
       expect(alive.block).toBeNull();

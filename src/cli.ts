@@ -9,6 +9,7 @@ import {
   startWatch,
   defaultHost,
   Watcher,
+  type CommandCallOptions,
   type DispatchApi,
   type ResolvedDispatch,
   type WatchHandle,
@@ -16,6 +17,7 @@ import {
 import { createWorkspaceSink, collectStatus, runCommand } from "./dispatch/commands.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
+import { bunGitRunner } from "./dispatch/worktrees.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
 import {
@@ -27,7 +29,6 @@ import {
   withBoardEvents,
   type BoardSnapshot,
 } from "./server/board.ts";
-import { runStage } from "./stage/stage.ts";
 
 function flagValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -81,10 +82,23 @@ async function serveCommand(): Promise<void> {
   const holder: { current?: Watcher } = {};
   const root = repoRoot();
   const host = defaultHost();
+  const git = bunGitRunner();
   const sink = createWorkspaceSink({
     workspaces,
     config,
     repoRoot: root,
+    runGit: git,
+  });
+  const commandContext = (watcher: Watcher) => ({
+    client,
+    resolved: watcher.resolved,
+    host,
+    decisions,
+    workspaces,
+    sink,
+    repoRoot: root,
+    git,
+    lastPollAt: () => watcher.lastPollAt,
   });
   const dispatch: DispatchApi = {
     queue: () => {
@@ -92,22 +106,10 @@ async function serveCommand(): Promise<void> {
       return watcher ? { lastPollAt: watcher.lastPollAt, order: watcher.lastQueue } : { lastPollAt: null, order: [] };
     },
     activity: (limit) => readActivityTail(logPath, limit),
-    command: (argv: string[]) => {
+    command: (argv: string[], options: CommandCallOptions = {}) => {
       const watcher = holder.current;
       if (!watcher) return Promise.resolve({ ok: false, text: "dispatch still starting; retry shortly" });
-      const resolved = watcher.resolved;
-      return claimLock(() =>
-        runCommand(argv, {
-          client,
-          resolved,
-          host,
-          decisions,
-          workspaces,
-          sink,
-          repoRoot: root,
-          lastPollAt: () => watcher.lastPollAt,
-        }),
-      );
+      return claimLock(() => runCommand(argv, commandContext(watcher), options));
     },
   };
   const server = startServer({
@@ -118,16 +120,7 @@ async function serveCommand(): Promise<void> {
     board: async (): Promise<BoardSnapshot | null> => {
       const watcher = holder.current;
       if (!watcher) return null;
-      const statusCtx = {
-        client,
-        resolved: watcher.resolved,
-        host,
-        decisions,
-        workspaces,
-        sink,
-        repoRoot: root,
-        lastPollAt: () => watcher.lastPollAt,
-      };
+      const statusCtx = commandContext(watcher);
       let collected;
       try {
         collected = await collectStatus(statusCtx);
@@ -166,7 +159,6 @@ async function serveCommand(): Promise<void> {
         activity: [...activity].reverse(),
         rules,
         host,
-        maxHours: watcher.resolved.config.maxHours,
         linearOrg: watcher.resolved.config.linearOrg,
         outputs: outputs.outputs,
       });
@@ -195,8 +187,8 @@ async function serveCommand(): Promise<void> {
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   // An unreachable Linear is not a configuration error: the server stays up
-  // and validation retries until Linear answers. Unknown statuses, teams, or
-  // projects still exit 1 immediately.
+  // and validation retries until Linear answers. Unknown statuses, teams,
+  // projects, label groups, or labels still exit 1 immediately.
   let resolved: ResolvedDispatch;
   try {
     resolved = await validateWithRetry(() => validateStartup(client, config), {
@@ -218,6 +210,8 @@ async function serveCommand(): Promise<void> {
     decisions,
     workspaces,
     sink,
+    git,
+    repoRoot: root,
   });
   holder.current = watcher;
   // The watch loop and the commands share the watcher — and the lock — so
@@ -233,11 +227,16 @@ async function serveCommand(): Promise<void> {
   };
   const feedHandle = startHerdrBoardFeed({ hub, outputs });
   feed = feedHandle;
-  console.log(`watch live: claiming from ${config.states.queued}`);
+  console.log(`watch live: claiming from ${config.states.todo}`);
 }
 
-/** Dispatch commands run inside the serve process: forward argv over HTTP. */
-async function forwardCommand(argv: string[]): Promise<void> {
+/**
+ * Dispatch commands run inside the serve process: forward argv over HTTP.
+ * Workspace commands additionally forward the Herdr workspace id (never a
+ * ticket: the server resolves it from igniter metadata) and the stdin
+ * payload for `submit --input -`.
+ */
+async function forwardCommand(argv: string[], options: CommandCallOptions = {}): Promise<void> {
   const config = await loadDispatchConfig(repoRoot());
   const base = `http://${config.listenHost}:${config.listenPort}`;
   let res: Response;
@@ -245,7 +244,7 @@ async function forwardCommand(argv: string[]): Promise<void> {
     res = await fetch(`${base}/api/command`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ argv }),
+      body: JSON.stringify({ argv, ...options }),
       signal: AbortSignal.timeout(30_000),
     });
   } catch {
@@ -266,6 +265,10 @@ async function forwardCommand(argv: string[]): Promise<void> {
   }
   console.error(text);
   process.exit(1);
+}
+
+async function readStdin(): Promise<string> {
+  return new Response(Bun.stdin.stream()).text();
 }
 
 function devCommand(): void {
@@ -292,6 +295,7 @@ function devCommand(): void {
 }
 
 const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart", "answer"];
+const WORKSPACE_COMMANDS = ["state", "begin", "submit", "block", "unblock"];
 
 async function versionCommand(): Promise<void> {
   const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
@@ -310,13 +314,23 @@ try {
     devCommand();
   } else if (command !== undefined && DISPATCH_COMMANDS.includes(command)) {
     // Dispatch commands never run locally: they go through the one HTTP
-    // door to the serve process. `stage` (with its pause/resume steps)
-    // stays local: the Commander runs it inside the Herdr pane.
+    // door to the serve process.
     await forwardCommand(process.argv.slice(2));
-  } else if (command === "stage") {
-    process.exit(await runStage(["stage", ...process.argv.slice(3)]));
+  } else if (command !== undefined && WORKSPACE_COMMANDS.includes(command)) {
+    // Workspace commands are thin clients: the Herdr workspace id (never
+    // a ticket, never a key) rides along, and `submit --input -` carries
+    // its JSON on stdin.
+    if (process.env["HERDR_ENV"] !== "1" || !process.env["HERDR_WORKSPACE_ID"]) {
+      console.error(`igniter ${command} runs inside a Herdr workspace only (HERDR_ENV=1, HERDR_WORKSPACE_ID set)`);
+      process.exit(1);
+    }
+    const options: CommandCallOptions = { workspaceId: process.env["HERDR_WORKSPACE_ID"] };
+    if (command === "submit") {
+      options.input = await readStdin();
+    }
+    await forwardCommand(process.argv.slice(2), options);
   } else {
-    console.error("usage: igniter <serve|dev|status|start|stage|pause|resume|fail|restart|answer> [--port N]");
+    console.error("usage: igniter <serve|dev|status|start|pause|resume|fail|restart|answer|state|begin|submit|block|unblock> [--port N]");
     console.error("  serve [--no-watch] [--port N]");
     console.error("  status");
     console.error("  start <ticket> [--agent <kind>] [--builder <model>]");
@@ -324,7 +338,10 @@ try {
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");
     console.error("  answer <ticket> y|n");
-    console.error("  stage <plan|build|verify|acceptance|failed|pause|resume> [--reason TEXT]");
+    console.error("  state --json");
+    console.error("  begin");
+    console.error("  submit --input -");
+    console.error("  block --reason TEXT | unblock");
     console.error("  --version, -v");
     process.exit(1);
   }

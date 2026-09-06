@@ -4,7 +4,7 @@
 
 ## 這是什麼
 
-一個很小的軟體工廠：Linear 票拖進 `Ready to build` → dispatch 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑 → Owner 看證據、在 Linear 把票改成 Ready to merge。網頁左欄是 dispatch 的視角：Building（進行中的票、跑了多久）與 Dispatch（Queue 認領順序與理由、Activity 決定紀錄、Workflow 規則全文）；右欄看三個 pane 的畫面、打字回覆（2026-09-04 定案，原型與規格見 STA-164）。
+一個很小的軟體工廠：Linear 票從 `Backlog` 規劃進 `Todo` → dispatch 認領、在 Herdr 開 workspace 讓 Commander 照 igniter 自帶的規則跑（`Build` → `Review` → `Deliver`，Progress 為 Pending / In progress / Complete / Blocked）→ Owner 看證據、在 Linear 把票移到 `Deliver` 核准、確認落地後移到 `Done`。網頁左欄是 dispatch 的視角：進行中的票（狀態、Progress、checkpoint、receipt）與 Dispatch（Queue 認領順序與理由、Activity 決定紀錄、Workflow 規則全文）；右欄看三個 pane 的畫面、打字回覆（2026-09-04 定案，原型與規格見 STA-164）。
 dispatch（2026-09-04 前叫 runner）與網頁是同一個 Bun 程序，**在工廠主機（minipc）上、repo 目錄裡跑**（`cd <repo> && igniter serve`），repo 就是專案目錄；隊友經 Tailscale 連。
 
 - Linear project：https://linear.app/starcoder/project/igniter-ee3d3db6bd6c （team Starcoder，票 STA-158～169）
@@ -49,10 +49,10 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
 - 不用零星（0 star）第三方套件；Herdr socket client 自己寫（STA-167）。
 - `LINEAR_API_KEY` 只從環境變數讀，不進 repo；Linear 存取一律 GraphQL，不用 MCP（Commander 可能是 codex / opencode）。
 - GitHub：repo 放 `github.com/minipai/igniter`，`gh` 維持 `claudecafe` 登入；需要使用者權限時
-  `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR：審查用 diffwalk 發布連結貼到票上，Ready to merge 後 rebase 到本機 `main`，不 push，由 Owner 推。
+  `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR：審查用 diffwalk 發布連結貼到票上，Done 後 rebase 到本機 `main`，不 push，由 Owner 推。
 - Commit：`--author="くるみ <kurumi@claudecafe.dev>"`，訊息英文，不加 Co-Authored-By。
 - Herdr metadata 的 source 統一 `igniter`；agent pane 命名 `commander-<票號>`、`builder-<票號>`、`reviewer-<票號>`。
-- blocked 超過 20 分鐘只是 stalled，不算失敗、不關 workspace；`max_hours`（4）到了也只釋放 slot 並回報，不判失敗。判死（`igniter fail`）、接回（`igniter resume`）、手動開工（`igniter start`，反過來由 dispatch 改 Linear 狀態）都是指令（STA-176）。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案）。
+- `Blocked` 只是外部條件、不算驗收失敗：workspace 保留但不占 Build slot，`unblock` 回 Pending 再 `begin`。判死（`igniter fail`，回 Backlog、清 Progress、關 workspace）、接回（`igniter resume`）、手動開工（`igniter start`，由 dispatch 改 Linear 狀態）都是指令（STA-176）。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案，STA-186 改為狀態機協議）。
 - 主機 minipc（Ubuntu、Tailscale）；上面 Sunshine / 虛擬顯示器設定不要動。
 
 ## 還沒定的小事

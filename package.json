@@ -14,7 +14,7 @@
     "serve": "bun src/cli.ts serve",
     "typecheck": "tsc --noEmit",
     "generate:herdr": "bun src/herdr/generate-types.ts",
-    "test": "bun test src/cli.test.ts src/server src/herdr src/dispatch src/stage src/commander",
+    "test": "bun test src/cli.test.ts src/server src/herdr src/dispatch src/commander",
     "test:ui": "vitest run",
     "check": "bun run typecheck && bun run test && bun run test:ui"
   },

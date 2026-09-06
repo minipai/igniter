@@ -1,23 +1,29 @@
 // Dispatch commands: the one door into a running igniter.
 //
 // Both the web page and the CLI go through `POST /api/command` with
-// `{ argv }`, and land here. Each command takes argv, does its Linear and
-// Herdr work through the injected context, records its activity lines
-// through the DecisionLog, and returns `{ ok, text, data? }` — text for an
-// agent, data for the web page.
+// `{ argv, workspaceId?, input? }`, and land here. Each command takes argv,
+// does its Linear and Herdr work through the injected context, records its
+// activity lines through the DecisionLog, and returns `{ ok, text, data? }`
+// — text for an agent, data for the web page.
+//
+// Two families share this door and never collide:
+// - Dispatch commands (`status`, `start`, `pause`, `resume`, `fail`,
+//   `restart`, `answer`) name a ticket and run anywhere; only `serve` holds
+//   the Linear key.
+// - Workspace commands (`state`, `begin`, `submit`, `block`, `unblock`)
+//   name no ticket: the CLI forwards the Herdr workspace id, and the ticket
+//   comes from that workspace's igniter metadata only.
 //
 // igniter never judges: commands only carry out what Linear and the caller
 // say. Judgments belong to the Commander in the Herdr pane, or to whoever
 // commands igniter from outside.
 
 import {
-  buildClaimBody,
   ensureAcceptanceCriteria,
-  freeSlot,
-  recordClaim,
   WorkspaceSinkError,
   type ClaimedTicket,
   type ClaimSink,
+  type CommandCallOptions,
   type CommandResult,
   type DecisionLog,
   type ResolvedDispatch,
@@ -25,17 +31,35 @@ import {
 import type { DispatchConfig } from "./config.ts";
 import { LinearClient } from "./linear.ts";
 import {
+  adoptTicket,
+  beginMutation,
+  blockMutation,
+  claimTicket,
+  countBuildSlots,
+  deriveState,
+  describeState,
+  finishClaim,
+  statusOf,
+  submitMutation,
+  unblockMutation,
+  ProtocolError,
+  type FullIssue,
+  type ProtocolDeps,
+  type ProtocolProgress,
+  type ProtocolStatus,
+  type WorkspaceMeta,
+} from "./protocol.ts";
+import {
   failTicket,
   formatDuration,
   type FailureDeps,
 } from "./recovery.ts";
 import {
   commanderName,
-  overBudgetTickets,
-  pausedTickets,
   tokensByTicket,
   workspaceForTicket,
   type CommandWorkspaces,
+  type SnapshotWorkspace,
   type WorkspaceSnapshot,
 } from "./workspaces.ts";
 import {
@@ -59,12 +83,13 @@ export interface CommandContext {
   sink: ClaimSink;
   /** Repo root: the cwd `igniter serve` runs in, used as the workspace cwd. */
   repoRoot: string;
+  git?: GitRunner;
   lastPollAt: () => string | null;
   now?: () => number;
 }
 
 const TOP_USAGE =
-  "usage: igniter <status|start <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n>";
+  "usage: igniter <status|start <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|state --json|begin|submit --input -|block --reason TEXT|unblock>";
 
 function usage(command: string): string {
   switch (command) {
@@ -82,6 +107,16 @@ function usage(command: string): string {
       return "usage: igniter restart <ticket> --builder <model>";
     case "answer":
       return "usage: igniter answer <ticket> y|n";
+    case "state":
+      return "usage: igniter state --json";
+    case "begin":
+      return "usage: igniter begin";
+    case "submit":
+      return "usage: igniter submit --input -";
+    case "block":
+      return "usage: igniter block --reason TEXT";
+    case "unblock":
+      return "usage: igniter unblock";
     default:
       return TOP_USAGE;
   }
@@ -109,36 +144,119 @@ function takeFlag(args: string[], name: string): { value?: string; rest: string[
   return { value, rest };
 }
 
-export function runCommand(argv: string[], ctx: CommandContext): Promise<CommandResult> {
+const DISPATCH_COMMANDS = new Set(["status", "start", "pause", "resume", "fail", "restart", "answer"]);
+const WORKSPACE_COMMANDS = new Set(["state", "begin", "submit", "block", "unblock"]);
+
+export function runCommand(
+  argv: string[],
+  ctx: CommandContext,
+  options: CommandCallOptions = {},
+): Promise<CommandResult> {
   const [name, ...args] = argv;
-  switch (name) {
-    case "status":
-      if (args.length > 0) return Promise.resolve(fail(usage("status")));
-      return statusCommand(ctx);
-    case "start":
-      return startCommand(args, ctx);
-    case "pause":
-      return pauseCommand(args, ctx);
-    case "resume":
-      return resumeCommand(args, ctx);
-    case "fail":
-      return failCommand(args, ctx);
-    case "restart":
-      return restartCommand(args, ctx);
-    case "answer":
-      return answerCommand(args, ctx);
-    default:
-      return Promise.resolve(fail(
-        name === undefined ? TOP_USAGE : `unknown command "${name}"; ${TOP_USAGE}`,
-      ));
+  if (name === undefined) return Promise.resolve(fail(TOP_USAGE));
+  if (DISPATCH_COMMANDS.has(name)) {
+    switch (name) {
+      case "status":
+        if (args.length > 0) return Promise.resolve(fail(usage("status")));
+        return statusCommand(ctx);
+      case "start":
+        return startCommand(args, ctx);
+      case "pause":
+        return pauseCommand(args, ctx);
+      case "resume":
+        return resumeCommand(args, ctx);
+      case "fail":
+        return failCommand(args, ctx);
+      case "restart":
+        return restartCommand(args, ctx);
+      case "answer":
+        return answerCommand(args, ctx);
+    }
   }
+  if (WORKSPACE_COMMANDS.has(name)) {
+    if (!options.workspaceId) {
+      return Promise.resolve(fail(
+        `igniter ${name} runs inside a Herdr workspace only; dispatch commands take a ticket instead (${TOP_USAGE})`,
+      ));
+    }
+    switch (name) {
+      case "state":
+        return stateCommand(args, ctx, options.workspaceId);
+      case "begin":
+        return beginCommand(args, ctx, options.workspaceId);
+      case "submit":
+        return submitCommand(args, ctx, options.workspaceId, options.input);
+      case "block":
+        return blockCommand(args, ctx, options.workspaceId);
+      case "unblock":
+        return unblockCommand(args, ctx, options.workspaceId);
+    }
+  }
+  return Promise.resolve(fail(`unknown command "${name}"; ${TOP_USAGE}`));
 }
 
-function agoText(at: string | null, now: number): string {
-  if (!at) return "never";
-  const ms = now - Date.parse(at);
-  if (!Number.isFinite(ms) || ms < 0) return "never";
-  return `${formatDuration(ms)} ago`;
+function depsOf(ctx: CommandContext): ProtocolDeps & { sink: ClaimSink; host: string } {
+  return {
+    client: ctx.client,
+    resolved: ctx.resolved,
+    workspaces: ctx.workspaces,
+    decisions: ctx.decisions,
+    git: ctx.git ?? bunGitRunner(),
+    repoRoot: ctx.repoRoot,
+    sink: ctx.sink,
+    host: ctx.host,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// workspace resolution (the ticket comes from igniter metadata only)
+// ---------------------------------------------------------------------------
+
+export interface ResolvedWorkspace {
+  workspace: SnapshotWorkspace;
+  full: FullIssue;
+  state: { status: ProtocolStatus; progress: ProtocolProgress | null; criteria: string[] };
+  meta: WorkspaceMeta;
+  snapshot: WorkspaceSnapshot;
+}
+
+async function resolveWorkspace(ctx: CommandContext, workspaceId: string): Promise<ResolvedWorkspace> {
+  const { client, resolved, decisions } = ctx;
+  let snapshot: WorkspaceSnapshot;
+  try {
+    snapshot = await ctx.workspaces.snapshot();
+  } catch (error) {
+    await decisions.record(workspaceId, `workspace command failed: herdr unreachable`);
+    throw new ProtocolError(`herdr unreachable: ${(error as Error).message}`);
+  }
+  const workspace = snapshot.workspaces.find((w) => w.workspaceId === workspaceId);
+  if (!workspace) {
+    throw new ProtocolError(`unknown workspace "${workspaceId}"; run inside the ticket's Herdr workspace`);
+  }
+  const ticket = workspace.tokens["ticket"];
+  if (!ticket) {
+    throw new ProtocolError(
+      `workspace "${workspaceId}" has no ticket metadata; dispatch writes it at claim time`,
+    );
+  }
+  const full = (await client.fetchIssue(ticket)) as FullIssue | null;
+  if (!full) {
+    await decisions.record(ticket, `workspace command failed: ticket "${ticket}" was not found in Linear`);
+    throw new ProtocolError(`ticket "${ticket}" was not found in Linear`);
+  }
+  if (full.projectId !== resolved.projectId) {
+    await decisions.record(full.identifier, `workspace command failed: not in project "${resolved.config.project}"`);
+    throw new ProtocolError(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
+  }
+  // Pure derivation: no writes happen here, so a refusal costs nothing.
+  const state = deriveState(resolved, full);
+  return { workspace, full, state, meta: { ...workspace.tokens }, snapshot };
+}
+
+async function refuse(ctx: CommandContext, ticket: string, error: unknown): Promise<CommandResult> {
+  const text = error instanceof Error ? error.message : String(error);
+  await ctx.decisions.record(ticket, `refused: ${text}`);
+  return { ok: false, text };
 }
 
 // ---------------------------------------------------------------------------
@@ -148,8 +266,12 @@ function agoText(at: string | null, now: number): string {
 export interface StatusTicketData {
   identifier: string;
   title: string;
-  /** Linear state name: building tickets and review tickets both show. */
+  /** Linear status name, e.g. Build. */
   state: string;
+  /** Progress name, e.g. In progress; null on backlog/done rows. */
+  progress: string | null;
+  checkpoint: string | null;
+  receipt: string | null;
   hasWorkspace: boolean;
   stage: string | null;
   stageAt: string | null;
@@ -159,6 +281,7 @@ export interface StatusTicketData {
   over: boolean;
   commander: string;
   paused: boolean;
+  blocked: boolean;
   stalled: boolean;
   overBudget: boolean;
 }
@@ -181,21 +304,16 @@ export interface StatusCollection {
 }
 
 /** Shared collection behind `igniter status` and the board snapshot: Linear
- *  says which tickets are building or in review, one Herdr snapshot says
- *  which of those are actually running. */
+ *  says which tickets are in play, one Herdr snapshot says which of those
+ *  are actually running. */
 export async function collectStatus(ctx: CommandContext): Promise<StatusCollection> {
   const { client, resolved } = ctx;
-  const now = ctx.now?.() ?? Date.now();
   const max = resolved.config.maxRunning;
-  const budgetMs = resolved.config.maxHours * 3600_000;
   const lastPollAt = ctx.lastPollAt();
-  const building = await client.listIssuesByState(resolved.projectId, resolved.buildingStateId);
-  // Review tickets keep an open workspace while the owner looks at them, so
-  // they stay visible here; only building tickets ever hold slots.
-  const inReview = await client.listIssuesByState(resolved.projectId, resolved.reviewStateId);
-  const inMerge = await client.listIssuesByState(resolved.projectId, resolved.mergeStateId);
-  const listed = [...building, ...inReview, ...inMerge];
-  const buildingIds = new Set(building.map((t) => t.id));
+  const inBuild = await client.listIssuesByState(resolved.projectId, resolved.stateIds.build);
+  const inReview = await client.listIssuesByState(resolved.projectId, resolved.stateIds.review);
+  const inDeliver = await client.listIssuesByState(resolved.projectId, resolved.stateIds.deliver);
+  const listed = [...inBuild, ...inReview, ...inDeliver];
 
   let snapshot: WorkspaceSnapshot | null = null;
   let herdrNote: string | null = null;
@@ -211,60 +329,49 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
     return agent?.agentStatus ?? "missing";
   };
 
-  let pausedCount = 0;
-  // Ready to merge tickets show only while their workspace is still open;
-  // one without a workspace is done and drops off the list.
-  const visible = listed.filter((issue) => {
-    if (issue.state.id !== resolved.mergeStateId) return true;
-    if (!snapshot) return false;
-    return findWorkspace(snapshot, issue.identifier) !== undefined;
-  });
-  const tickets: StatusTicketData[] = visible.map((issue) => {
+  const used = await countBuildSlots(client, resolved);
+  const tickets: StatusTicketData[] = listed.map((issue) => {
     const workspace = snapshot ? findWorkspace(snapshot, issue.identifier) : undefined;
     const tk = tokens.get(issue.identifier) ?? workspace?.tokens ?? {};
-    const paused = tk["paused"] === "1";
-    const stalled = tk["stalled"] === "1";
-    const overBudget = tk["over_budget"] === "1";
-    // Paused and over-budget tickets keep their workspace but hold no
-    // slot; one ticket frees at most one slot even when both flags are set.
-    if ((paused || overBudget) && buildingIds.has(issue.id)) pausedCount += 1;
-    const stage = tk["stage"] ?? null;
-    const stageAt = tk["stage_at"] ?? null;
-    const startedAt = tk["started_at"] ?? null;
-    const startedMs = startedAt ? Date.parse(startedAt) : NaN;
-    const elapsedMs = Number.isFinite(startedMs) ? Math.max(0, now - startedMs) : null;
-    // The budget (STA-163) is workspace alive past max_hours while the stage
-    // has not reached acceptance: a ticket waiting on the owner is never over.
-    const over = elapsedMs !== null && elapsedMs > budgetMs && stage !== "acceptance" && stage !== "delivered";
+    const status = statusOf(resolved, issue.state.id);
+    let progress: string | null = null;
+    try {
+      const derived = deriveState(resolved, { ...issue, comments: [], labels: issue.labels ?? [] } as FullIssue);
+      progress = derived.progress;
+    } catch {
+      progress = null;
+    }
+    const receiptKind = tk["receipt_kind"];
+    const receiptId = tk["receipt_id"];
     return {
       identifier: issue.identifier,
       title: issue.title,
       state: issue.state.name,
+      progress,
+      checkpoint: tk["checkpoint"] ?? null,
+      receipt: receiptKind && receiptId ? `${receiptKind}:${receiptId}` : null,
       hasWorkspace: workspace !== undefined,
-      stage,
-      stageAt,
-      startedAt,
-      elapsedMs,
-      budgetMs,
-      over,
+      stage: status,
+      stageAt: null,
+      startedAt: null,
+      elapsedMs: null,
+      budgetMs: 0,
+      over: false,
       commander: agentStatus(issue.identifier),
-      paused,
-      stalled,
-      overBudget,
+      paused: tk["paused"] === "1",
+      blocked: progress === "blocked",
+      stalled: tk["stalled"] === "1",
+      overBudget: false,
     };
   });
 
-  const used = building.length - pausedCount;
   const data: StatusData = { slots: { used, max }, lastPollAt, tickets };
   return { data, snapshot, herdrNote };
 }
 
 async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
-  const { resolved } = ctx;
-  const now = ctx.now?.() ?? Date.now();
   const { data, snapshot, herdrNote } = await collectStatus(ctx);
-  const lastPollAt = data.lastPollAt;
-  const header = `${data.slots.used} / ${data.slots.max} slots · last Linear poll ${agoText(lastPollAt, now)}`;
+  const header = `${data.slots.used} / ${data.slots.max} slots`;
   const lines = [header];
   if (herdrNote) lines.push(herdrNote);
   for (const ticket of data.tickets) {
@@ -276,23 +383,27 @@ async function statusCommand(ctx: CommandContext): Promise<CommandResult> {
       lines.push(`${ticket.identifier}  no workspace`);
       continue;
     }
-    const elapsed = ticket.elapsedMs !== null ? formatDuration(ticket.elapsedMs) : "?";
-    const stageMs = ticket.stageAt ? Date.parse(ticket.stageAt) : NaN;
-    const stageAge = Number.isFinite(stageMs) ? formatDuration(now - stageMs) : "?";
+    const at = ticket.progress ? `${ticket.state}/${progressName(ctx, ticket.progress)}` : ticket.state;
+    const checkpoint = ticket.checkpoint ? ` checkpoint ${ticket.checkpoint.slice(0, 12)}` : "";
+    const receipt = ticket.receipt ? ` receipt ${ticket.receipt}` : "";
     const flags = [
       ticket.paused ? "paused" : "",
-      ticket.stalled ? "stalled" : "",
-      ticket.overBudget ? "over_budget" : "",
+      ticket.blocked ? "blocked" : "",
     ].filter(Boolean).join(" · ");
     const tail = flags ? ` · ${flags}` : "";
-    const statePart = ticket.state === resolved.config.states.building ? "" : `  ${ticket.state}`;
-    lines.push(
-      `${ticket.identifier}${statePart}  ${elapsed} / ${resolved.config.maxHours}h${ticket.over ? " OVER" : ""}` +
-      `   stage ${ticket.stage ?? "?"} · ${stageAge}` +
-      `   commander ${ticket.commander}${tail}`,
-    );
+    lines.push(`${ticket.identifier}  ${at}${checkpoint}${receipt}   commander ${ticket.commander}${tail}`);
   }
   return { ok: true, text: lines.join("\n"), data };
+}
+
+function progressName(ctx: CommandContext, progress: string): string {
+  const names: Record<string, string> = {
+    pending: ctx.resolved.config.progress.pending,
+    in_progress: ctx.resolved.config.progress.in_progress,
+    complete: ctx.resolved.config.progress.complete,
+    blocked: ctx.resolved.config.progress.blocked,
+  };
+  return names[progress] ?? progress;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +483,7 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
   if (builderFlag.value !== undefined && builderFlag.value === "") return fail(usage("start"));
   const identifier = rest[0] as string;
 
-  const full = await client.fetchIssue(identifier);
+  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
   if (!full) {
     await decisions.record(identifier, `start failed: ticket "${identifier}" was not found in Linear`);
     return fail(`ticket "${identifier}" was not found in Linear`);
@@ -401,89 +512,71 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     }
   }
 
+  const deps = depsOf(ctx);
+  const status = statusOf(resolved, full.state.id);
+
   let snapshot: WorkspaceSnapshot | null = null;
   try {
     snapshot = await ctx.workspaces.snapshot();
   } catch {
     snapshot = null;
   }
-  const paused = snapshot ? pausedTickets(snapshot) : new Set<string>();
-  const overBudget = snapshot ? overBudgetTickets(snapshot) : new Set<string>();
-  const running = await client.listIssuesByState(resolved.projectId, resolved.buildingStateId);
-  // Paused and over-budget tickets keep their workspace but hold no slot.
-  const active = running.filter((t) => !paused.has(t.identifier) && !overBudget.has(t.identifier));
+  const open = snapshot ? findWorkspace(snapshot, full.identifier) : undefined;
+  const owned = open && open.tokens["ticket"] === full.identifier ? open : undefined;
 
-  const alreadyBuilding = full.state.id === resolved.buildingStateId;
-  if (alreadyBuilding && snapshot && findWorkspace(snapshot, full.identifier)) {
-    await decisions.record(full.identifier, "start refused: already running");
-    return fail(`${full.identifier} is already running`);
+  // An active ticket with a workspace is already running; one without is
+  // adopted through the same path the watcher uses.
+  if (status === "build" || status === "review" || status === "deliver") {
+    if (owned) {
+      await decisions.record(full.identifier, "start refused: already running");
+      return fail(`${full.identifier} is already running`);
+    }
+    try {
+      const opened = await adoptTicket(deps, full, { agent: kind, builder });
+      return { ok: true, text: `adopted ${full.identifier}: workspace ${opened.workspaceId} reopened at ${status}+pending` };
+    } catch (error) {
+      return refuse(ctx, full.identifier, error);
+    }
   }
-  // The ticket itself never counts against its own adoption.
-  const others = active.filter((t) => t.id !== full.id);
-  if (others.length >= resolved.config.maxRunning) {
-    await decisions.record(
-      full.identifier,
-      `start refused: at max_running (${resolved.config.maxRunning}); running: ${others.map((t) => t.identifier).join(", ") || "none"}`,
-    );
-    return fail(
-      `at max_running (${resolved.config.maxRunning}); running: ${others.map((t) => t.identifier).join(", ") || "none"}`,
-    );
+
+  if (status !== "todo") {
+    await decisions.record(full.identifier, `start refused: ticket is ${full.state.name}; start only claims Todo+Pending`);
+    return fail(`start refused: ticket is ${full.state.name}; start only claims Todo+Pending`);
   }
   if (!(await ensureAcceptanceCriteria(client, resolved, full, decisions))) {
-    return fail(`ticket "${full.identifier}" has no acceptance-criteria section and was not claimed; a comment was left on the issue`);
+    return fail(`ticket "${full.identifier}" has no acceptance-criteria checklist and was not claimed; a comment was left on the issue`);
   }
-
-  const from = full.state.name;
-  let slot: number;
-  try {
-    if (!alreadyBuilding) {
-      await client.setIssueState(full.id, resolved.buildingStateId);
+  // A Todo ticket whose workspace is already open finishes its
+  // half-written claim instead of opening a second workspace.
+  if (owned) {
+    try {
+      const used = await countBuildSlots(client, resolved);
+      if (used >= resolved.config.maxRunning) {
+        await decisions.record(full.identifier, `start refused: at max_running (${resolved.config.maxRunning})`);
+        return fail(`at max_running (${resolved.config.maxRunning})`);
+      }
+      const ticket = await finishClaim(deps, full, owned.workspaceId, owned.tokens, used);
+      return {
+        ok: true,
+        text: `claimed ${full.identifier} → ${resolved.config.states.build}+${resolved.config.progress.in_progress} (slot ${ticket.slot}); finished in existing workspace ${owned.workspaceId}`,
+      };
+    } catch (error) {
+      return refuse(ctx, full.identifier, error);
     }
-    slot = await freeSlot(client, resolved, ctx.host, running);
-    if (!full.comments.some((c) => c.body.includes("<!-- igniter:claim -->"))) {
-      await client.addComment(full.id, buildClaimBody(resolved.config.states.building, ctx.host, slot));
-    }
-  } catch (error) {
-    await decisions.record(full.identifier, `claim failed: ${(error as Error).message}`);
-    return fail(`claim failed: ${(error as Error).message}`);
   }
-  await recordClaim(decisions, full.identifier, from, resolved.config.states.building, slot);
-
-  const ticket: ClaimedTicket = {
-    id: full.id,
-    identifier: full.identifier,
-    title: full.title,
-    host: ctx.host,
-    slot,
-    agent: kind,
-    builder,
-  };
-  let opened;
   try {
-    opened = await ctx.sink(ticket);
-  } catch (error) {
-    const suffix =
-      error instanceof WorkspaceSinkError && error.workspaceId
-        ? ` (workspace ${error.workspaceId})`
-        : "";
-    await decisions.record(full.identifier, `handoff failed: ${(error as Error).message}${suffix}`);
-    return fail(
-      `handoff failed: ${(error as Error).message}${suffix}; ` +
-      `the ticket is already in ${resolved.config.states.building}: ` +
-      `fix the workspace and run \`igniter resume ${full.identifier}\``,
-    );
-  }
-  if (opened) {
-    await decisions.record(
-      full.identifier,
-      `workspace opened (${opened.workspaceId}) commander=${opened.commander} builder=${opened.builder}`,
-    );
+    const ticket = await claimTicket(deps, full, { agent: kind, builder });
     return {
       ok: true,
-      text: `claimed ${full.identifier} → ${resolved.config.states.building} (slot ${slot}); workspace ${opened.workspaceId} opened, commander=${opened.commander} builder=${opened.builder}`,
+      text: `claimed ${full.identifier} → ${resolved.config.states.build}+${resolved.config.progress.in_progress} (slot ${ticket.slot}); workspace ${ticket.workspaceId} opened, commander=${ticket.commander} builder=${ticket.builder}`,
     };
+  } catch (error) {
+    if (error instanceof WorkspaceSinkError && error.workspaceId) {
+      await decisions.record(full.identifier, `handoff failed: ${error.message} (workspace ${error.workspaceId})`);
+      return fail(`handoff failed: ${error.message} (workspace ${error.workspaceId})`);
+    }
+    return refuse(ctx, full.identifier, error);
   }
-  return { ok: true, text: `claimed ${full.identifier} → ${resolved.config.states.building} (slot ${slot})` };
 }
 
 // ---------------------------------------------------------------------------
@@ -491,13 +584,13 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
 // ---------------------------------------------------------------------------
 
 export const PAUSE_PROMPT =
-  "igniter: the owner paused this ticket. Finish the current tool call, do not start the next step, and wait for `igniter resume`.";
+  "igniter: the owner paused this ticket. Finish the current tool call, do not start the next step, and wait.";
 
 async function pauseCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("pause"));
   const identifier = args[0] as string;
-  const full = await client.fetchIssue(identifier);
+  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
   if (!full) {
     await decisions.record(identifier, `pause failed: ticket "${identifier}" was not found in Linear`);
     return fail(`ticket "${identifier}" was not found in Linear`);
@@ -518,11 +611,17 @@ async function pauseCommand(args: string[], ctx: CommandContext): Promise<Comman
     await decisions.record(full.identifier, "pause failed: no workspace");
     return fail(`no workspace for ${full.identifier}`);
   }
+  const deps = depsOf(ctx);
   try {
+    // Pause shares the block transition (status kept, Progress Blocked,
+    // Build slot freed) and adds the paused token on top.
+    const state = deriveState(resolved, full);
+    if (state.progress !== "blocked") {
+      await blockMutation(deps, workspace.workspaceId, full, state, "owner pause");
+    }
     await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: "1" });
   } catch (error) {
-    await decisions.record(full.identifier, `pause failed: ${(error as Error).message}`);
-    return fail(`pause failed: ${(error as Error).message}`);
+    return refuse(ctx, full.identifier, error);
   }
   await decisions.record(full.identifier, "paused by command");
   const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
@@ -541,18 +640,18 @@ async function pauseCommand(args: string[], ctx: CommandContext): Promise<Comman
 // resume
 // ---------------------------------------------------------------------------
 
-function resumePrompt(tokens: Record<string, string>): string {
-  const stage = tokens["stage"] ?? "plan";
-  const review = tokens["review_count"] ?? "0";
-  const verify = tokens["verify_count"] ?? "0";
-  return `igniter: resume. Continue from stage ${stage} (review_count ${review}, verify_count ${verify}); do not restart from plan.`;
+function resumePrompt(status: ProtocolStatus, progress: ProtocolProgress | null, checkpoint: string | null): string {
+  return (
+    `igniter: resume. Run \`igniter state --json\` and continue from status ${status} ` +
+    `progress ${progress ?? "?"}${checkpoint ? ` checkpoint ${checkpoint}` : ""}; do not restart.`
+  );
 }
 
 async function resumeCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("resume"));
   const identifier = args[0] as string;
-  const full = await client.fetchIssue(identifier);
+  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
   if (!full) {
     await decisions.record(identifier, `resume failed: ticket "${identifier}" was not found in Linear`);
     return fail(`ticket "${identifier}" was not found in Linear`);
@@ -573,49 +672,64 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
     await decisions.record(full.identifier, "resume failed: no workspace");
     return fail(`no workspace for ${full.identifier}; use \`igniter start ${full.identifier}\``);
   }
-  const paused = pausedTickets(snapshot);
-  const overBudget = overBudgetTickets(snapshot);
-  const running = await client.listIssuesByState(resolved.projectId, resolved.buildingStateId);
-  const others = running.filter((t) => t.id !== full.id && !paused.has(t.identifier) && !overBudget.has(t.identifier));
-  if (others.length >= resolved.config.maxRunning) {
-    await decisions.record(
-      full.identifier,
-      `resume refused: at max_running (${resolved.config.maxRunning}); running: ${others.map((t) => t.identifier).join(", ") || "none"}`,
-    );
-    return fail(
-      `at max_running (${resolved.config.maxRunning}); running: ${others.map((t) => t.identifier).join(", ") || "none"}`,
-    );
-  }
+  const paused = workspace.tokens["paused"] === "1";
+  let state;
   try {
-    await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: null, over_budget: null });
+    state = deriveState(resolved, full);
   } catch (error) {
-    await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
-    return fail(`resume failed: ${(error as Error).message}`);
+    return refuse(ctx, full.identifier, error);
   }
-  const tokens = { ...workspace.tokens };
-  delete tokens["paused"];
-  delete tokens["over_budget"];
+  if (state.progress !== "blocked" && !paused) {
+    await decisions.record(full.identifier, "resume refused: not paused or blocked");
+    return fail(`${full.identifier} is not paused or blocked; nothing to resume`);
+  }
+  // Resuming back into Build needs a free slot, like a fresh claim. The
+  // ticket itself never counts against its own resume: a Blocked ticket
+  // holds no slot, a merely paused one holds one.
+  if (state.status === "build") {
+    const used = (await countBuildSlots(client, resolved)) - (state.progress === "blocked" ? 0 : 1);
+    if (used >= resolved.config.maxRunning) {
+      await decisions.record(full.identifier, `resume refused: at max_running (${resolved.config.maxRunning})`);
+      return fail(`at max_running (${resolved.config.maxRunning})`);
+    }
+  }
+  const deps = depsOf(ctx);
+  try {
+    // Resume shares the unblock transition (Blocked back to Pending, never
+    // straight to In progress) and clears the paused token on top.
+    if (state.progress === "blocked") {
+      await unblockMutation(deps, workspace.workspaceId, full, state);
+      await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: null });
+    } else {
+      await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: null });
+      await decisions.record(full.identifier, "resumed by command");
+    }
+  } catch (error) {
+    return refuse(ctx, full.identifier, error);
+  }
+  const meta = { ...workspace.tokens };
+  delete meta["paused"];
   const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
   if (agent) {
     try {
-      await ctx.workspaces.prompt(agent.name, resumePrompt(tokens));
+      await ctx.workspaces.prompt(agent.name, resumePrompt(state.status, state.progress === "blocked" ? "pending" : state.progress, meta["checkpoint"] ?? null));
     } catch (error) {
       await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
       return fail(`resume failed: ${(error as Error).message}`);
     }
     await decisions.record(full.identifier, "resumed by command");
-    return { ok: true, text: `resumed ${full.identifier}; commander prompted to continue from stage ${tokens["stage"] ?? "plan"}` };
+    return { ok: true, text: `resumed ${full.identifier}; commander prompted to continue` };
   }
   const pane = snapshot.panes.find((p) => p.workspaceId === workspace.workspaceId);
   if (!pane) {
     await decisions.record(full.identifier, "resume failed: workspace has no pane");
     return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
   }
-  const kind = tokens["commander"] ?? "claude";
+  const kind = workspace.tokens["commander"] ?? "claude";
   const name = commanderName(full.identifier);
   try {
     await ctx.workspaces.startAgent({ paneId: pane.paneId, kind, name });
-    await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, tokens));
+    await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, meta));
   } catch (error) {
     await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
     return fail(`resume failed: ${(error as Error).message}`);
@@ -715,6 +829,104 @@ async function restartCommand(args: string[], ctx: CommandContext): Promise<Comm
 }
 
 // ---------------------------------------------------------------------------
+// workspace commands
+// ---------------------------------------------------------------------------
+
+async function stateCommand(args: string[], ctx: CommandContext, workspaceId: string): Promise<CommandResult> {
+  if (args.length !== 1 || args[0] !== "--json") return fail(usage("state"));
+  let resolved: ResolvedWorkspace;
+  try {
+    resolved = await resolveWorkspace(ctx, workspaceId);
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) };
+  }
+  const data = describeState(resolved.full, resolved.meta, resolved.state);
+  return { ok: true, text: JSON.stringify(data, null, 2), data };
+}
+
+async function beginCommand(args: string[], ctx: CommandContext, workspaceId: string): Promise<CommandResult> {
+  if (args.length > 0) return fail(usage("begin"));
+  let resolved: ResolvedWorkspace;
+  try {
+    resolved = await resolveWorkspace(ctx, workspaceId);
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    await beginMutation(depsOf(ctx), resolved.workspace.workspaceId, resolved.full, resolved.state);
+    return { ok: true, text: `began ${resolved.full.identifier}: ${resolved.state.status}+in_progress` };
+  } catch (error) {
+    return refuse(ctx, resolved.full.identifier, error);
+  }
+}
+
+async function submitCommand(
+  args: string[],
+  ctx: CommandContext,
+  workspaceId: string,
+  input: string | undefined,
+): Promise<CommandResult> {
+  const inputFlag = takeFlag(args, "input");
+  if (inputFlag.value !== "-" || inputFlag.rest.length > 0) return fail(usage("submit"));
+  if (input === undefined) {
+    return fail(`submit needs JSON on stdin; use \`igniter submit --input -\``);
+  }
+  let payload: unknown;
+  try {
+    payload = JSON.parse(input);
+  } catch {
+    return fail(`submit input is not JSON; use \`igniter submit --input -\``);
+  }
+  let resolved: ResolvedWorkspace;
+  try {
+    resolved = await resolveWorkspace(ctx, workspaceId);
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const out = await submitMutation(depsOf(ctx), resolved.workspace.workspaceId, resolved.full, resolved.state, payload);
+    return { ok: true, text: out };
+  } catch (error) {
+    return refuse(ctx, resolved.full.identifier, error);
+  }
+}
+
+async function blockCommand(args: string[], ctx: CommandContext, workspaceId: string): Promise<CommandResult> {
+  const reasonFlag = takeFlag(args, "reason");
+  if (reasonFlag.rest.length > 0) return fail(usage("block"));
+  const reason = reasonFlag.value?.trim();
+  if (!reason) return fail(usage("block"));
+  let resolved: ResolvedWorkspace;
+  try {
+    resolved = await resolveWorkspace(ctx, workspaceId);
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    await blockMutation(depsOf(ctx), resolved.workspace.workspaceId, resolved.full, resolved.state, reason);
+    return { ok: true, text: `blocked ${resolved.full.identifier}: ${reason}` };
+  } catch (error) {
+    return refuse(ctx, resolved.full.identifier, error);
+  }
+}
+
+async function unblockCommand(args: string[], ctx: CommandContext, workspaceId: string): Promise<CommandResult> {
+  if (args.length > 0) return fail(usage("unblock"));
+  let resolved: ResolvedWorkspace;
+  try {
+    resolved = await resolveWorkspace(ctx, workspaceId);
+  } catch (error) {
+    return { ok: false, text: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    await unblockMutation(depsOf(ctx), resolved.workspace.workspaceId, resolved.full, resolved.state);
+    return { ok: true, text: `unblocked ${resolved.full.identifier}: back to pending; run \`igniter begin\`` };
+  } catch (error) {
+    return refuse(ctx, resolved.full.identifier, error);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // work order and sink
 // ---------------------------------------------------------------------------
 
@@ -746,7 +958,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
         `(write the path back / generate a draft), and name the document you used in the completion report.\n`;
   return (
     `You are the Commander for ticket ${input.identifier}: "${input.title}".\n` +
-    `Issue: ${input.issueUrl}\n` +
+    `Issue: ${input.issueUrl} (for people; machine state comes from \`igniter state --json\`, never from Linear directly).\n` +
     `Workspace: a git worktree at ${input.worktreePath} on branch ${input.branch} (base main), ` +
     `created by igniter. Work there; do not create another branch. ` +
     `Install dependencies first as the repository instructs (bun install).\n` +
@@ -762,10 +974,14 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `\n` +
     delivery +
     `\n` +
-    `LINEAR_API_KEY is in the environment. Read the ticket through the Linear GraphQL API ` +
-    `(https://api.linear.app/graphql); do not use any other ticket source.\n` +
+    `Your tools for this run are the workspace commands. They reach the dispatch ` +
+    `server; never call Linear directly, never use MCP, and never write a Linear receipt by hand:\n` +
+    `- \`igniter state --json\`: read the ticket, criteria, status, Progress, checkpoint, receipt, next step, and submit schema.\n` +
+    `- \`igniter begin\`: move Pending to In progress (Build, Review, Deliver).\n` +
+    `- \`igniter submit --input -\`: submit versioned JSON on stdin; the server picks the schema from the Linear status.\n` +
+    `- \`igniter block --reason "<phrase>"\` / \`igniter unblock\`: park on an external condition and resume to Pending.\n` +
     `\n` +
-    `Your first action is \`igniter stage plan\`.\n`
+    `Your first action is \`igniter state --json\`.\n`
   );
 }
 
@@ -779,9 +995,9 @@ function resumedWorkOrder(
   tokens: Record<string, string>,
 ): string {
   const models = ctx.resolved.config.models;
-  const stage = tokens["stage"] ?? "plan";
-  const review = tokens["review_count"] ?? "0";
-  const verify = tokens["verify_count"] ?? "0";
+  const status = tokens["status"] ?? "?";
+  const progress = tokens["progress"] ?? "?";
+  const checkpoint = tokens["checkpoint"] ?? "?";
   const worktree = ticketWorktree(ctx.repoRoot, full.identifier);
   return (
     buildWorkOrder({
@@ -795,9 +1011,9 @@ function resumedWorkOrder(
       escalateModel: models.escalate,
       delivery: ctx.resolved.config.delivery,
     }) +
-    `\nThis is a resumed run. Workspace metadata says stage=${stage}, ` +
-    `review_count=${review}, verify_count=${verify}. ` +
-    `Continue from there; do not restart from plan. Checkpoint commits are on the ticket branch.\n`
+    `\nThis is a resumed run. Run \`igniter state --json\` first and continue from ` +
+    `status ${status} progress ${progress} checkpoint ${checkpoint}; do not restart. ` +
+    `Checkpoint commits are on the ticket branch.\n`
   );
 }
 
@@ -805,43 +1021,39 @@ export interface WorkspaceSinkOptions {
   workspaces: CommandWorkspaces;
   config: DispatchConfig;
   repoRoot: string;
-  readApiKey?: () => string | undefined;
   runGit?: GitRunner;
-  now?: () => string;
 }
 
 /**
  * The real claim sink: prepares the ticket's worktree, opens the workspace
  * on it, and starts the Commander. Both the watch loop's automatic claims
- * and `igniter start` go through it. A failure after the workspace exists
- * throws WorkspaceSinkError carrying the id so a person can clean it up;
- * there is no rollback.
+ * and `igniter start` go through it. The ticket metadata lands before the
+ * Commander starts, so the workspace commands can resolve the ticket from
+ * it. The workspace carries no secrets: no LINEAR_API_KEY, no ticket guess
+ * from the environment. A failure after the workspace exists throws
+ * WorkspaceSinkError carrying the id so a person can clean it up; there is
+ * no rollback.
  */
 export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
-  const readApiKey = options.readApiKey ?? (() => process.env["LINEAR_API_KEY"]);
   const runGit = options.runGit ?? bunGitRunner();
-  const now = options.now ?? (() => new Date().toISOString());
   return async (claim: ClaimedTicket) => {
     const kind = claim.agent ?? "claude";
     const builder = claim.builder ?? options.config.models.builder;
-    const apiKey = readApiKey();
-    if (!apiKey) {
-      throw new WorkspaceSinkError("LINEAR_API_KEY is not set in the serve process environment");
-    }
     let worktree;
     try {
       worktree = await ensureTicketWorktree(runGit, options.repoRoot, claim.identifier);
     } catch (error) {
-      if (error instanceof WorkspaceSinkError) throw error;
       throw new WorkspaceSinkError((error as Error).message);
     }
     let workspaceId: string;
     let rootPaneId: string;
     try {
+      // No secrets ride into the workspace: the server holds the Linear
+      // key and resolves the ticket from metadata below.
       ({ workspaceId, rootPaneId } = await options.workspaces.create({
         label: claim.identifier,
         cwd: worktree.path,
-        env: { LINEAR_API_KEY: apiKey, IGNITER_TICKET: claim.identifier },
+        env: {},
       }));
     } catch (error) {
       throw new WorkspaceSinkError((error as Error).message);
@@ -851,7 +1063,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
         ticket: claim.identifier,
         commander: kind,
         builder,
-        started_at: now(),
+        slot: String(claim.slot),
       });
       const name = commanderName(claim.identifier);
       await options.workspaces.startAgent({ paneId: rootPaneId, kind, name });

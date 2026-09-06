@@ -11,23 +11,31 @@ export interface DispatchModels {
 }
 
 export interface DispatchStates {
-  queued: string;
-  building: string;
+  backlog: string;
+  todo: string;
+  build: string;
   review: string;
-  failed: string;
-  merge: string;
+  deliver: string;
+  done: string;
+}
+
+export interface DispatchProgress {
+  group: string;
+  pending: string;
+  in_progress: string;
+  complete: string;
+  blocked: string;
 }
 
 export interface DispatchConfig {
   project: string;
   team?: string;
   maxRunning: number;
-  maxHours: number;
-  blockedMinutes: number;
   linearOrg: string;
   listenHost: string;
   listenPort: number;
   states: DispatchStates;
+  progress: DispatchProgress;
   herdrRemote?: string;
   models: DispatchModels;
   /** Delivery document path relative to the repo root, naming the file the
@@ -37,17 +45,23 @@ export interface DispatchConfig {
 }
 
 export const DEFAULT_MAX_RUNNING = 3;
-export const DEFAULT_MAX_HOURS = 4;
-export const DEFAULT_BLOCKED_MINUTES = 20;
 export const DEFAULT_LINEAR_ORG = "starcoder";
 export const DEFAULT_LISTEN_HOST = "127.0.0.1";
 export const DEFAULT_LISTEN_PORT = 4180;
 export const DEFAULT_STATES: DispatchStates = {
-  queued: "Ready to build",
-  building: "Building",
-  review: "Ready to review",
-  failed: "Todo",
-  merge: "Ready to merge",
+  backlog: "Backlog",
+  todo: "Todo",
+  build: "Build",
+  review: "Review",
+  deliver: "Deliver",
+  done: "Done",
+};
+export const DEFAULT_PROGRESS: DispatchProgress = {
+  group: "Progress",
+  pending: "Pending",
+  in_progress: "In progress",
+  complete: "Complete",
+  blocked: "Blocked",
 };
 export const DEFAULT_MODELS: DispatchModels = {
   builder: "opencode/muse-spark-1.3-contributor-free",
@@ -109,36 +123,57 @@ function parseMaxRunning(raw: unknown): number {
   return raw;
 }
 
-function parseMaxHours(raw: unknown): number {
-  if (raw === undefined || raw === null) return DEFAULT_MAX_HOURS;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    fail(`"max_hours" must be a positive number (got ${JSON.stringify(raw)})`);
-  }
-  return raw;
-}
-
-function parseBlockedMinutes(raw: unknown): number {
-  if (raw === undefined || raw === null) return DEFAULT_BLOCKED_MINUTES;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
-    fail(`"blocked_minutes" must be a positive number (got ${JSON.stringify(raw)})`);
-  }
-  return raw;
-}
-
 function parseStates(raw: unknown): DispatchStates {
   if (raw === undefined || raw === null) return { ...DEFAULT_STATES };
-  if (!isRecord(raw)) fail(`"states" must be a map of role to Linear status name`);
+  if (!isRecord(raw)) fail(`"states" must be a map of stage to Linear status name`);
   const states: DispatchStates = { ...DEFAULT_STATES };
   for (const [key, value] of Object.entries(raw)) {
-    if (key !== "queued" && key !== "building" && key !== "review" && key !== "failed" && key !== "merge") {
-      fail(`unknown states role "${key}" (known: queued, building, review, failed, merge)`);
+    if (
+      key !== "backlog" &&
+      key !== "todo" &&
+      key !== "build" &&
+      key !== "review" &&
+      key !== "deliver" &&
+      key !== "done"
+    ) {
+      fail(`unknown states role "${key}" (known: backlog, todo, build, review, deliver, done)`);
     }
     if (typeof value !== "string" || value.trim() === "") {
       fail(`states."${key}" must be a non-empty status name`);
     }
     states[key] = value.trim();
   }
+  const names = Object.values(states);
+  if (new Set(names).size !== names.length) {
+    fail(`"states" must name six distinct Linear statuses (got ${JSON.stringify(names)})`);
+  }
   return states;
+}
+
+function parseProgress(raw: unknown): DispatchProgress {
+  if (raw === undefined || raw === null) return { ...DEFAULT_PROGRESS };
+  if (!isRecord(raw)) fail(`"progress" must be a map of progress role to Linear label name`);
+  const progress: DispatchProgress = { ...DEFAULT_PROGRESS };
+  for (const [key, value] of Object.entries(raw)) {
+    if (
+      key !== "group" &&
+      key !== "pending" &&
+      key !== "in_progress" &&
+      key !== "complete" &&
+      key !== "blocked"
+    ) {
+      fail(`unknown progress role "${key}" (known: group, pending, in_progress, complete, blocked)`);
+    }
+    if (typeof value !== "string" || value.trim() === "") {
+      fail(`progress."${key}" must be a non-empty label name`);
+    }
+    progress[key] = value.trim();
+  }
+  const labels = [progress.pending, progress.in_progress, progress.complete, progress.blocked];
+  if (new Set(labels).size !== labels.length) {
+    fail(`"progress" must name four distinct Linear labels (got ${JSON.stringify(labels)})`);
+  }
+  return progress;
 }
 
 function parseModels(raw: unknown): DispatchModels {
@@ -162,30 +197,18 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (!isRecord(raw)) fail(`expected a YAML map at the top level`);
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
-  const maxHours = parseMaxHours(raw["max_hours"]);
-  const blockedMinutes = parseBlockedMinutes(raw["blocked_minutes"]);
   const { host, port } = parseListen(raw["listen"]);
   const states = parseStates(raw["states"]);
-  if (states.failed === states.queued) {
-    fail(
-      `"states.failed" ("${states.failed}") must not equal "states.queued": a failed ticket dropped back into the queue state would be re-claimed forever`,
-    );
-  }
-  if (states.merge === states.building || states.merge === states.review) {
-    fail(
-      `"states.merge" ("${states.merge}") must not equal "states.building" or "states.review": the merge state marks owner acceptance, not active work`,
-    );
-  }
+  const progress = parseProgress(raw["progress"]);
   return {
     project,
     team: optionalText(raw, "team"),
     maxRunning,
-    maxHours,
-    blockedMinutes,
     linearOrg: optionalText(raw, "linear_org") ?? DEFAULT_LINEAR_ORG,
     listenHost: host,
     listenPort: port,
     states,
+    progress,
     herdrRemote: optionalText(raw, "herdr_remote"),
     models: parseModels(raw["models"]),
     delivery: optionalText(raw, "delivery"),
