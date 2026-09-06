@@ -19,6 +19,7 @@ Builder conclusion, or source-level hint. Do not inspect source files, git
 history, or git diff.
 
 Do not operate Igniter or Linear; report only to the Commander.
+Never call Linear directly or through MCP, and never publish a receipt.
 
 ## Acceptance
 
@@ -54,6 +55,14 @@ Unless the project settings skip recording:
 
 Keep validated evidence available for the Commander to publish. If recording is
 unavailable, provide validated alternative evidence and explain why.
+
+For CLI or API behavior, report a command transcript per criterion: the exact
+command run, its integer exit code, and the needed stdout and stderr excerpts.
+Keep each transcript within its size budget; when output is larger, attach it
+or link an external artifact instead of truncating failure output. Screenshots,
+recordings, and other media still travel as readable URLs or attachments.
+State PASS or FAIL yourself per criterion; no tool derives the verdict from an
+exit code.
 
 ## Report
 

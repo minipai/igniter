@@ -229,11 +229,24 @@ export interface BuildSubmit {
   reproduction: string;
 }
 
+export interface CommandEvidence {
+  kind: "command";
+  command: string;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type ReviewEvidence = string | CommandEvidence;
+
+/** Per-criterion transcript budget: over this, submit an attachment or URL instead. */
+export const MAX_COMMAND_EVIDENCE_CHARS = 4000;
+
 export interface ReviewResult {
   criterion: string;
   expected: string;
   actual: string;
-  evidence: string;
+  evidence: ReviewEvidence;
   ok: boolean;
 }
 
@@ -321,6 +334,61 @@ export function parseBuildSubmit(raw: unknown, criteria: string[]): BuildSubmit 
   };
 }
 
+/** True when a result carries reproducible evidence: a URL or a transcript. */
+export function hasReviewEvidence(evidence: ReviewEvidence): boolean {
+  if (typeof evidence === "string") return evidence !== "";
+  return true;
+}
+
+/**
+ * URL evidence stays a trimmed string; command evidence is a
+ * `{"kind":"command","command","exitCode","stdout","stderr"}` transcript.
+ * The verdict always comes from the Acceptance agent's `ok` flags: igniter
+ * never derives it from an exit code.
+ */
+export function parseReviewEvidence(raw: unknown, criterion: string): ReviewEvidence {
+  if (typeof raw === "string") {
+    const evidence = raw.trim();
+    if (evidence !== "" && !absoluteHttpUrl(evidence)) {
+      throw new ProtocolError(
+        `refused: review evidence must be an absolute http or https URL or a command transcript {"kind":"command",...}; criterion "${criterion}" has ${JSON.stringify(evidence)?.slice(0, 120)}`,
+      );
+    }
+    return evidence;
+  }
+  if (isRecord(raw) && raw["kind"] === "command") {
+    if (!nonEmpty(raw["command"])) {
+      throw new ProtocolError(`refused: review evidence for criterion "${criterion}" needs a non-empty "command"`);
+    }
+    if (typeof raw["exitCode"] !== "number" || !Number.isInteger(raw["exitCode"])) {
+      throw new ProtocolError(`refused: review evidence for criterion "${criterion}" needs an integer "exitCode"`);
+    }
+    if (typeof raw["stdout"] !== "string" || typeof raw["stderr"] !== "string") {
+      throw new ProtocolError(
+        `refused: review evidence for criterion "${criterion}" needs "stdout" and "stderr" strings`,
+      );
+    }
+    const stdout = raw["stdout"] as string;
+    const stderr = raw["stderr"] as string;
+    if (stdout.trim() === "" && stderr.trim() === "") {
+      throw new ProtocolError(
+        `refused: review evidence for criterion "${criterion}" needs non-empty "stdout" or "stderr" output`,
+      );
+    }
+    const command = (raw["command"] as string).trim();
+    const size = command.length + stdout.length + stderr.length;
+    if (size > MAX_COMMAND_EVIDENCE_CHARS) {
+      throw new ProtocolError(
+        `refused: review evidence for criterion "${criterion}" exceeds ${MAX_COMMAND_EVIDENCE_CHARS} chars (got ${size}); publish an attachment or external artifact URL instead, never truncate failure output`,
+      );
+    }
+    return { kind: "command", command, exitCode: raw["exitCode"] as number, stdout, stderr };
+  }
+  throw new ProtocolError(
+    `refused: review evidence for criterion "${criterion}" must be an absolute http or https URL or a command transcript {"kind":"command","command","exitCode","stdout","stderr"}`,
+  );
+}
+
 export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmit {
   if (!isRecord(raw) || raw["v"] !== 1 || raw["kind"] !== "review") {
     throw new ProtocolError(`refused: review submit needs {"v":1,"kind":"review",...}; got ${JSON.stringify(raw)?.slice(0, 120)}`);
@@ -338,23 +406,19 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
       !nonEmpty(entry["criterion"]) ||
       !nonEmpty(entry["expected"]) ||
       !nonEmpty(entry["actual"]) ||
-      typeof entry["ok"] !== "boolean"
+      typeof entry["ok"] !== "boolean" ||
+      !("evidence" in entry)
     ) {
       throw new ProtocolError(
         `refused: every review result needs {"criterion", "expected", "actual", "evidence", "ok"}`,
       );
     }
-    const evidence = typeof entry["evidence"] === "string" ? (entry["evidence"] as string).trim() : "";
-    if (evidence !== "" && !absoluteHttpUrl(evidence)) {
-      throw new ProtocolError(
-        `refused: review evidence must be an absolute http or https URL; criterion "${(entry["criterion"] as string).trim()}" has ${JSON.stringify(evidence)}`,
-      );
-    }
+    const criterion = (entry["criterion"] as string).trim();
     return {
-      criterion: (entry["criterion"] as string).trim(),
+      criterion,
       expected: (entry["expected"] as string).trim(),
       actual: (entry["actual"] as string).trim(),
-      evidence,
+      evidence: parseReviewEvidence(entry["evidence"], criterion),
       ok: entry["ok"] as boolean,
     };
   });
@@ -363,7 +427,7 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
   if (!nonEmpty(raw["reproduction"])) throw new ProtocolError(`refused: review submit needs "reproduction" steps`);
   const verdict = raw["verdict"] as "pass" | "fail";
   if (verdict === "pass") {
-    const bad = results.filter((r) => !r.ok || !r.evidence);
+    const bad = results.filter((r) => !r.ok || !hasReviewEvidence(r.evidence));
     if (bad.length > 0) {
       throw new ProtocolError(
         `refused: a PASS verdict needs every criterion ok with evidence; failing: ${bad.map((r) => `"${r.criterion}"`).join(", ")}`,
@@ -374,7 +438,7 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
     if (failing.length === 0) {
       throw new ProtocolError(`refused: a FAIL verdict needs at least one criterion with "ok": false`);
     }
-    const noEvidence = failing.filter((r) => !r.evidence);
+    const noEvidence = failing.filter((r) => !hasReviewEvidence(r.evidence));
     if (noEvidence.length > 0) {
       throw new ProtocolError(
         `refused: every failing criterion needs reproducible "evidence"; missing: ${noEvidence.map((r) => `"${r.criterion}"`).join(", ")}`,
@@ -435,6 +499,16 @@ export function buildReceiptBody(payload: BuildSubmit, submission: string): stri
   return lines.join("\n") + "\n";
 }
 
+/** One receipt line per evidence shape; transcripts keep command, exit, and output. */
+export function formatReviewEvidence(evidence: ReviewEvidence): string[] {
+  if (typeof evidence === "string") return [`  Evidence: ${evidence}`];
+  return [
+    `  Evidence: command \`${evidence.command}\` (exit ${evidence.exitCode})`,
+    `    stdout: ${evidence.stdout}`,
+    `    stderr: ${evidence.stderr}`,
+  ];
+}
+
 export function reviewReceiptBody(payload: ReviewSubmit, submission: string): string {
   const verdict = payload.verdict === "pass" ? "PASS" : "FAIL";
   const lines = [
@@ -448,7 +522,7 @@ export function reviewReceiptBody(payload: ReviewSubmit, submission: string): st
       `- [${r.ok ? "x" : " "}] ${r.criterion}`,
       `  Expected: ${r.expected}`,
       `  Actual: ${r.actual}`,
-      `  Evidence: ${r.evidence}`,
+      ...formatReviewEvidence(r.evidence),
     ]),
     ``,
     `Reproduction:`,
@@ -678,8 +752,16 @@ function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unk
       kind: "review",
       verdict: "pass|fail",
       checkpoint: at,
-      results: [{ criterion: "<criterion>", expected: "", actual: "", evidence: "<url>", ok: true }],
-      environment: "<where acceptance ran>",
+      results: [
+        {
+          criterion: "<criterion>",
+          expected: "",
+          actual: "",
+          evidence: '<absolute http(s) URL> or {"kind":"command","command":"<ran>","exitCode":0,"stdout":"<excerpt>","stderr":""}',
+          ok: true,
+        },
+      ],
+      environment: "<where acceptance ran, with its limits>",
       reproduction: "<steps to reproduce>",
     };
   }
@@ -1085,7 +1167,13 @@ async function submitReview(
     );
   }
   const submission = submissionId({ ticket: full.identifier, ...payload });
-  const urls = [...new Set(payload.results.map((r) => r.evidence).filter((u) => u !== ""))];
+  const urls = [
+    ...new Set(
+      payload.results
+        .map((r) => (typeof r.evidence === "string" ? r.evidence : ""))
+        .filter((u) => u !== ""),
+    ),
+  ];
   await publishEvidence(deps, full.id, payload.checkpoint, submission, payload.verdict, urls);
   const kind: ReceiptKind = payload.verdict === "pass" ? "review-pass" : "review-fail";
   const body = reviewReceiptBody(payload, submission);
