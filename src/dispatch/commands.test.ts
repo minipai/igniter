@@ -55,7 +55,7 @@ async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient
   const workspaces = new FakeWorkspaces();
   const git = new FakeGit();
   git.head = HEAD;
-  const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-wt-root-")), "repo");
+  const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-runtime-root-")), "repo");
   const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
@@ -732,7 +732,7 @@ describe("work order", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       builderModel: "b-model",
       commanderConfig: DEFAULT_COMMANDER_CONFIG,
@@ -741,7 +741,7 @@ describe("work order", () => {
       "STA-176",
       "Dispatch commands",
       "https://linear.app/starcoder/issue/STA-176",
-      "Workspace: a git worktree at /repo-wt/sta-176 on branch feature/sta-176 (base main), created by igniter.",
+      "Workspace: a git worktree at /repo/.igniter/runtime/worktrees/sta-176 on branch feature/sta-176 (base main), created by igniter.",
       "do not create another branch",
       "bun install",
       "b-model",
@@ -777,7 +777,7 @@ describe("work order", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       commanderConfig,
     });
@@ -794,7 +794,7 @@ describe("work order", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       commanderConfig: DEFAULT_COMMANDER_CONFIG,
       assets,
@@ -822,7 +822,7 @@ describe("work order", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       commanderConfig,
       assets,
@@ -854,7 +854,7 @@ describe("work order", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       builderModel: "b-model",
       commanderConfig: DEFAULT_COMMANDER_CONFIG,
@@ -873,7 +873,7 @@ describe("worker scratch", () => {
       identifier: "STA-176",
       title: "Dispatch commands",
       issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo-wt/sta-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
       branch: "feature/sta-176",
       commanderConfig: DEFAULT_COMMANDER_CONFIG,
       scratch,

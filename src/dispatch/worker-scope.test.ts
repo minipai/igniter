@@ -37,9 +37,11 @@ function scopeIn(dir: string): { scope: WorkerScope; worktree: string; scratch: 
 }
 
 describe("scratch layout", () => {
-  test("one deterministic dir per worker beside the worktree", () => {
+  test("one deterministic dir per worker under repo-local runtime data", () => {
     const root = mkdtempSync(join(tmpdir(), "igniter-scope-"));
-    expect(scratchRootFor(root, "STA-189")).toContain("sta-189.scratch");
+    expect(scratchRootFor(root, "STA-189")).toBe(
+      join(root, ".igniter", "runtime", "scratch", "sta-189"),
+    );
     const paths = WORKER_NAMES.map((w) => scratchFor(root, "STA-189", w));
     expect(new Set(paths).size).toBe(3);
     expect(paths.every((p) => p.startsWith(scratchRootFor(root, "STA-189")))).toBe(true);
@@ -87,14 +89,17 @@ describe("scratch layout", () => {
 
 describe("harness launch", () => {
   test("builder and fallback harnesses each get their own scratch settings", () => {
-    const builder = workerLaunch({ harness: "opencode", worktreePath: "/wt/sta-1", scratchPath: "/wt/sta-1.scratch/builder" });
-    const fallback = workerLaunch({ harness: "codex", worktreePath: "/wt/sta-1", scratchPath: "/wt/sta-1.scratch/builder" });
-    expect(builder.args.join(" ")).toContain("/wt/sta-1.scratch/builder");
-    expect(fallback.args.join(" ")).toContain("/wt/sta-1.scratch/builder");
+    const builder = workerLaunch({ harness: "opencode", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/builder" });
+    const fallback = workerLaunch({ harness: "codex", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/builder" });
+    expect(builder.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/builder");
+    expect(fallback.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/builder");
     expect(builder.args.join(" ")).not.toBe(fallback.args.join(" "));
-    expect(builder.env).toEqual({ IGNITER_WORKTREE: "/wt/sta-1", IGNITER_SCRATCH: "/wt/sta-1.scratch/builder" });
-    const reviewer = workerLaunch({ harness: "claude", worktreePath: "/wt/sta-1", scratchPath: "/wt/sta-1.scratch/reviewer" });
-    expect(reviewer.args.join(" ")).toContain("/wt/sta-1.scratch/reviewer");
+    expect(builder.env).toEqual({
+      IGNITER_WORKTREE: "/repo/.igniter/runtime/worktrees/sta-1",
+      IGNITER_SCRATCH: "/repo/.igniter/runtime/scratch/sta-1/builder",
+    });
+    const reviewer = workerLaunch({ harness: "claude", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/reviewer" });
+    expect(reviewer.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/reviewer");
     expect(reviewer.args.join(" ")).not.toBe(builder.args.join(" "));
     expect(workerLaunch({ harness: "unknown-harness", worktreePath: "/wt", scratchPath: "/s" }).args).toEqual([]);
   });

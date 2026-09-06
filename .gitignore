@@ -5,6 +5,7 @@ dist/
 coverage/
 .diffwalk/
 .igniter/dispatch.log
+.igniter/runtime/
 
 # Worktrees other agents create inside the repo
 .claude/worktrees/

@@ -12,13 +12,13 @@ import { lstat, mkdir, rm } from "node:fs/promises";
 export type WorkerName = "builder" | "reviewer" | "deliverer";
 export const WORKER_NAMES: WorkerName[] = ["builder", "reviewer", "deliverer"];
 
-/** Deterministic scratch root for a ticket, beside its worktree. */
+/** Deterministic scratch root for a ticket under the repo's ignored runtime data. */
 export function scratchRootFor(repoRoot: string, identifier: string): string {
   const ticket = identifier.toLowerCase();
   if (!/^[a-z]{2,}-[0-9]+$/.test(ticket)) {
     throw new ScratchError(`refused: bad ticket identifier "${identifier}"`);
   }
-  return join(dirname(repoRoot), `${basename(repoRoot)}-wt`, `${ticket}.scratch`);
+  return join(repoRoot, ".igniter", "runtime", "scratch", ticket);
 }
 
 /** Deterministic scratch dir for one workflow worker. */

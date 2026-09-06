@@ -3,7 +3,7 @@
 // prepares the worktree before opening the Herdr workspace; the Commander
 // works there and never creates another branch or worktree.
 
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import { WorkspaceSinkError } from "./claims.ts";
 
@@ -16,14 +16,14 @@ export interface TicketWorktree {
 }
 
 /**
- * `<dir>/<base>-wt/<ticket lowercased>` on branch `feature/<ticket
- * lowercased>`, e.g. `/Users/art/Dev/igniter-wt/sta-177` on
- * `feature/sta-177`. Pure derivation, so resume finds the same checkout.
+ * `<repo>/.igniter/runtime/worktrees/<ticket lowercased>` on branch
+ * `feature/<ticket lowercased>`. Pure derivation, so resume finds the same
+ * checkout without adding project-specific directories beside the repo.
  */
 export function ticketWorktree(repoRoot: string, identifier: string): TicketWorktree {
   const ticket = identifier.toLowerCase();
   return {
-    path: join(dirname(repoRoot), `${basename(repoRoot)}-wt`, ticket),
+    path: join(repoRoot, ".igniter", "runtime", "worktrees", ticket),
     branch: `feature/${ticket}`,
   };
 }
