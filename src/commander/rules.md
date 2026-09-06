@@ -19,11 +19,12 @@ Repository-specific engineering rules come from the target repository.
 
 - **Commander:** owns the state machine, workspace commands, worktree, worker
   prompts, report validation, receipts, evidence publication, and owner gates.
-- **Build agent:** implements, checks, self-accepts, and commits the feature.
+- **Build agent:** implements, checks, self-accepts, commits the feature, and
+  publishes its Diffwalk walkthrough.
 - **Acceptance agent:** tests the committed feature through its public UI, CLI,
   or API without inspecting source code or diffs.
-- **Deliver agent:** prepares the accepted checkpoint for landing and reports
-  its lineage and remaining owner actions.
+- **Deliver agent:** merges the accepted checkpoint into local `main` and
+  reports its lineage and remaining owner actions.
 - **Owner:** accepts the evidence, authorizes delivery, and confirms landing.
 
 Build and Deliver run in separate Herdr-tab agents. Acceptance does too unless
@@ -179,11 +180,11 @@ covers the required fields and ends with its completion marker.
 
 - **Build — `BUILD_HANDOFF_COMPLETE`:** checkpoint, required checks,
   per-criterion self-acceptance, one-pass code-review result, reproduction
-  steps, and unresolved concerns.
+  steps, published Diffwalk link, and unresolved concerns.
 - **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
   with expected, actual, evidence, and environment details.
-- **Deliver — `DELIVERY_COMPLETE`:** checkpoint, commit lineage, landing
-  preparation, published Diffwalk link, and remaining owner steps.
+- **Deliver — `DELIVERY_COMPLETE`:** checkpoint, local `main` commit, commit
+  lineage, merge result, and remaining owner steps.
 
 Validate the report against the checkpoint and the submit schema from
 `igniter state --json`. The Commander converts the report to JSON and runs
@@ -195,8 +196,9 @@ Validate the report against the checkpoint and the submit schema from
 The initial claim is already Build + In progress. On a returned Build +
 Pending, run `igniter begin` before resuming the original Build agent.
 
-Before Review, require a committed checkpoint and compare its diff with the
-configured Risk areas. Block on a listed risk and wait for the owner.
+Before Review, require a committed checkpoint and a checked, published
+Diffwalk walkthrough. Compare its diff with the configured Risk areas. Block
+on a listed risk and wait for the owner.
 
 Build evidence is self-acceptance, never approval. There is no code audit by
 default. Only the owner may request a bounded read-only audit, and it never
@@ -231,9 +233,12 @@ The owner's move from Review + Complete to Deliver is the delivery approval.
 Run `igniter begin`, create the configured Deliver agent, and pass it the
 accepted checkpoint plus repository landing instructions.
 
-Validate its lineage and remaining owner steps before submitting the Deliver
-report. Do not push or rewrite history unless the owner requested it or the
-repository instructions require it.
+Require the Deliver agent to merge the accepted checkpoint into the
+repository's local `main`; preparing a merge, rebasing only the feature branch,
+or returning commands for the owner is incomplete. Validate that local `main`
+contains the accepted change, its lineage, and remaining owner steps before
+submitting the Deliver report. Do not push or rewrite history unless the owner
+requested it or the repository instructions require it.
 
 After Deliver + Complete, wait for the owner to confirm the actual push or
 deployment by moving the ticket to Done. That move clears Progress and closes

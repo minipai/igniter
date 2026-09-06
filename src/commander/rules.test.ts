@@ -71,14 +71,18 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Never infer success from `done`");
   });
 
-  test("runs Deliver in a separate worker without another configured model", () => {
+  test("Build publishes Diffwalk and Deliver merges local main", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
     expect(commanderConfig.stages.build.agent).toBe("builder");
     expect(commanderConfig.stages.review.agent).toBe("reviewer");
     expect(commanderConfig.stages.deliver.agent).toBe("builder");
-    expect(stageRules[2]).toContain("`diffwalk inspect`");
-    expect(stageRules[2]).toContain("`diffwalk check`");
-    expect(stageRules[2]).toContain("`diffwalk publish`");
+    expect(stageRules[0]).toContain("`diffwalk inspect`");
+    expect(stageRules[0]).toContain("`diffwalk check`");
+    expect(stageRules[0]).toContain("`diffwalk publish`");
+    expect(stageRules[0]).toContain("the published Diffwalk link");
+    expect(stageRules[2]).not.toContain("diffwalk");
+    expect(stageRules[2]).toContain("Merge the accepted checkpoint into the repository's local `main` branch");
+    expect(stageRules[2]).toContain("Do not stop after preparing the merge");
     expect(stageRules[2]).not.toContain("required delivery artifact");
   });
 
