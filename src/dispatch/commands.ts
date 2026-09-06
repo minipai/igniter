@@ -29,6 +29,7 @@ import {
   type ResolvedDispatch,
 } from "./claims.ts";
 import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
+import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { LinearClient } from "./linear.ts";
 import {
   adoptTicket,
@@ -854,7 +855,7 @@ export function buildRestartPrompt(model: string): string {
     `igniter: restart the Builder with model ${model}. ` +
     `Close the current Builder tab and open a new one with this model. ` +
     `The work tree may be half-changed and uncommitted: the new Builder's work order must say so ` +
-    `and tell it to read \`git diff\` first (see 'Builder restart' in src/commander/rules.md).`
+    `and tell it to read \`git diff\` first (see 'Build' in the bundled Commander rules).`
   );
 }
 
@@ -1017,10 +1018,14 @@ export interface WorkOrderInput {
   /** Delivery document path relative to the repo root. Absent means the
    *  Commander must search the repository for the document itself. */
   delivery?: string;
+  /** Bundled Commander asset paths. Defaults to the install location
+   *  derived from the running Igniter module, never the target repo. */
+  assets?: CommanderAssetPaths;
 }
 
 /** The Commander's first prompt. Tests assert on its contents; keep it whole. */
 export function buildWorkOrder(input: WorkOrderInput): string {
+  const assets = input.assets ?? commanderAssetPaths();
   const stageName: Record<CommanderStage, string> = {
     build: "Build",
     review: "Acceptance",
@@ -1032,7 +1037,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     const model = stageConfig.agent === "builder" && input.builderModel
       ? input.builderModel
       : agent.model;
-    return `- ${stageName[stage]}: prompt \`src/commander/${stageConfig.prompt}\`; agent \`${stageConfig.agent}\`; ` +
+    return `- ${stageName[stage]}: prompt \`${assets.prompts[stage]}\`; agent \`${stageConfig.agent}\`; ` +
       `harness \`${agent.harness}\`; model \`${model}\``;
   }).join("\n");
   const fallback = input.commanderConfig.agents.builder.fallback;
@@ -1053,8 +1058,8 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `created by igniter. Work there; do not create another branch. ` +
     `Install dependencies first as the repository instructs (bun install).\n` +
     `\n` +
-    `Read the repository's AGENTS.md and follow it. Then read src/commander/rules.md ` +
-    `(relative to the repo root) and run this delivery exactly as it says.\n` +
+    `Read the repository's AGENTS.md and follow it. Then read the bundled Commander rules at ${assets.rules} ` +
+    `and run this delivery exactly as it says.\n` +
     `\n` +
     `Effective stage workers (bundled defaults plus repository overrides):\n` +
     `${stageLines}\n` +

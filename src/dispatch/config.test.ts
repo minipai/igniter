@@ -124,6 +124,19 @@ describe("parseDispatchConfig", () => {
     expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("opencode");
   });
 
+  test("rejects bundled prompt overrides while agent fields still merge", () => {
+    expect(() => parseDispatchConfig({
+      project: "x",
+      stages: { build: { prompt: "other/build.md" } },
+    })).toThrow('"stages" is bundled');
+    const merged = parseDispatchConfig({
+      project: "x",
+      agents: { builder: { model: "custom/builder" } },
+    }).commander;
+    expect(merged.agents.builder.model).toBe("custom/builder");
+    expect(merged.stages).toEqual(DEFAULT_COMMANDER_CONFIG.stages);
+  });
+
   test("rejects invalid agent overrides", () => {
     expect(() => parseDispatchConfig({
       project: "x",

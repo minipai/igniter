@@ -5,7 +5,8 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { commanderAssetPaths } from "../commander/assets";
 import {
   createWorkspaceSink,
   buildWorkOrder,
@@ -745,10 +746,12 @@ describe("work order", () => {
       "b-model",
       "claude-sonnet-5",
       "openai/gpt-5.6-terra",
-      "src/commander/stages/build.md",
+      "/stages/build.md",
+      "/stages/review.md",
+      "/stages/deliver.md",
       "harness `opencode`",
       "harness `claude`",
-      "src/commander/rules.md",
+      "/rules.md",
       "AGENTS.md",
       "`igniter state --json`",
       "`igniter begin`",
@@ -761,6 +764,7 @@ describe("work order", () => {
     expect(order).not.toContain("LINEAR_API_KEY");
     expect(order).not.toContain("GraphQL");
     expect(order).not.toContain("igniter stage");
+    expect(order).not.toContain("`src/commander/");
   });
 
   test("carries a repository harness override into the Commander work order", () => {
@@ -777,7 +781,55 @@ describe("work order", () => {
       commanderConfig,
     });
 
-    expect(order).toContain("Acceptance: prompt `src/commander/stages/review.md`; agent `reviewer`; harness `codex`; model `r-model`");
+    expect(order).toContain("Acceptance: prompt `/");
+    expect(order).toContain("/stages/review.md`; agent `reviewer`; harness `codex`; model `r-model`");
+  });
+
+  test("work order carries bundled absolute paths that exist outside the target repo", async () => {
+    // A target repo with no src/commander/ at all.
+    const repoRoot = mkdtempSync(join(tmpdir(), "igniter-target-"));
+    const assets = commanderAssetPaths();
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig: DEFAULT_COMMANDER_CONFIG,
+      assets,
+    });
+    expect(order).toContain(assets.rules);
+    for (const stage of ["build", "review", "deliver"] as const) {
+      const prompt = assets.prompts[stage];
+      expect(order).toContain(prompt);
+      expect(isAbsolute(prompt)).toBe(true);
+      expect(prompt.startsWith(repoRoot)).toBe(false);
+      expect(await Bun.file(prompt).exists()).toBe(true);
+      expect((await Bun.file(prompt).text()).length).toBeGreaterThan(0);
+    }
+    expect(isAbsolute(assets.rules)).toBe(true);
+    expect(await Bun.file(assets.rules).exists()).toBe(true);
+  });
+
+  test("agent overrides merge while bundled prompt paths stay fixed", async () => {
+    const assets = commanderAssetPaths();
+    const commanderConfig = parseDispatchConfig({
+      project: "igniter",
+      agents: { builder: { model: "custom/builder" } },
+    }).commander;
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig,
+      assets,
+    });
+    expect(order).toContain("model `custom/builder`");
+    for (const stage of ["build", "review", "deliver"] as const) {
+      expect(order).toContain(assets.prompts[stage]);
+    }
   });
 
   test("a worktree failure aborts the start before any workspace opens", async () => {

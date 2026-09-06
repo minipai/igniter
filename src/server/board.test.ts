@@ -2,12 +2,15 @@
 // Linear and fake Herdr. No network, no real credentials, no daemon.
 
 import { describe, expect, test } from "bun:test";
+import { isAbsolute } from "node:path";
 import {
   BOARD_SUBSCRIPTIONS,
   buildBoardSnapshot,
+  COMMANDER_RULES_PATH,
   createBoardHub,
   createPaneOutputCache,
   lastLineOf,
+  readRulesText,
   startBoardMonitor,
   withBoardEvents,
   type BoardInputs,
@@ -357,6 +360,14 @@ describe("SSE hub", () => {
     controller.abort();
     reader?.cancel();
     expect(hub.size).toBe(0);
+  });
+});
+
+describe("commander rules text", () => {
+  test("reads the bundled rules by absolute install path, not the target repo", async () => {
+    expect(isAbsolute(COMMANDER_RULES_PATH)).toBe(true);
+    expect(COMMANDER_RULES_PATH.endsWith("rules.md")).toBe(true);
+    expect(await readRulesText()).toStartWith("# Commander rules");
   });
 });
 

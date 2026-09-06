@@ -19,7 +19,11 @@ const rules = [commonRules, ...stageRules].join("\n");
 
 describe("Commander delivery protocol", () => {
   test("passes one prompt to each stage worker", () => {
-    expect(commonRules).toContain("src/commander/config.yaml");
+    expect(commonRules).toContain("bundled Commander defaults");
+    expect(commonRules).toContain("absolute bundled path");
+    expect(commonRules).toContain("a repository cannot override them");
+    expect(commonRules).toContain("Igniter-owned and pre-authorized read-only");
+    expect(commonRules).not.toContain("src/commander/config.yaml");
     expect(commanderConfig.stages.build.prompt).toBe("stages/build.md");
     expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
     expect(commanderConfig.stages.deliver.prompt).toBe("stages/deliver.md");

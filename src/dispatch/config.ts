@@ -285,6 +285,9 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (raw["models"] !== undefined) {
     fail(`"models" was replaced by "agents"; move each model under its agent profile`);
   }
+  if (raw["stages"] !== undefined) {
+    fail(`"stages" is bundled with Igniter and cannot be overridden; bundled prompt paths always win`);
+  }
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
   const { host, port } = parseListen(raw["listen"]);

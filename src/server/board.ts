@@ -8,19 +8,20 @@
 // unavailable, missing dispatch data renders empty, nothing throws.
 
 import type { DecisionLog, QueueEntry } from "../dispatch/claims.ts";
+import { commanderAssetPaths } from "../commander/assets.ts";
 import { formatDuration, type StatusData } from "../dispatch/commands.ts";
 import type { CommandWorkspaces, WorkspaceSnapshot } from "../dispatch/workspaces.ts";
 import type { HerdrSocket } from "../herdr/socket.ts";
 import { lookupSocketPath } from "../herdr/socket-path.ts";
 import { createHerdrSocket } from "../herdr/socket.ts";
 
-/** Bundled Commander rules shown by the Workflow view. One constant so the
- *  move under src/ (STA-174) is a one-line change. Resolved against repoRoot. */
-export const COMMANDER_RULES_PATH = "src/commander/rules.md";
+/** Absolute path of the bundled Commander rules shown by the Workflow view.
+ *  Derived from the running Igniter module, never the target repository. */
+export const COMMANDER_RULES_PATH = commanderAssetPaths().rules;
 
-export async function readRulesText(repoRoot: string): Promise<string> {
+export async function readRulesText(): Promise<string> {
   try {
-    return await Bun.file(`${repoRoot.replace(/\/+$/, "")}/${COMMANDER_RULES_PATH}`).text();
+    return await Bun.file(COMMANDER_RULES_PATH).text();
   } catch {
     return "";
   }

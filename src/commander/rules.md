@@ -123,21 +123,22 @@ work. If the worktree prevents safe progress, block and tell the owner.
 Create each worker only when its stage begins, without stealing focus. Retain
 the IDs of workflow-created tabs and close them during cleanup.
 
-Dispatch reads `src/commander/config.yaml`, applies agent overrides from
-`.igniter/config.yaml`, and puts the effective stage and agent settings in the
-work order. Use those effective values. Prompt paths are relative to the
-bundled config file.
+Dispatch reads the bundled Commander defaults at the Igniter install
+location, applies agent overrides from `.igniter/config.yaml`, and puts the
+effective stage and agent settings in the work order. Use those effective
+values. Stage prompt paths are absolute bundled paths from that install
+location; a repository cannot override them.
 
 Pass the worker:
 
-- its stage prompt path;
+- its absolute bundled stage prompt path;
 - the feature request and criteria;
 - only the ticket, checkpoint, repository, project-setting, and runbook facts
   listed by that prompt; and
 - an instruction to read and follow repository rules.
 
 The Commander does not read stage prompts into its own context. It passes the
-configured path for the worker to read directly.
+absolute bundled path from the work order for the worker to read directly.
 
 Use `builder-<ticket>` for Build, `reviewer-<ticket>` for Review, and
 `deliverer-<ticket>` for Deliver. The Deliver name may remain unassociated on
@@ -154,7 +155,9 @@ ticket with the concrete reason.
 
 The feature request pre-authorizes read-only access to the repository, its
 instructions, and source paths within the task. Verify and approve those
-requests without asking the owner again.
+requests without asking the owner again. The bundled Commander assets named
+by absolute path in the work order (rules and stage prompts) are
+Igniter-owned and pre-authorized read-only too.
 
 Treat Herdr `blocked` only as a hint. Read `source=visible`, require a current
 dialog and action footer at the bottom of the pane, then reread the same pane

@@ -16,6 +16,7 @@ import {
 } from "./dispatch/claims.ts";
 import { createWorkspaceSink, collectStatus, runCommand } from "./dispatch/commands.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
+import { assertCommanderAssets } from "./commander/assets.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { bunGitRunner } from "./dispatch/worktrees.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
@@ -55,6 +56,9 @@ function repoRoot(): string {
 }
 
 async function serveCommand(): Promise<void> {
+  // Bundled Commander assets fail fast here, before anything serves: a
+  // missing rules.md, config.yaml, or stage prompt names itself.
+  await assertCommanderAssets();
   if (hasFlag("--no-watch")) {
     // UI-only mode: still honor the configured bind address, never 0.0.0.0.
     const configPath = `${repoRoot()}/.igniter/config.yaml`;
@@ -149,7 +153,7 @@ async function serveCommand(): Promise<void> {
       }
       const [activity, rules] = await Promise.all([
         readActivityTail(logPath, 100).catch(() => [] as string[]),
-        readRulesText(root),
+        readRulesText(),
       ]);
       return buildBoardSnapshot({
         status: collected.data,
