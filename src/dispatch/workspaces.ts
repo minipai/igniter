@@ -49,6 +49,8 @@ export interface CommandWorkspaces extends RunningWorkspaces {
     rootPaneId: string;
   }>;
   close(workspaceId: string): Promise<void>;
+  /** Open a fresh tab in a live workspace for an agent that needs its own pane. */
+  createTab(input: { workspaceId: string; cwd?: string }): Promise<{ tabId: string }>;
   startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void>;
   prompt(agentName: string, text: string): Promise<void>;
   /** Send raw keys (e.g. y/n answers) straight to a pane. */
@@ -73,6 +75,9 @@ export const NoWorkspaces: CommandWorkspaces = {
   },
   close: async () => {
     throw new Error("herdr is not wired: cannot close a workspace");
+  },
+  createTab: async () => {
+    throw new Error("herdr is not wired: cannot open a tab");
   },
   startAgent: async () => {
     throw new Error("herdr is not wired: cannot start an agent");
@@ -309,6 +314,20 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
     },
     close: async (workspaceId) => {
       await call("workspace.close", { workspace_id: workspaceId });
+    },
+    createTab: async (input) => {
+      const created = (await call("tab.create", {
+        workspace_id: input.workspaceId,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        focus: false,
+      })) as {
+        tab?: { tab_id?: string };
+      };
+      const tabId = created.tab?.tab_id;
+      if (!tabId) {
+        throw new Error("herdr tab.create answered without a tab id");
+      }
+      return { tabId };
     },
     startAgent: async (input) => {
       // The root pane's shell needs ~100-300ms after workspace.create; any

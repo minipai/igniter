@@ -431,6 +431,166 @@ describe("pause and resume", () => {
     }
   });
 
+  test("a blocked resume unblocks, then opens a fresh tab when every pane is busy", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Blocked orphan", labelIds: [BLOCKED] });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        status: "build",
+        progress: "blocked",
+        commander: "codex",
+        paused: "1",
+      }, { commander: false });
+      h.workspaces.seedAgent("STA-1", "builder-sta-1");
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("new commander commander-sta-1 started");
+      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
+      const starts = h.workspaces.calls.filter((c) => c.method === "agent.start");
+      expect(starts).toHaveLength(1);
+      expect(starts[0]!.params).toMatchObject({ kind: "codex", name: "commander-sta-1" });
+      expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("an active build ticket with a lost commander resumes even when slots look full", async () => {
+    const h = await harness(1);
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        status: "build",
+        progress: "in_progress",
+        commander: "claude",
+        checkpoint: HEAD,
+      }, { commander: false });
+      // The live shape: the Commander tab is closed but the Builder tab still
+      // occupies the workspace's only pane.
+      h.workspaces.seedAgent("STA-1", "builder-sta-1");
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("new commander commander-sta-1 started");
+      // The ticket's own slot never counts against its resume: max 1 with
+      // only this ticket holding a slot still succeeds.
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(BUILD);
+      expect(issue.labelIds).toEqual([IN_PROGRESS]);
+      expect(issue.comments).toHaveLength(0);
+      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ checkpoint: HEAD });
+      expect(h.workspaces.calls.filter((c) => c.method === "workspace.report_metadata")).toHaveLength(0);
+      // The occupied pane is unusable, so resume opens a fresh tab and starts
+      // the Commander on its pane instead of failing like a duplicate claim.
+      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
+      const starts = h.workspaces.calls.filter((c) => c.method === "agent.start");
+      expect(starts).toHaveLength(1);
+      const builderPane = h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.paneId;
+      expect((starts[0]!.params as Record<string, unknown>)["paneId"]).not.toBe(builderPane);
+      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("This is a resumed run.");
+      expect(inbox[0]).toContain("`igniter state --json`");
+      expect(inbox[0]).toContain("do not restart");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a review ticket with a lost commander resumes from its current state", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Review orphan", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-2", {
+        ticket: "STA-2",
+        status: "review",
+        progress: "in_progress",
+        commander: "claude",
+        checkpoint: HEAD,
+        receipt_kind: "build",
+        receipt_id: "comment-1",
+        submission: "sub-1",
+      }, { commander: false });
+      // The Reviewer tab still occupies the only pane, as on a live ticket.
+      h.workspaces.seedAgent("STA-2", "reviewer-sta-2", "reviewer");
+      const out = await runCommand(["resume", "STA-2"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("new commander commander-sta-2 started");
+      expect(out.text).toContain("review+in_progress");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(REVIEW);
+      expect(issue.labelIds).toEqual([IN_PROGRESS]);
+      expect(issue.comments).toHaveLength(0);
+      expect(h.workspaces.tokensFor("STA-2")).toMatchObject({ checkpoint: HEAD, receipt_kind: "build" });
+      expect(h.workspaces.calls.filter((c) => c.method === "workspace.report_metadata")).toHaveLength(0);
+      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
+      const inbox = h.workspaces.promptsFor("commander-sta-2");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("continue from status review progress in_progress");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a deliver ticket with a lost commander resumes from its current state", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-3", stateId: "st-deliver", priority: 1, description: CRITERIA, title: "Deliver orphan", labelIds: [PENDING] });
+      h.workspaces.seedWorkspace("STA-3", {
+        ticket: "STA-3",
+        status: "deliver",
+        progress: "pending",
+        commander: "codex",
+      }, { commander: false });
+      const out = await runCommand(["resume", "STA-3"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("new commander commander-sta-3 started");
+      expect(out.text).toContain("deliver+pending");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe("st-deliver");
+      expect(issue.labelIds).toEqual([PENDING]);
+      expect(issue.comments).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("an active ticket with a live commander is not duplicated", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Busy", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        status: "build",
+        progress: "in_progress",
+      });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("already running");
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+      expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(0);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a todo ticket that is neither paused nor blocked has nothing to resume", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("not paused or blocked");
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("resume without a workspace points at start", async () => {
     const h = await harness();
     try {

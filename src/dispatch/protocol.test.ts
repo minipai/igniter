@@ -774,13 +774,16 @@ describe("dispatch commands", () => {
     }
   });
 
-  test("resume refuses a ticket that is neither paused nor blocked", async () => {
+  test("resume on an active ticket with a live commander reports already running", async () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
+      const before = h.workspaces.agents.length;
       const out = await runCommand(["resume", "STA-1"], h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain("not paused or blocked");
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("already running");
+      expect(h.workspaces.agents).toHaveLength(before);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }

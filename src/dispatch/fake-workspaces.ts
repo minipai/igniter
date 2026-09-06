@@ -43,6 +43,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
   failMessage = "fake herdr exploded";
   private workspaceCounter = 0;
   private paneCounter = 0;
+  private tabCounter = 0;
 
   async runningTickets(): Promise<Set<string>> {
     return extractRunningTickets({
@@ -92,11 +93,25 @@ export class FakeWorkspaces implements CommandWorkspaces {
     if (workspace) workspace.closed = true;
   }
 
+  async createTab(input: { workspaceId: string; cwd?: string }): Promise<{ tabId: string }> {
+    this.calls.push({ method: "tab.create", params: { ...input } });
+    this.failWhen("tab.create");
+    const workspace = this.workspaces.find((w) => w.workspaceId === input.workspaceId && !w.closed);
+    if (!workspace) throw new Error(`fake herdr: workspace ${input.workspaceId} does not exist`);
+    this.paneCounter += 1;
+    this.tabCounter += 1;
+    workspace.panes.push(`pane-${this.paneCounter}`);
+    return { tabId: `tab-${this.tabCounter}` };
+  }
+
   async startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void> {
     this.calls.push({ method: "agent.start", params: { ...input } });
     this.failWhen("agent.start");
     const workspace = this.workspaces.find((w) => w.panes.includes(input.paneId) && !w.closed);
     if (!workspace) throw new Error(`fake herdr: pane ${input.paneId} is not in a live workspace`);
+    if (this.agents.some((a) => a.paneId === input.paneId)) {
+      throw new Error(`fake herdr: agent target pane ${input.paneId} is not an available shell`);
+    }
     this.agents.push({
       name: input.name,
       kind: input.kind,
@@ -180,6 +195,15 @@ export class FakeWorkspaces implements CommandWorkspaces {
 
   promptsFor(agentName: string): string[] {
     return this.agents.find((a) => a.name === agentName)?.inbox ?? [];
+  }
+
+  /** Occupy a workspace pane with a named stage agent, the way a live Builder or Reviewer tab does. */
+  seedAgent(label: string, name: string, kind = "builder"): void {
+    const workspace = this.workspaces.find((w) => w.label === label && !w.closed);
+    if (!workspace) throw new Error(`fake herdr: workspace ${label} does not exist`);
+    const paneId = workspace.panes[0];
+    if (!paneId) throw new Error(`fake herdr: workspace ${label} has no pane`);
+    this.agents.push({ name, kind, agentStatus: "working", workspaceId: workspace.workspaceId, paneId, inbox: [] });
   }
 
   tokensFor(label: string): Record<string, string> {

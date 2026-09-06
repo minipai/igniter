@@ -647,6 +647,31 @@ function resumePrompt(status: ProtocolStatus, progress: ProtocolProgress | null,
   );
 }
 
+/**
+ * A pane the rebuilt Commander can actually start in: one with no agent on
+ * it. Stage agents keep their own tabs, so the workspace's first pane is
+ * often occupied (Herdr answers `agent.start` there with "not an available
+ * shell"). When every pane is busy, open a fresh tab in the ticket worktree
+ * and use its pane. Null when even that leaves no free pane.
+ */
+async function commanderPane(
+  ctx: CommandContext,
+  ticket: string,
+  workspaceId: string,
+  snapshot: WorkspaceSnapshot,
+): Promise<string | null> {
+  const freeIn = (snap: WorkspaceSnapshot): string | null => {
+    const busy = new Set(snap.agents.map((a) => a.paneId));
+    return snap.panes.find((p) => p.workspaceId === workspaceId && !busy.has(p.paneId))?.paneId ?? null;
+  };
+  const direct = freeIn(snapshot);
+  if (direct) return direct;
+  const worktree = ticketWorktree(ctx.repoRoot, ticket);
+  const opened = await ctx.workspaces.createTab({ workspaceId, cwd: worktree.path });
+  await ctx.decisions.record(ticket, `opened tab ${opened.tabId} for a new commander`);
+  return freeIn(await ctx.workspaces.snapshot());
+}
+
 async function resumeCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("resume"));
@@ -679,9 +704,59 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
   } catch (error) {
     return refuse(ctx, full.identifier, error);
   }
+  const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
+  const isActiveStage = state.status === "build" || state.status === "review" || state.status === "deliver";
+  // An active ticket whose Commander is gone keeps its Linear state: rebuild
+  // the Commander from the workspace metadata plus the authoritative Linear
+  // state, without touching checkpoint, receipt, or stage.
   if (state.progress !== "blocked" && !paused) {
-    await decisions.record(full.identifier, "resume refused: not paused or blocked");
-    return fail(`${full.identifier} is not paused or blocked; nothing to resume`);
+    if (!isActiveStage) {
+      await decisions.record(full.identifier, "resume refused: not paused or blocked");
+      return fail(`${full.identifier} is not paused or blocked; nothing to resume`);
+    }
+    if (agent) {
+      await decisions.record(
+        full.identifier,
+        `resume: commander already running (${state.status}+${state.progress ?? "no progress"}, ${agent.agentStatus}); nothing to rebuild`,
+      );
+      return {
+        ok: true,
+        text: `${full.identifier} is already running (${state.status}+${state.progress ?? "no progress"}, commander ${agent.agentStatus}); nothing to rebuild`,
+      };
+    }
+    // Rebuilding reuses the ticket's own Build slot: it never counts
+    // against the resume capacity. No Linear write happens on this path.
+    if (state.status === "build") {
+      const usedOthers = (await countBuildSlots(client, resolved)) - 1;
+      if (usedOthers >= resolved.config.maxRunning) {
+        await decisions.record(full.identifier, `resume refused: at max_running (${resolved.config.maxRunning})`);
+        return fail(`at max_running (${resolved.config.maxRunning})`);
+      }
+    }
+    const kind = workspace.tokens["commander"] ?? "claude";
+    const name = commanderName(full.identifier);
+    const meta = {
+      ...workspace.tokens,
+      status: state.status,
+      ...(state.progress ? { progress: state.progress } : {}),
+    };
+    try {
+      const paneId = await commanderPane(ctx, full.identifier, workspace.workspaceId, snapshot);
+      if (!paneId) {
+        await decisions.record(full.identifier, "resume failed: workspace has no pane");
+        return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
+      }
+      await ctx.workspaces.startAgent({ paneId, kind, name });
+      await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, meta));
+    } catch (error) {
+      await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
+      return fail(`resume failed: ${(error as Error).message}`);
+    }
+    await decisions.record(
+      full.identifier,
+      `resumed by command (commander rebuilt at ${state.status}+${state.progress ?? "no progress"})`,
+    );
+    return { ok: true, text: `resumed ${full.identifier}; new commander ${name} started from ${state.status}+${state.progress ?? "no progress"}` };
   }
   // Resuming back into Build needs a free slot, like a fresh claim. The
   // ticket itself never counts against its own resume: a Blocked ticket
@@ -707,12 +782,12 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
   } catch (error) {
     return refuse(ctx, full.identifier, error);
   }
-  const meta = { ...workspace.tokens };
-  delete meta["paused"];
-  const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
-  if (agent) {
+  const unblockedMeta = { ...workspace.tokens };
+  delete unblockedMeta["paused"];
+  const liveAgent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
+  if (liveAgent) {
     try {
-      await ctx.workspaces.prompt(agent.name, resumePrompt(state.status, state.progress === "blocked" ? "pending" : state.progress, meta["checkpoint"] ?? null));
+      await ctx.workspaces.prompt(liveAgent.name, resumePrompt(state.status, state.progress === "blocked" ? "pending" : state.progress, unblockedMeta["checkpoint"] ?? null));
     } catch (error) {
       await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
       return fail(`resume failed: ${(error as Error).message}`);
@@ -720,16 +795,16 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
     await decisions.record(full.identifier, "resumed by command");
     return { ok: true, text: `resumed ${full.identifier}; commander prompted to continue` };
   }
-  const pane = snapshot.panes.find((p) => p.workspaceId === workspace.workspaceId);
-  if (!pane) {
-    await decisions.record(full.identifier, "resume failed: workspace has no pane");
-    return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
-  }
   const kind = workspace.tokens["commander"] ?? "claude";
   const name = commanderName(full.identifier);
   try {
-    await ctx.workspaces.startAgent({ paneId: pane.paneId, kind, name });
-    await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, meta));
+    const paneId = await commanderPane(ctx, full.identifier, workspace.workspaceId, snapshot);
+    if (!paneId) {
+      await decisions.record(full.identifier, "resume failed: workspace has no pane");
+      return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
+    }
+    await ctx.workspaces.startAgent({ paneId, kind, name });
+    await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, unblockedMeta));
   } catch (error) {
     await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
     return fail(`resume failed: ${(error as Error).message}`);
