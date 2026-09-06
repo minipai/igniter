@@ -28,7 +28,7 @@ import {
   type DecisionLog,
   type ResolvedDispatch,
 } from "./claims.ts";
-import type { DispatchConfig } from "./config.ts";
+import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
 import { LinearClient } from "./linear.ts";
 import {
   adoptTicket,
@@ -498,7 +498,7 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
   }
 
   const kind = agentFlag.value ?? "claude";
-  const builder = builderFlag.value ?? resolved.config.models.builder;
+  const builder = builderFlag.value ?? resolved.config.commander.agents.builder.model;
   if (agentFlag.value !== undefined) {
     let kinds: string[];
     try {
@@ -936,9 +936,9 @@ export interface WorkOrderInput {
   issueUrl: string;
   worktreePath: string;
   branch: string;
-  builderModel: string;
-  reviewerModel: string;
-  escalateModel: string;
+  commanderConfig: CommanderConfig;
+  /** A per-run model override from `igniter start --builder` or restart. */
+  builderModel?: string;
   /** Delivery document path relative to the repo root. Absent means the
    *  Commander must search the repository for the document itself. */
   delivery?: string;
@@ -946,6 +946,21 @@ export interface WorkOrderInput {
 
 /** The Commander's first prompt. Tests assert on its contents; keep it whole. */
 export function buildWorkOrder(input: WorkOrderInput): string {
+  const stageName: Record<CommanderStage, string> = {
+    build: "Build",
+    review: "Acceptance",
+    deliver: "Deliver",
+  };
+  const stageLines = (["build", "review", "deliver"] as const).map((stage) => {
+    const stageConfig = input.commanderConfig.stages[stage];
+    const agent = input.commanderConfig.agents[stageConfig.agent];
+    const model = stageConfig.agent === "builder" && input.builderModel
+      ? input.builderModel
+      : agent.model;
+    return `- ${stageName[stage]}: prompt \`src/commander/${stageConfig.prompt}\`; agent \`${stageConfig.agent}\`; ` +
+      `harness \`${agent.harness}\`; model \`${model}\``;
+  }).join("\n");
+  const fallback = input.commanderConfig.agents.builder.fallback;
   const delivery =
     input.delivery !== undefined
       ? `Project settings: read \`${input.delivery}\` (relative to the repo root) as the delivery document. ` +
@@ -966,11 +981,10 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `Read the repository's AGENTS.md and follow it. Then read src/commander/rules.md ` +
     `(relative to the repo root) and run this delivery exactly as it says.\n` +
     `\n` +
-    `Models for this run:\n` +
-    `- Builder: ${input.builderModel}\n` +
-    `- Acceptance agent (models.reviewer): ${input.reviewerModel}\n` +
-    `- Escalate: ${input.escalateModel}\n` +
-    `Start the Builder with the Builder model unless the run rules say otherwise.\n` +
+    `Effective stage workers (bundled defaults plus repository overrides):\n` +
+    `${stageLines}\n` +
+    `- Builder fallback: harness \`${fallback.harness}\`; model \`${fallback.model}\`\n` +
+    `Use these prompt and agent values; do not reconstruct them from defaults.\n` +
     `\n` +
     delivery +
     `\n` +
@@ -994,7 +1008,6 @@ function resumedWorkOrder(
   full: { identifier: string; title: string },
   tokens: Record<string, string>,
 ): string {
-  const models = ctx.resolved.config.models;
   const status = tokens["status"] ?? "?";
   const progress = tokens["progress"] ?? "?";
   const checkpoint = tokens["checkpoint"] ?? "?";
@@ -1006,9 +1019,8 @@ function resumedWorkOrder(
       issueUrl: issueUrl(ctx.resolved.config, full.identifier),
       worktreePath: worktree.path,
       branch: worktree.branch,
-      builderModel: tokens["builder"] ?? models.builder,
-      reviewerModel: models.reviewer,
-      escalateModel: models.escalate,
+      builderModel: tokens["builder"] ?? ctx.resolved.config.commander.agents.builder.model,
+      commanderConfig: ctx.resolved.config.commander,
       delivery: ctx.resolved.config.delivery,
     }) +
     `\nThis is a resumed run. Run \`igniter state --json\` first and continue from ` +
@@ -1038,7 +1050,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
   const runGit = options.runGit ?? bunGitRunner();
   return async (claim: ClaimedTicket) => {
     const kind = claim.agent ?? "claude";
-    const builder = claim.builder ?? options.config.models.builder;
+    const builder = claim.builder ?? options.config.commander.agents.builder.model;
     let worktree;
     try {
       worktree = await ensureTicketWorktree(runGit, options.repoRoot, claim.identifier);
@@ -1067,7 +1079,6 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
       });
       const name = commanderName(claim.identifier);
       await options.workspaces.startAgent({ paneId: rootPaneId, kind, name });
-      const models = options.config.models;
       await options.workspaces.prompt(
         name,
         buildWorkOrder({
@@ -1077,8 +1088,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
           worktreePath: worktree.path,
           branch: worktree.branch,
           builderModel: builder,
-          reviewerModel: models.reviewer,
-          escalateModel: models.escalate,
+          commanderConfig: options.config.commander,
           delivery: options.config.delivery,
         }),
       );

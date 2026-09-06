@@ -56,11 +56,8 @@ have been a form — are squashed into the feature commit before review, not
 left as follow-up commits on top of it. A separate commit is for a separate
 change.
 
-No pull requests. Review happens through diffwalk: capture the ticket commit
-with `diffwalk inspect`, author the explanations, run `diffwalk check`, then
-`diffwalk publish` and put the printed link on the Linear issue. Once the
-owner moves the ticket to Deliver, rebase the commit onto local `main`.
-Do not push; the owner pushes. `.diffwalk/` stays out of git.
+No pull requests. Once the owner moves the ticket to Deliver, rebase the commit
+onto local `main`. Do not push; the owner pushes. `.diffwalk/` stays out of git.
 
 ## Acceptance evidence
 

@@ -1,37 +1,40 @@
 import { describe, expect, test } from "bun:test";
 
-const rules = await Bun.file(new URL("./rules.md", import.meta.url)).text();
+const commonRules = await Bun.file(new URL("./rules.md", import.meta.url)).text();
+const commanderConfig = Bun.YAML.parse(
+  await Bun.file(new URL("./config.yaml", import.meta.url)).text(),
+) as {
+  agents: {
+    builder: { harness: string; model: string; fallback: { harness: string; model: string } };
+    reviewer: { harness: string; model: string };
+  };
+  stages: Record<"build" | "review" | "deliver", { prompt: string; agent: string }>;
+};
+const stageNames = ["build", "review", "deliver"] as const;
+const stageDocuments = stageNames.map((stage) => `./${commanderConfig.stages[stage].prompt}`);
+const stageRules = await Promise.all(
+  stageDocuments.map((path) => Bun.file(new URL(path, import.meta.url)).text()),
+);
+const rules = [commonRules, ...stageRules].join("\n");
 
-describe("Commander acceptance protocol", () => {
-  test("uses independent black-box acceptance instead of code review", () => {
-    expect(rules).toContain("There is no code audit by default.");
-    expect(rules).toContain("Instruct it not to inspect source files, git history,\nor git diff.");
-    expect(rules).toContain("Each failure must\ncontain the criterion, reproduction steps, expected result, actual result, and\ncaptured evidence.");
+describe("Commander delivery protocol", () => {
+  test("passes one prompt to each stage worker", () => {
+    expect(commonRules).toContain("src/commander/config.yaml");
+    expect(commanderConfig.stages.build.prompt).toBe("stages/build.md");
+    expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
+    expect(commanderConfig.stages.deliver.prompt).toBe("stages/deliver.md");
+    expect(commanderConfig.agents.builder.harness).toBe("opencode");
+    expect(commanderConfig.agents.reviewer.harness).toBe("claude");
+    expect(commanderConfig.agents.builder.fallback.harness).toBe("codex");
+    expect(commonRules).toContain("builder.fallback");
+    expect(stageRules[0]).toStartWith("# Build agent");
+    expect(stageRules[1]).toStartWith("# Acceptance agent");
+    expect(stageRules[2]).toStartWith("# Deliver agent");
+    expect(commonRules).toContain("The Commander does not read stage prompts into its own context.");
   });
 
-  test("requires explicit handoffs instead of trusting Herdr lifecycle state", () => {
-    expect(rules).toContain("BUILD_HANDOFF_COMPLETE");
-    expect(rules).toContain("ACCEPTANCE_COMPLETE");
-    expect(rules).toMatch(/Herdr\s+`done` means only that the current Builder turn ended\./);
-    expect(rules).toContain("Treat Herdr `blocked` as a hint, never as proof");
-  });
-
-  test("rechecks failed criteria without an acceptance round budget", () => {
-    expect(rules).toContain("There is no acceptance round budget.");
-    expect(rules).toContain("Never turn it into a follow-up ticket and mark the current feature accepted.");
-    expect(rules).toContain("There are no round budgets, counters, or token reports.");
-  });
-
-  test("keeps Builder, Agent, and Owner receipts distinct in Linear", () => {
-    expect(rules).toContain("Builder's delivery signal");
-    expect(rules).toContain("an ordinary Markdown Linear\ncomment");
-    expect(rules).toContain("Linear does not provide\na comment schema for it.");
-    expect(rules).toMatch(/Agent\s+acceptance: PASS/);
-    expect(rules).toMatch(/Agent\s+acceptance: FAIL/);
-    expect(rules).toContain("That move is the Owner receipt.");
-  });
-
-  test("only references the workspace commands, never the old stage protocol", () => {
+  test("keeps every workspace command with the Commander", () => {
+    expect(commonRules).toContain("Only the Commander runs workspace commands.");
     for (const command of [
       "`igniter state --json`",
       "`igniter begin`",
@@ -39,8 +42,51 @@ describe("Commander acceptance protocol", () => {
       "`igniter block --reason",
       "`igniter unblock`",
     ]) {
-      expect(rules).toContain(command);
+      expect(commonRules).toContain(command);
     }
+    for (const prompt of stageRules) {
+      expect(prompt).toContain("Do not operate Igniter or Linear; report only to the Commander.");
+      expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock)/);
+    }
+  });
+
+  test("uses independent black-box acceptance instead of code review", () => {
+    expect(stageRules[1]).toContain("This is black-box acceptance, not code review.");
+    expect(stageRules[1]).toContain("Do not inspect source files, git\nhistory, or git diff.");
+    expect(stageRules[1]).toContain("Report exactly one\nresult for every observable criterion.");
+    expect(commonRules).toContain("There is no code audit by\ndefault.");
+  });
+
+  test("requires complete reports instead of trusting Herdr state", () => {
+    expect(stageRules[0]).toContain("BUILD_HANDOFF_COMPLETE");
+    expect(stageRules[0]).toContain("Do not start a\n  second code-review pass.");
+    expect(commonRules).toContain("one-pass code-review result");
+    expect(stageRules[1]).toContain("ACCEPTANCE_COMPLETE");
+    expect(stageRules[2]).toContain("DELIVERY_COMPLETE");
+    expect(commonRules).toContain("A Herdr lifecycle state is not a result.");
+    expect(commonRules).toContain("Never infer success from `done`");
+  });
+
+  test("runs Deliver in a separate worker without another configured model", () => {
+    expect(commonRules).toContain("`deliverer-<ticket>`");
+    expect(commanderConfig.stages.build.agent).toBe("builder");
+    expect(commanderConfig.stages.review.agent).toBe("reviewer");
+    expect(commanderConfig.stages.deliver.agent).toBe("builder");
+    expect(stageRules[2]).toContain("`diffwalk inspect`");
+    expect(stageRules[2]).toContain("`diffwalk check`");
+    expect(stageRules[2]).toContain("`diffwalk publish`");
+    expect(stageRules[2]).not.toContain("required delivery artifact");
+  });
+
+  test("names the legal Linear handoffs", () => {
+    expect(commonRules).toContain("Build lands in Review + Pending.");
+    expect(commonRules).toContain("Review PASS lands in Review + Complete.");
+    expect(commonRules).toContain("Review FAIL lands in Build + Pending.");
+    expect(commonRules).toContain("Deliver lands in Deliver + Complete.");
+    expect(commonRules).toContain("Deliver + Complete to Done");
+  });
+
+  test("never references the old stage protocol", () => {
     expect(rules).not.toContain("igniter stage build");
     expect(rules).not.toContain("igniter stage verify");
     expect(rules).not.toContain("igniter stage acceptance");
@@ -49,11 +95,5 @@ describe("Commander acceptance protocol", () => {
     expect(rules).not.toContain("verify_count");
     expect(rules).not.toContain("owner_pending");
     expect(rules).not.toContain("opencode-session-usage");
-  });
-
-  test("names the Linear handoffs Review+Complete, Deliver, and Done", () => {
-    expect(rules).toContain("Review + Complete");
-    expect(rules).toContain("Deliver + Complete");
-    expect(rules).toContain("Build + Pending");
   });
 });

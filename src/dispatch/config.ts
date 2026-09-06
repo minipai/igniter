@@ -1,13 +1,33 @@
-// Dispatch settings from `.igniter/config.yaml`. Commander run settings
-// live in the delivery document named by the `delivery` field; this file
-// never carries them.
+import commanderDefaultsYaml from "../commander/config.yaml";
+
+// Dispatch settings from `.igniter/config.yaml`. Commander defaults come from
+// `src/commander/config.yaml`; repositories may override agent profiles.
 // File-level loading and validation only; Linear-backed checks (status names,
 // project existence) live in claims.ts so they can fail startup with context.
 
-export interface DispatchModels {
-  builder: string;
-  reviewer: string;
-  escalate: string;
+export interface CommanderAgentConfig {
+  harness: string;
+  model: string;
+}
+
+export type CommanderStage = "build" | "review" | "deliver";
+export type CommanderAgent = "builder" | "reviewer";
+
+export interface CommanderBuilderConfig extends CommanderAgentConfig {
+  fallback: CommanderAgentConfig;
+}
+
+export interface CommanderStageConfig {
+  prompt: string;
+  agent: CommanderAgent;
+}
+
+export interface CommanderConfig {
+  agents: {
+    builder: CommanderBuilderConfig;
+    reviewer: CommanderAgentConfig;
+  };
+  stages: Record<CommanderStage, CommanderStageConfig>;
 }
 
 export interface DispatchStates {
@@ -37,7 +57,7 @@ export interface DispatchConfig {
   states: DispatchStates;
   progress: DispatchProgress;
   herdrRemote?: string;
-  models: DispatchModels;
+  commander: CommanderConfig;
   /** Delivery document path relative to the repo root, naming the file the
    *  Commander reads as its project settings. Absent means the Commander
    *  searches the repository for the document itself. */
@@ -63,11 +83,7 @@ export const DEFAULT_PROGRESS: DispatchProgress = {
   complete: "Complete",
   blocked: "Blocked",
 };
-export const DEFAULT_MODELS: DispatchModels = {
-  builder: "opencode/muse-spark-1.3-contributor-free",
-  reviewer: "claude-sonnet-5",
-  escalate: "openai/gpt-5.6-terra",
-};
+const COMMANDER_STAGES = ["build", "review", "deliver"] as const;
 
 function fail(message: string): never {
   throw new Error(`config error: ${message}`);
@@ -176,25 +192,99 @@ function parseProgress(raw: unknown): DispatchProgress {
   return progress;
 }
 
-function parseModels(raw: unknown): DispatchModels {
-  if (raw === undefined || raw === null) return { ...DEFAULT_MODELS };
-  if (!isRecord(raw)) fail(`"models" must be a map of role to model id`);
-  const models: DispatchModels = { ...DEFAULT_MODELS };
-  for (const [key, value] of Object.entries(raw)) {
-    if (key !== "builder" && key !== "reviewer" && key !== "escalate") {
-      fail(`unknown models role "${key}" (known: builder, reviewer, escalate)`);
-    }
-    if (typeof value !== "string" || value.trim() === "") {
-      fail(`models."${key}" must be a non-empty model id`);
-    }
-    models[key] = value.trim();
+function parseBundledCommanderConfig(raw: unknown): CommanderConfig {
+  if (!isRecord(raw) || !isRecord(raw["agents"]) || !isRecord(raw["stages"])) {
+    fail(`bundled Commander config must contain "agents" and "stages" maps`);
   }
-  return models;
+  const rawAgents = raw["agents"] as Record<string, unknown>;
+  const rawBuilder = rawAgents["builder"];
+  const rawReviewer = rawAgents["reviewer"];
+  if (!isRecord(rawBuilder) || !isRecord(rawBuilder["fallback"]) || !isRecord(rawReviewer)) {
+    fail(`bundled Commander agents require builder, builder.fallback, and reviewer maps`);
+  }
+  const agent = (value: Record<string, unknown>, path: string): CommanderAgentConfig => {
+    const harness = optionalText(value, "harness");
+    const model = optionalText(value, "model");
+    if (!harness || !model) fail(`bundled Commander agent "${path}" requires harness and model`);
+    return { harness, model };
+  };
+  const agents = {
+    builder: {
+      ...agent(rawBuilder, "builder"),
+      fallback: agent(rawBuilder["fallback"] as Record<string, unknown>, "builder.fallback"),
+    },
+    reviewer: agent(rawReviewer, "reviewer"),
+  };
+  const rawStages = raw["stages"] as Record<string, unknown>;
+  const stages = {} as Record<CommanderStage, CommanderStageConfig>;
+  for (const stage of COMMANDER_STAGES) {
+    const value = rawStages[stage];
+    if (!isRecord(value)) fail(`bundled Commander stage "${stage}" must be a map`);
+    const prompt = optionalText(value, "prompt");
+    const agentName = optionalText(value, "agent");
+    if (!prompt || !agentName) {
+      fail(`bundled Commander stage "${stage}" requires prompt and agent`);
+    }
+    if (agentName !== "builder" && agentName !== "reviewer") {
+      fail(`bundled Commander stage "${stage}" has unknown agent "${agentName}"`);
+    }
+    stages[stage] = { prompt, agent: agentName };
+  }
+  return { agents, stages };
+}
+
+export const DEFAULT_COMMANDER_CONFIG = parseBundledCommanderConfig(commanderDefaultsYaml);
+
+function parseAgents(raw: unknown): CommanderConfig {
+  const agents = {
+    builder: {
+      ...DEFAULT_COMMANDER_CONFIG.agents.builder,
+      fallback: { ...DEFAULT_COMMANDER_CONFIG.agents.builder.fallback },
+    },
+    reviewer: { ...DEFAULT_COMMANDER_CONFIG.agents.reviewer },
+  };
+  const stages = Object.fromEntries(
+    COMMANDER_STAGES.map((stage) => [stage, { ...DEFAULT_COMMANDER_CONFIG.stages[stage] }]),
+  ) as Record<CommanderStage, CommanderStageConfig>;
+  if (raw === undefined || raw === null) return { agents, stages };
+  if (!isRecord(raw)) fail(`"agents" must be a map`);
+  for (const [name, value] of Object.entries(raw)) {
+    if (name !== "builder" && name !== "reviewer") {
+      fail(`unknown agent "${name}" (known: builder, reviewer)`);
+    }
+    if (!isRecord(value)) fail(`agents."${name}" must be a map`);
+    for (const key of Object.keys(value)) {
+      if (key !== "harness" && key !== "model" && !(name === "builder" && key === "fallback")) {
+        fail(`unknown agents."${name}" setting "${key}"`);
+      }
+    }
+    const harness = optionalText(value, "harness");
+    const model = optionalText(value, "model");
+    if (harness !== undefined) agents[name].harness = harness;
+    if (model !== undefined) agents[name].model = model;
+    if (name === "builder" && value["fallback"] !== undefined) {
+      const fallback = value["fallback"];
+      if (!isRecord(fallback)) fail(`agents."builder"."fallback" must be a map`);
+      for (const key of Object.keys(fallback)) {
+        if (key !== "harness" && key !== "model") {
+          fail(`unknown agents."builder"."fallback" setting "${key}"`);
+        }
+      }
+      const fallbackHarness = optionalText(fallback, "harness");
+      const fallbackModel = optionalText(fallback, "model");
+      if (fallbackHarness !== undefined) agents.builder.fallback.harness = fallbackHarness;
+      if (fallbackModel !== undefined) agents.builder.fallback.model = fallbackModel;
+    }
+  }
+  return { agents, stages };
 }
 
 /** Validate raw parsed YAML into a DispatchConfig. Unknown keys are ignored. */
 export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (!isRecord(raw)) fail(`expected a YAML map at the top level`);
+  if (raw["models"] !== undefined) {
+    fail(`"models" was replaced by "agents"; move each model under its agent profile`);
+  }
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
   const { host, port } = parseListen(raw["listen"]);
@@ -210,7 +300,7 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     states,
     progress,
     herdrRemote: optionalText(raw, "herdr_remote"),
-    models: parseModels(raw["models"]),
+    commander: parseAgents(raw["agents"]),
     delivery: optionalText(raw, "delivery"),
   };
 }

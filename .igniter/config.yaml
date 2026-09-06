@@ -1,6 +1,5 @@
 # igniter's own factory config (dogfood)
-# Read by dispatch (`igniter serve` / `igniter start`). Commander run
-# settings live next door; this file never carries them. `LINEAR_API_KEY`
+# Read by dispatch (`igniter serve` / `igniter start`). `LINEAR_API_KEY`
 # comes from the environment only.
 
 project: igniter
@@ -14,11 +13,8 @@ max_running: 3
 # `--port` / `IGNITER_PORT` still override the port portion.
 listen: 127.0.0.1:3457
 
-# Delivery document: the project-settings file the Commander reads at the
-# start of a run (path relative to the repo root). When set, the Commander
-# reads this file directly; when absent, it searches the repo for the
-# document and writes the found path back here.
-delivery: docs/delivery.md
+# Project instructions the Commander reads at the start of a run.
+delivery: README.md
 
 # Linear status display names: igniter's vocabulary on the left, whatever
 # this Linear workspace calls it on the right. Dispatch validates all six
@@ -46,11 +42,8 @@ progress:
 # Optional: `herdr --remote <value> --session factory` target for README.
 # herdr_remote: art@192.168.88.8
 
-# Role to model id. Dispatch only carries the values: builder is the
-# default (full tier; the free tier rate-limits mid-build), reviewer writes
-# the review, escalate is the stronger model the Commander switches to for
-# complex features or repeated build failures.
-models:
-  builder: opencode-go/muse-spark-1.3-contributor
-  reviewer: claude-sonnet-5
-  escalate: openai/gpt-5.6-terra
+# Agent overrides. Omitted fields inherit src/commander/config.yaml. Igniter
+# uses the full Builder tier because the free tier rate-limits mid-build.
+agents:
+  builder:
+    model: opencode-go/muse-spark-1.3-contributor

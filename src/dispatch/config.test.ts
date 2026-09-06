@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_MODELS,
+  DEFAULT_COMMANDER_CONFIG,
   DEFAULT_PROGRESS,
   DEFAULT_STATES,
   loadDispatchConfig,
@@ -30,7 +30,7 @@ describe("parseDispatchConfig", () => {
       states: DEFAULT_STATES,
       progress: DEFAULT_PROGRESS,
       herdrRemote: undefined,
-      models: DEFAULT_MODELS,
+      commander: DEFAULT_COMMANDER_CONFIG,
       delivery: undefined,
     });
   });
@@ -93,12 +93,54 @@ describe("parseDispatchConfig", () => {
         blocked: "Blocked",
       },
       herdr_remote: "art@192.168.88.8",
-      models: { builder: "custom/builder" },
+      agents: {
+        builder: { model: "custom/builder" },
+        reviewer: { harness: "codex" },
+      },
     });
     expect(config.maxRunning).toBe(2);
     expect(config.listenHost).toBe("192.168.8.8");
-    expect(config.models.builder).toBe("custom/builder");
-    expect(config.models.reviewer).toBe(DEFAULT_MODELS.reviewer);
+    expect(config.commander.agents.builder.model).toBe("custom/builder");
+    expect(config.commander.agents.reviewer.harness).toBe("codex");
+  });
+
+  test("loads bundled agent profiles and applies repository overrides", () => {
+    const defaults = parseDispatchConfig({ project: "x" }).commander;
+    expect(defaults.agents.builder.harness).toBe("opencode");
+    expect(defaults.agents.reviewer.harness).toBe("claude");
+    expect(defaults.agents.builder.fallback.harness).toBe("codex");
+    expect(defaults.stages.deliver.agent).toBe("builder");
+
+    const overridden = parseDispatchConfig({
+      project: "x",
+      agents: {
+        builder: { harness: "codex", fallback: { model: "fallback/model" } },
+        reviewer: { model: "review/model" },
+      },
+    }).commander;
+    expect(overridden.agents.builder.harness).toBe("codex");
+    expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
+    expect(overridden.agents.reviewer.model).toBe("review/model");
+    expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("opencode");
+  });
+
+  test("rejects invalid agent overrides", () => {
+    expect(() => parseDispatchConfig({
+      project: "x",
+      agents: { tester: { harness: "codex" } },
+    })).toThrow('unknown agent "tester"');
+    expect(() => parseDispatchConfig({
+      project: "x",
+      agents: { builder: { harness: "" } },
+    })).toThrow('"harness"');
+    expect(() => parseDispatchConfig({
+      project: "x",
+      agents: { reviewer: { fallback: { model: "x" } } },
+    })).toThrow('unknown agents."reviewer" setting "fallback"');
+    expect(() => parseDispatchConfig({
+      project: "x",
+      models: { builder: "old/model" },
+    })).toThrow('"models" was replaced by "agents"');
   });
 
   test("project is required", () => {
@@ -145,9 +187,6 @@ describe("parseDispatchConfig", () => {
   test("rejects bad listen and max_running values", () => {
     expect(() => parseDispatchConfig({ project: "x", listen: "nope" })).toThrow('"listen"');
     expect(() => parseDispatchConfig({ project: "x", max_running: 0 })).toThrow('"max_running"');
-    expect(() => parseDispatchConfig({ project: "x", models: { hal: "x" } })).toThrow(
-      'unknown models role "hal" (known: builder, reviewer, escalate)',
-    );
     expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
       'unknown states role "later" (known: backlog, todo, build, review, deliver, done)',
     );
@@ -185,10 +224,13 @@ describe("loadDispatchConfig", () => {
   });
 });
 
-test("omitted models fall back to the built-in role defaults", () => {
-  expect(parseDispatchConfig({ project: "x" }).models).toEqual({
-    builder: "opencode/muse-spark-1.3-contributor-free",
-    reviewer: "claude-sonnet-5",
-    escalate: "openai/gpt-5.6-terra",
+test("omitted agents fall back to the bundled profiles", () => {
+  expect(parseDispatchConfig({ project: "x" }).commander.agents).toEqual({
+    builder: {
+      harness: "opencode",
+      model: "opencode/muse-spark-1.3-contributor-free",
+      fallback: { harness: "codex", model: "openai/gpt-5.6-terra" },
+    },
+    reviewer: { harness: "claude", model: "claude-sonnet-5" },
   });
 });

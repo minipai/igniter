@@ -13,7 +13,7 @@ import {
   type CommandContext,
 } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "./claims";
-import { parseDispatchConfig } from "./config";
+import { DEFAULT_COMMANDER_CONFIG, parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
@@ -573,8 +573,7 @@ describe("work order", () => {
       worktreePath: "/repo-wt/sta-176",
       branch: "feature/sta-176",
       builderModel: "b-model",
-      reviewerModel: "r-model",
-      escalateModel: "e-model",
+      commanderConfig: DEFAULT_COMMANDER_CONFIG,
     });
     for (const needle of [
       "STA-176",
@@ -584,8 +583,11 @@ describe("work order", () => {
       "do not create another branch",
       "bun install",
       "b-model",
-      "r-model",
-      "e-model",
+      "claude-sonnet-5",
+      "openai/gpt-5.6-terra",
+      "src/commander/stages/build.md",
+      "harness `opencode`",
+      "harness `claude`",
       "src/commander/rules.md",
       "AGENTS.md",
       "`igniter state --json`",
@@ -599,6 +601,23 @@ describe("work order", () => {
     expect(order).not.toContain("LINEAR_API_KEY");
     expect(order).not.toContain("GraphQL");
     expect(order).not.toContain("igniter stage");
+  });
+
+  test("carries a repository harness override into the Commander work order", () => {
+    const commanderConfig = parseDispatchConfig({
+      project: "igniter",
+      agents: { reviewer: { harness: "codex", model: "r-model" } },
+    }).commander;
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig,
+    });
+
+    expect(order).toContain("Acceptance: prompt `src/commander/stages/review.md`; agent `reviewer`; harness `codex`; model `r-model`");
   });
 
   test("a worktree failure aborts the start before any workspace opens", async () => {
@@ -625,8 +644,7 @@ describe("work order", () => {
       worktreePath: "/repo-wt/sta-176",
       branch: "feature/sta-176",
       builderModel: "b-model",
-      reviewerModel: "r-model",
-      escalateModel: "e-model",
+      commanderConfig: DEFAULT_COMMANDER_CONFIG,
       delivery: "CONTRIBUTING.md",
     });
     expect(order).toContain("Project settings: read `CONTRIBUTING.md` (relative to the repo root)");

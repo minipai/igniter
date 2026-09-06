@@ -49,7 +49,7 @@ STA-169（本 repo 骨架）→ STA-168 / STA-166 → STA-167 → STA-161 → ST
 - 不用零星（0 star）第三方套件；Herdr socket client 自己寫（STA-167）。
 - `LINEAR_API_KEY` 只從環境變數讀，不進 repo；Linear 存取一律 GraphQL，不用 MCP（Commander 可能是 codex / opencode）。
 - GitHub：repo 放 `github.com/minipai/igniter`，`gh` 維持 `claudecafe` 登入；需要使用者權限時
-  `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR：審查用 diffwalk 發布連結貼到票上，Done 後 rebase 到本機 `main`，不 push，由 Owner 推。
+  `GH_TOKEN=$(gh auth token --user minipai) gh …`，絕不 `gh auth switch`。不開 PR；交付審查流程以 `src/commander/stages/deliver.md` 為準，落到本機 `main` 後不 push，由 Owner 推。
 - Commit：`--author="くるみ <kurumi@claudecafe.dev>"`，訊息英文，不加 Co-Authored-By。
 - Herdr metadata 的 source 統一 `igniter`；agent pane 命名 `commander-<票號>`、`builder-<票號>`、`reviewer-<票號>`。
 - `Blocked` 只是外部條件、不算驗收失敗：workspace 保留但不占 Build slot，`unblock` 回 Pending 再 `begin`。判死（`igniter fail`，回 Backlog、清 Progress、關 workspace）、接回（`igniter resume`）、手動開工（`igniter start`，由 dispatch 改 Linear 狀態）都是指令（STA-176）。igniter 只聽 Linear 和聽指令，不自己做人會想插手的判斷（2026-09-05 定案，STA-186 改為狀態機協議）。

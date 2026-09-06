@@ -820,7 +820,7 @@ export async function claimTicket(
     );
   }
   const kind = options.agent ?? "claude";
-  const builder = options.builder ?? resolved.config.models.builder;
+  const builder = options.builder ?? resolved.config.commander.agents.builder.model;
   if (options.agent !== undefined) {
     const kinds = await deps.workspaces.agentKinds();
     if (!kinds.includes(kind)) {
@@ -887,7 +887,7 @@ export async function adoptTicket(
     host: deps.host,
     slot: 0,
     agent: options.agent ?? "claude",
-    builder: options.builder ?? deps.resolved.config.models.builder,
+    builder: options.builder ?? deps.resolved.config.commander.agents.builder.model,
   };
   let opened: { workspaceId: string; commander: string; builder: string };
   try {
@@ -942,7 +942,7 @@ export async function finishClaim(
     host: deps.host,
     slot,
     agent: meta["commander"] ?? "claude",
-    builder: meta["builder"] ?? resolved.config.models.builder,
+    builder: meta["builder"] ?? resolved.config.commander.agents.builder.model,
   };
   await deps.decisions.record(full.identifier, `claimed: ${from} → ${resolved.config.states.build} (slot ${slot})`);
   await deps.decisions.record(full.identifier, `claim finished in existing workspace (${workspaceId})`);
