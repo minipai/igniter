@@ -56,7 +56,7 @@ describe("extractRunningTickets", () => {
         { workspaceId: "w1", label: "STA-1", tokens: { ticket: "STA-1", paused: "1" } },
         { workspaceId: "w2", label: "STA-2", tokens: { stage: "build" } },
       ],
-      agents: [{ name: "commander-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2" }],
+      agents: [{ name: "commander-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2", session: null, revision: null }],
       panes: [],
     };
     const byTicket = tokensByTicket(snapshot);

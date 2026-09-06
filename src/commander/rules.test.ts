@@ -104,4 +104,12 @@ describe("Commander delivery protocol", () => {
     expect(rules).not.toContain("owner_pending");
     expect(rules).not.toContain("opencode-session-usage");
   });
+
+  test("asks the owner only from Blocked", () => {
+    expect(commonRules).toContain("Ask the owner only from Blocked");
+    expect(commonRules).toContain('`igniter block --reason "<what you need>"`');
+    expect(commonRules).toContain("Review + Blocked");
+    expect(commonRules).toContain("`igniter unblock`");
+    expect(commonRules).toContain("`igniter begin`");
+  });
 });

@@ -65,7 +65,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
       })),
       agents: this.agents
         .filter((a) => liveIds.has(a.workspaceId))
-        .map((a) => ({ name: a.name, agentStatus: a.agentStatus, workspaceId: a.workspaceId, paneId: a.paneId })),
+        .map((a) => ({ name: a.name, agentStatus: a.agentStatus, workspaceId: a.workspaceId, paneId: a.paneId, session: a.session, revision: a.revision })),
       panes: live.flatMap((w): SnapshotPane[] =>
         w.panes.map((paneId) => ({ paneId, workspaceId: w.workspaceId })),
       ),
@@ -118,6 +118,8 @@ export class FakeWorkspaces implements CommandWorkspaces {
       agentStatus: "working",
       workspaceId: workspace.workspaceId,
       paneId: input.paneId,
+      session: null,
+      revision: null,
       inbox: [],
     });
   }
@@ -186,6 +188,8 @@ export class FakeWorkspaces implements CommandWorkspaces {
         agentStatus: options.commanderStatus ?? "working",
         workspaceId,
         paneId,
+        session: null,
+        revision: null,
         inbox: [],
       });
     }
@@ -198,12 +202,17 @@ export class FakeWorkspaces implements CommandWorkspaces {
   }
 
   /** Occupy a workspace pane with a named stage agent, the way a live Builder or Reviewer tab does. */
-  seedAgent(label: string, name: string, kind = "builder"): void {
+  seedAgent(
+    label: string,
+    name: string,
+    kind = "builder",
+    options: { agentStatus?: string; session?: string | null; revision?: number | null } = {},
+  ): void {
     const workspace = this.workspaces.find((w) => w.label === label && !w.closed);
     if (!workspace) throw new Error(`fake herdr: workspace ${label} does not exist`);
     const paneId = workspace.panes[0];
     if (!paneId) throw new Error(`fake herdr: workspace ${label} has no pane`);
-    this.agents.push({ name, kind, agentStatus: "working", workspaceId: workspace.workspaceId, paneId, inbox: [] });
+    this.agents.push({ name, kind, agentStatus: options.agentStatus ?? "working", workspaceId: workspace.workspaceId, paneId, session: options.session ?? null, revision: options.revision ?? null, inbox: [] });
   }
 
   tokensFor(label: string): Record<string, string> {

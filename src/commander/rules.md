@@ -227,6 +227,11 @@ An original failed criterion stays on the current ticket unless the owner
 explicitly changes or waives it. Environment or tool failures are reported
 separately and do not fail a product criterion.
 
+Ask the owner only from Blocked: run `igniter block --reason "<what you need>"`
+before putting any question to the owner, so Linear shows Review + Blocked
+instead of staying In progress. After the owner answers, run `igniter unblock`,
+then `igniter begin`, and continue.
+
 ## Deliver
 
 The owner's move from Review + Complete to Deliver is the delivery approval.

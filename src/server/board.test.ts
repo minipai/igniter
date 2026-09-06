@@ -69,6 +69,8 @@ async function harness(): Promise<Harness> {
     agentStatus: "idle",
     workspaceId: ws1.workspaceId,
     paneId: "pane-b1",
+    session: null,
+    revision: null,
     inbox: [],
   });
   workspaces.paneText["pane-b1"] = "[opencode] requesting approval: rm -rf dist";

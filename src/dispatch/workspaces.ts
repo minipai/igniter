@@ -23,6 +23,10 @@ export interface SnapshotAgent {
   agentStatus: string;
   workspaceId: string;
   paneId: string;
+  /** The Herdr agent session value behind this agent; null when unreported. */
+  session: string | null;
+  /** The Herdr output revision behind this agent; null when unreported. */
+  revision: number | null;
 }
 
 export interface SnapshotPane {
@@ -108,6 +112,11 @@ const TICKET_TOKEN = /^[A-Z]{2,}-\d+$/;
 /** Agent names are lowercase in Herdr; the ticket half reads uppercased. */
 export function commanderName(identifier: string): string {
   return `commander-${identifier.toLowerCase()}`;
+}
+
+/** The Acceptance worker beside a ticket's Commander. */
+export function reviewerName(identifier: string): string {
+  return `reviewer-${identifier.toLowerCase()}`;
 }
 
 export function ticketFromAgentName(name: string): string | null {
@@ -422,7 +431,7 @@ function shapeSnapshot(envelope: unknown): WorkspaceSnapshot {
   }
   const view = snapshot as {
     workspaces?: { workspace_id?: unknown; label?: unknown; tokens?: unknown }[];
-    agents?: { name?: unknown; agent_status?: unknown; workspace_id?: unknown; pane_id?: unknown }[];
+    agents?: { name?: unknown; agent_status?: unknown; workspace_id?: unknown; pane_id?: unknown; agent_session?: unknown; revision?: unknown }[];
     panes?: { pane_id?: unknown; workspace_id?: unknown }[];
   };
   return {
@@ -436,12 +445,22 @@ function shapeSnapshot(envelope: unknown): WorkspaceSnapshot {
       agentStatus: typeof a.agent_status === "string" ? a.agent_status : "unknown",
       workspaceId: typeof a.workspace_id === "string" ? a.workspace_id : "",
       paneId: typeof a.pane_id === "string" ? a.pane_id : "",
+      session: sessionOf(a.agent_session),
+      revision: typeof a.revision === "number" ? a.revision : null,
     })),
     panes: (view.panes ?? []).map((p) => ({
       paneId: typeof p.pane_id === "string" ? p.pane_id : "",
       workspaceId: typeof p.workspace_id === "string" ? p.workspace_id : "",
     })),
   };
+}
+
+/** The agent session value behind an agent entry; null when Herdr reports none. */
+function sessionOf(session: unknown): string | null {
+  if (typeof session === "string") return session === "" ? null : session;
+  if (session === null || typeof session !== "object") return null;
+  const value = (session as { value?: unknown }).value;
+  return typeof value === "string" && value !== "" ? value : null;
 }
 
 function tokensOf(tokens: unknown): Record<string, string> {

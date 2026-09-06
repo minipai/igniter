@@ -656,14 +656,26 @@ function resumePrompt(status: ProtocolStatus, progress: ProtocolProgress | null,
 }
 
 /**
+ * The slice of dispatch context the Commander recovery path needs: Herdr,
+ * decisions, the repo root, and validated dispatch. Both `igniter resume`
+ * and the Review wake-up rebuild through exactly this scope.
+ */
+export interface RecoveryScope {
+  workspaces: CommandWorkspaces;
+  decisions: DecisionLog;
+  repoRoot: string;
+  resolved: ResolvedDispatch;
+}
+
+/**
  * A pane the rebuilt Commander can actually start in: one with no agent on
  * it. Stage agents keep their own tabs, so the workspace's first pane is
  * often occupied (Herdr answers `agent.start` there with "not an available
  * shell"). When every pane is busy, open a fresh tab in the ticket worktree
  * and use its pane. Null when even that leaves no free pane.
  */
-async function commanderPane(
-  ctx: CommandContext,
+export async function commanderPane(
+  ctx: RecoveryScope,
   ticket: string,
   workspaceId: string,
   snapshot: WorkspaceSnapshot,
@@ -1132,8 +1144,8 @@ export function issueUrl(config: DispatchConfig, identifier: string): string {
   return `https://linear.app/${config.linearOrg}/issue/${identifier}`;
 }
 
-function resumedWorkOrder(
-  ctx: CommandContext,
+export function resumedWorkOrder(
+  ctx: RecoveryScope,
   full: { identifier: string; title: string },
   tokens: Record<string, string>,
 ): string {

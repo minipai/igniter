@@ -44,6 +44,7 @@ import {
   type CommandWorkspaces,
   type WorkspaceSnapshot,
 } from "./workspaces.ts";
+import { wakeReviewers } from "./review-wake.ts";
 import { bunGitRunner, type GitRunner } from "./worktrees.ts";
 
 export type { ProtocolStatus, ProtocolProgress };
@@ -322,6 +323,8 @@ export class Watcher {
   private readonly repoRoot: string;
   /** Tickets handed off this run: Herdr has not necessarily caught up yet. */
   private readonly handedOff = new Set<string>();
+  /** Review completions already woken: ticket, stage, worker session, revision. */
+  private readonly reviewWoken = new Set<string>();
   private wasFull = false;
 
   constructor(options: WatcherOptions) {
@@ -484,6 +487,25 @@ export class Watcher {
         await this.normalizeOwnerMoves(snapshot);
       } catch (error) {
         console.warn(`owner-move normalization skipped: ${(error as Error).message}`);
+      }
+
+      // Review wake-up: a finished Acceptance worker whose Commander's wait
+      // died gets one read-the-report prompt (or a rebuilt Commander).
+      // Linear is never written here, and one ticket never stops the rest.
+      try {
+        await wakeReviewers(
+          {
+            resolved: this.resolved,
+            workspaces: this.workspaces,
+            decisions: this.decisions,
+            repoRoot: this.repoRoot,
+          },
+          snapshot,
+          inReview,
+          this.reviewWoken,
+        );
+      } catch (error) {
+        console.warn(`review wake-up skipped: ${(error as Error).message}`);
       }
     }
 
