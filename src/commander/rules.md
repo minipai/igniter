@@ -239,8 +239,6 @@ There are no round, token, or review budgets.
 - **Time:** use bounded waits; inspect the pane before declaring a stall.
 - **Progress:** block when the same observable failure survives two relevant
   corrections, or two corrections produce no relevant behavior or diff change.
-- **Scope:** block when the committed diff exceeds 500 lines or reaches an
-  unplanned system area.
 - **Quota:** restart Build on its paid channel, then `builder.fallback`. Preserve
   the worktree and checkpoint. Block if no configured model is available.
 - **Approvals:** never answer outside the pre-authorized scope; block and hand
