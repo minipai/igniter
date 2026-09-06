@@ -11,6 +11,7 @@ import {
   createWorkspaceSink,
   buildWorkOrder,
   runCommand,
+  scratchPathsFor,
   type CommandContext,
 } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "./claims";
@@ -862,5 +863,50 @@ describe("work order", () => {
     expect(order).toContain("Project settings: read `CONTRIBUTING.md` (relative to the repo root)");
     expect(order).toContain("Do not search for another one.");
     expect(order).not.toContain("No delivery document is configured");
+  });
+});
+
+describe("worker scratch", () => {
+  test("the work order names each worker scratch with its harness launch flags", () => {
+    const scratch = scratchPathsFor("/repo", "STA-176");
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo-wt/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig: DEFAULT_COMMANDER_CONFIG,
+      scratch,
+    });
+    expect(order).toContain(scratch.builder);
+    expect(order).toContain(scratch.reviewer);
+    expect(order).toContain(scratch.deliverer);
+    expect(order).toContain("harness `opencode`");
+    expect(order).toContain("harness `codex`");
+    expect(order).toContain(scratch.builder);
+    expect(order).toContain("escalate to the owner");
+  });
+
+  test("claim creates every worker scratch and records it in workspace metadata", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-8", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["start", "STA-8"], h.ctx);
+      expect(out.ok).toBe(true);
+      const scratch = scratchPathsFor(h.repoRoot, "STA-8");
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(scratch.builder)).toBe(true);
+      expect(existsSync(scratch.reviewer)).toBe(true);
+      expect(existsSync(scratch.deliverer)).toBe(true);
+      expect(h.workspaces.tokensFor("STA-8")).toMatchObject({
+        scratch_builder: scratch.builder,
+        scratch_reviewer: scratch.reviewer,
+        scratch_deliverer: scratch.deliverer,
+      });
+      const inbox = h.workspaces.promptsFor("commander-sta-8");
+      expect(inbox[0]).toContain(scratch.builder);
+    } finally {
+      h.stop();
+    }
   });
 });

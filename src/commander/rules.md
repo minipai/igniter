@@ -154,18 +154,23 @@ ticket with the concrete reason.
 ### Permission prompts
 
 The feature request pre-authorizes read-only access to the repository, its
-instructions, and source paths within the task. Verify and approve those
-requests without asking the owner again. The bundled Commander assets named
-by absolute path in the work order (rules and stage prompts) are
-Igniter-owned and pre-authorized read-only too.
+instructions, and source paths within the task, plus read/write inside the
+ticket worktree and the worker's own igniter scratch (named in the work
+order). The bundled Commander assets named by absolute path in the work order
+(rules and stage prompts) are Igniter-owned and pre-authorized read-only too.
+Launch each worker with its configured harness flags only; harnesses do not
+share one permission UI. Verify and approve those in-scope requests without
+asking the owner again.
 
 Treat Herdr `blocked` only as a hint. Read `source=visible`, require a current
 dialog and action footer at the bottom of the pane, then reread the same pane
-and revision immediately before sending a key.
+and revision immediately before sending a key. A vanished, changed, or
+appended dialog refuses the send, and the keys never fall through to another
+pane or agent. A same-text dialog at a new revision is a new dialog.
 
-Ask the owner before approving broader filesystem access, external writes,
-credentials, destructive actions, or unrelated network access. Never start
-OpenCode with `--auto`.
+Ask the owner before approving home configs, credentials, system locations,
+remote hosts, broader filesystem access, external writes, destructive actions,
+or any network access. Never start OpenCode with `--auto`.
 
 ## Worker reports
 

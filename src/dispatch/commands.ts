@@ -69,6 +69,13 @@ import {
   ticketWorktree,
   type GitRunner,
 } from "./worktrees.ts";
+import {
+  ensureScratchDir,
+  scratchFor,
+  scratchRootFor,
+  workerLaunch,
+  type WorkerName,
+} from "./worker-scope.ts";
 
 export type { CommandResult };
 
@@ -1006,6 +1013,20 @@ async function unblockCommand(args: string[], ctx: CommandContext, workspaceId: 
 // work order and sink
 // ---------------------------------------------------------------------------
 
+export interface WorkerScratchPaths {
+  builder: string;
+  reviewer: string;
+  deliverer: string;
+}
+
+export function scratchPathsFor(repoRoot: string, identifier: string): WorkerScratchPaths {
+  return {
+    builder: scratchFor(repoRoot, identifier, "builder"),
+    reviewer: scratchFor(repoRoot, identifier, "reviewer"),
+    deliverer: scratchFor(repoRoot, identifier, "deliverer"),
+  };
+}
+
 export interface WorkOrderInput {
   identifier: string;
   title: string;
@@ -1021,6 +1042,32 @@ export interface WorkOrderInput {
   /** Bundled Commander asset paths. Defaults to the install location
    *  derived from the running Igniter module, never the target repo. */
   assets?: CommanderAssetPaths;
+  /** Per-worker scratch dirs Igniter created; omitted in older callers. */
+  scratch?: WorkerScratchPaths;
+}
+
+/** Per-worker scratch and harness launch lines; each harness names its own flags. */
+export function scratchBlock(input: WorkOrderInput): string {
+  const scratch = input.scratch;
+  if (!scratch || !scratch.builder || !scratch.reviewer || !scratch.deliverer) return "";
+  const agents = input.commanderConfig?.agents;
+  const builderHarness = agents?.builder?.harness;
+  const reviewerHarness = agents?.reviewer?.harness;
+  const fallbackHarness = agents?.builder?.fallback?.harness;
+  if (!builderHarness || !reviewerHarness || !fallbackHarness) return "";
+  const launch = (harness: string, scratchPath: string): string =>
+    workerLaunch({ harness, worktreePath: input.worktreePath, scratchPath }).args.join(" ") || "(no pre-approved flags)";
+  const lines = [
+    `Worker scratch (created and cleaned by igniter; use only your own):`,
+    `- Build: \`${scratch.builder}\` (harness \`${builderHarness}\`; launch \`${launch(builderHarness, scratch.builder)}\`)`,
+    `- Acceptance: \`${scratch.reviewer}\` (harness \`${reviewerHarness}\`; launch \`${launch(reviewerHarness, scratch.reviewer)}\`)`,
+    `- Deliver: \`${scratch.deliverer}\` (harness \`${builderHarness}\`; launch \`${launch(builderHarness, scratch.deliverer)}\`)`,
+    `- Builder fallback: harness \`${fallbackHarness}\`; launch \`${launch(fallbackHarness, scratch.builder)}\``,
+    `Pre-authorized scope is the ticket worktree, bundled read-only assets, and your own scratch only. ` +
+      `Home configs, credentials, system locations, remote hosts, and out-of-scope network always escalate to the owner. ` +
+      `Reread the exact pane and revision immediately before answering any permission dialog; a changed dialog refuses the send.`,
+  ];
+  return `\n${lines.join("\n")}\n`;
 }
 
 /** The Commander's first prompt. Tests assert on its contents; keep it whole. */
@@ -1041,6 +1088,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
       `harness \`${agent.harness}\`; model \`${model}\``;
   }).join("\n");
   const fallback = input.commanderConfig.agents.builder.fallback;
+  const scratchSection = input.scratch ? scratchBlock(input) : "";
   const delivery =
     input.delivery !== undefined
       ? `Project settings: read \`${input.delivery}\` (relative to the repo root) as the delivery document. ` +
@@ -1065,6 +1113,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `${stageLines}\n` +
     `- Builder fallback: harness \`${fallback.harness}\`; model \`${fallback.model}\`\n` +
     `Use these prompt and agent values; do not reconstruct them from defaults.\n` +
+    scratchSection +
     `\n` +
     delivery +
     `\n` +
@@ -1102,6 +1151,7 @@ function resumedWorkOrder(
       builderModel: tokens["builder"] ?? ctx.resolved.config.commander.agents.builder.model,
       commanderConfig: ctx.resolved.config.commander,
       delivery: ctx.resolved.config.delivery,
+      scratch: scratchPathsFor(ctx.repoRoot, full.identifier),
     }) +
     `\nThis is a resumed run. Run \`igniter state --json\` first and continue from ` +
     `status ${status} progress ${progress} checkpoint ${checkpoint}; do not restart. ` +
@@ -1137,6 +1187,16 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
     } catch (error) {
       throw new WorkspaceSinkError((error as Error).message);
     }
+    const scratch = scratchPathsFor(options.repoRoot, claim.identifier);
+    const scratchRoot = scratchRootFor(options.repoRoot, claim.identifier);
+    try {
+      const workers: WorkerName[] = ["builder", "reviewer", "deliverer"];
+      for (const worker of workers) {
+        await ensureScratchDir(scratch[worker], scratchRoot);
+      }
+    } catch (error) {
+      throw new WorkspaceSinkError((error as Error).message);
+    }
     let workspaceId: string;
     let rootPaneId: string;
     try {
@@ -1145,7 +1205,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
       ({ workspaceId, rootPaneId } = await options.workspaces.create({
         label: claim.identifier,
         cwd: worktree.path,
-        env: {},
+        env: { IGNITER_SCRATCH_ROOT: scratchRoot },
       }));
     } catch (error) {
       throw new WorkspaceSinkError((error as Error).message);
@@ -1156,9 +1216,18 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
         commander: kind,
         builder,
         slot: String(claim.slot),
+        scratch_builder: scratch.builder,
+        scratch_reviewer: scratch.reviewer,
+        scratch_deliverer: scratch.deliverer,
       });
       const name = commanderName(claim.identifier);
-      await options.workspaces.startAgent({ paneId: rootPaneId, kind, name });
+      const launch = workerLaunch({ harness: kind, worktreePath: worktree.path, scratchPath: scratchRoot });
+      await options.workspaces.startAgent({
+        paneId: rootPaneId,
+        kind,
+        name,
+        ...(launch.args.length > 0 ? { args: launch.args } : {}),
+      });
       await options.workspaces.prompt(
         name,
         buildWorkOrder({
@@ -1170,6 +1239,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
           builderModel: builder,
           commanderConfig: options.config.commander,
           delivery: options.config.delivery,
+          scratch,
         }),
       );
     } catch (error) {
