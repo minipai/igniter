@@ -8,10 +8,22 @@ import commanderDefaultsYaml from "../commander/config.yaml";
 export interface CommanderAgentConfig {
   harness: string;
   model: string;
+  /** Cross-harness reasoning/thinking effort. Omitted keeps the harness
+   *  default; once set the launch layer translates it into the harness's
+   *  native option or refuses to launch. Never silently ignored. */
+  effort?: string;
 }
 
 export type CommanderStage = "build" | "review" | "deliver";
-export type CommanderAgent = "builder" | "reviewer";
+export type CommanderAgent = "builder" | "reviewer" | "deliverer";
+
+/** Stage mapping is fixed: Build runs on builder, Acceptance on reviewer,
+ *  Deliver on deliverer. */
+export const STAGE_AGENTS: Record<CommanderStage, CommanderAgent> = {
+  build: "builder",
+  review: "reviewer",
+  deliver: "deliverer",
+};
 
 export interface CommanderBuilderConfig extends CommanderAgentConfig {
   fallback: CommanderAgentConfig;
@@ -24,8 +36,10 @@ export interface CommanderStageConfig {
 
 export interface CommanderConfig {
   agents: {
+    commander: CommanderAgentConfig;
     builder: CommanderBuilderConfig;
     reviewer: CommanderAgentConfig;
+    deliverer: CommanderAgentConfig;
   };
   stages: Record<CommanderStage, CommanderStageConfig>;
 }
@@ -205,23 +219,34 @@ function parseBundledCommanderConfig(raw: unknown): CommanderConfig {
     fail(`bundled Commander config must contain "agents" and "stages" maps`);
   }
   const rawAgents = raw["agents"] as Record<string, unknown>;
+  const rawCommander = rawAgents["commander"];
   const rawBuilder = rawAgents["builder"];
   const rawReviewer = rawAgents["reviewer"];
-  if (!isRecord(rawBuilder) || !isRecord(rawBuilder["fallback"]) || !isRecord(rawReviewer)) {
-    fail(`bundled Commander agents require builder, builder.fallback, and reviewer maps`);
+  const rawDeliverer = rawAgents["deliverer"];
+  if (
+    !isRecord(rawCommander) ||
+    !isRecord(rawBuilder) ||
+    !isRecord(rawBuilder["fallback"]) ||
+    !isRecord(rawReviewer) ||
+    !isRecord(rawDeliverer)
+  ) {
+    fail(`bundled Commander agents require commander, builder, builder.fallback, reviewer, and deliverer maps`);
   }
   const agent = (value: Record<string, unknown>, path: string): CommanderAgentConfig => {
     const harness = optionalText(value, "harness");
     const model = optionalText(value, "model");
     if (!harness || !model) fail(`bundled Commander agent "${path}" requires harness and model`);
-    return { harness, model };
+    const effort = optionalText(value, "effort");
+    return effort === undefined ? { harness, model } : { harness, model, effort };
   };
   const agents = {
+    commander: agent(rawCommander, "commander"),
     builder: {
       ...agent(rawBuilder, "builder"),
       fallback: agent(rawBuilder["fallback"] as Record<string, unknown>, "builder.fallback"),
     },
     reviewer: agent(rawReviewer, "reviewer"),
+    deliverer: agent(rawDeliverer, "deliverer"),
   };
   const rawStages = raw["stages"] as Record<string, unknown>;
   const stages = {} as Record<CommanderStage, CommanderStageConfig>;
@@ -233,8 +258,8 @@ function parseBundledCommanderConfig(raw: unknown): CommanderConfig {
     if (!prompt || !agentName) {
       fail(`bundled Commander stage "${stage}" requires prompt and agent`);
     }
-    if (agentName !== "builder" && agentName !== "reviewer") {
-      fail(`bundled Commander stage "${stage}" has unknown agent "${agentName}"`);
+    if (agentName !== STAGE_AGENTS[stage]) {
+      fail(`bundled Commander stage "${stage}" must run on "${STAGE_AGENTS[stage]}" (got "${agentName}")`);
     }
     stages[stage] = { prompt, agent: agentName };
   }
@@ -243,13 +268,18 @@ function parseBundledCommanderConfig(raw: unknown): CommanderConfig {
 
 export const DEFAULT_COMMANDER_CONFIG = parseBundledCommanderConfig(commanderDefaultsYaml);
 
+const AGENT_NAMES = ["commander", "builder", "reviewer", "deliverer"] as const;
+type AgentName = (typeof AGENT_NAMES)[number];
+
 function parseAgents(raw: unknown): CommanderConfig {
-  const agents = {
+  const agents: CommanderConfig["agents"] = {
+    commander: { ...DEFAULT_COMMANDER_CONFIG.agents.commander },
     builder: {
       ...DEFAULT_COMMANDER_CONFIG.agents.builder,
       fallback: { ...DEFAULT_COMMANDER_CONFIG.agents.builder.fallback },
     },
     reviewer: { ...DEFAULT_COMMANDER_CONFIG.agents.reviewer },
+    deliverer: { ...DEFAULT_COMMANDER_CONFIG.agents.deliverer },
   };
   const stages = Object.fromEntries(
     COMMANDER_STAGES.map((stage) => [stage, { ...DEFAULT_COMMANDER_CONFIG.stages[stage] }]),
@@ -257,31 +287,36 @@ function parseAgents(raw: unknown): CommanderConfig {
   if (raw === undefined || raw === null) return { agents, stages };
   if (!isRecord(raw)) fail(`"agents" must be a map`);
   for (const [name, value] of Object.entries(raw)) {
-    if (name !== "builder" && name !== "reviewer") {
-      fail(`unknown agent "${name}" (known: builder, reviewer)`);
+    if (!(AGENT_NAMES as readonly string[]).includes(name)) {
+      fail(`unknown agent "${name}" (known: commander, builder, reviewer, deliverer)`);
     }
+    const profile = name as AgentName;
     if (!isRecord(value)) fail(`agents."${name}" must be a map`);
     for (const key of Object.keys(value)) {
-      if (key !== "harness" && key !== "model" && !(name === "builder" && key === "fallback")) {
+      if (key !== "harness" && key !== "model" && key !== "effort" && !(name === "builder" && key === "fallback")) {
         fail(`unknown agents."${name}" setting "${key}"`);
       }
     }
     const harness = optionalText(value, "harness");
     const model = optionalText(value, "model");
-    if (harness !== undefined) agents[name].harness = harness;
-    if (model !== undefined) agents[name].model = model;
+    const effort = optionalText(value, "effort");
+    if (harness !== undefined) agents[profile].harness = harness;
+    if (model !== undefined) agents[profile].model = model;
+    if (effort !== undefined) agents[profile].effort = effort;
     if (name === "builder" && value["fallback"] !== undefined) {
       const fallback = value["fallback"];
       if (!isRecord(fallback)) fail(`agents."builder"."fallback" must be a map`);
       for (const key of Object.keys(fallback)) {
-        if (key !== "harness" && key !== "model") {
+        if (key !== "harness" && key !== "model" && key !== "effort") {
           fail(`unknown agents."builder"."fallback" setting "${key}"`);
         }
       }
       const fallbackHarness = optionalText(fallback, "harness");
       const fallbackModel = optionalText(fallback, "model");
+      const fallbackEffort = optionalText(fallback, "effort");
       if (fallbackHarness !== undefined) agents.builder.fallback.harness = fallbackHarness;
       if (fallbackModel !== undefined) agents.builder.fallback.model = fallbackModel;
+      if (fallbackEffort !== undefined) agents.builder.fallback.effort = fallbackEffort;
     }
   }
   return { agents, stages };

@@ -64,10 +64,15 @@ Project instructions can define:
 - **Conventions:** repository branch, commit, review, and landing rules. Use
   AGENTS.md or CLAUDE.md when present.
 
-Bundled agent profiles contain their harness and model; `.igniter/config.yaml`
-may override either field. Each stage selects one profile. `reviewer` is a
-wiring name, not permission to perform code review, and `builder.fallback` is
-the stronger Build profile.
+Bundled agent profiles contain harness, model, and optional effort;
+`.igniter/config.yaml` may override any field, and omitted fields inherit
+the bundled default. Each stage selects one profile: Build runs on
+`builder`, Acceptance on `reviewer`, Deliver on `deliverer`. `reviewer` is
+a wiring name, not permission to perform code review, and
+`builder.fallback` is the stronger Build profile. `effort` is
+cross-harness reasoning/thinking effort: the launch translates it into the
+harness's native option, and a harness with no such option refuses the
+configuration instead of ignoring it.
 
 When no project instruction file exists, proceed with defaults. After the first
 successful acceptance, write `.igniter/delivery.md` with the stage-specific

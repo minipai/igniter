@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import type { LinearClient, LinearComment, LinearIssue, LinearLabel } from "./linear.ts";
 import type { ResolvedDispatch, DecisionLog, CommandResult, ClaimSink, ClaimedTicket } from "./claims.ts";
 import { WorkspaceSinkError } from "./claims.ts";
+import { launchProblems } from "./agents.ts";
 import type { CommandWorkspaces, SnapshotWorkspace } from "./workspaces.ts";
 import { commanderName } from "./workspaces.ts";
 import { cleanupTicketCheckout, ticketWorktree, type GitRunner } from "./worktrees.ts";
@@ -964,12 +965,10 @@ export function describeState(
 // ---------------------------------------------------------------------------
 
 export interface ClaimOptions {
-  agent?: string;
   builder?: string;
 }
 
 export interface AdoptOptions {
-  agent?: string;
   builder?: string;
 }
 
@@ -1031,13 +1030,15 @@ export async function claimTicket(
       `refused: at max_running (${resolved.config.maxRunning}); ${used} Build tickets hold slots`,
     );
   }
-  const kind = options.agent ?? "claude";
+  const kind = resolved.config.commander.agents.commander.harness;
   const builder = options.builder ?? resolved.config.commander.agents.builder.model;
-  if (options.agent !== undefined) {
-    const kinds = await deps.workspaces.agentKinds();
-    if (!kinds.includes(kind)) {
-      throw new ProtocolError(`refused: unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
-    }
+  const kinds = await deps.workspaces.agentKinds();
+  if (!kinds.includes(kind)) {
+    throw new ProtocolError(`refused: unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
+  }
+  const problems = launchProblems(resolved.config);
+  if (problems.length > 0) {
+    throw new ProtocolError(`refused: ${problems.join("; ")}`);
   }
   const from = full.state.name;
   const ticket: ClaimedTicket = {
@@ -1046,7 +1047,6 @@ export async function claimTicket(
     title: full.title,
     host: deps.host,
     slot: used,
-    agent: kind,
     builder,
   };
   let opened: { workspaceId: string; commander: string; builder: string };
@@ -1092,18 +1092,26 @@ export async function adoptTicket(
       `refused: adopt needs a Build, Review, or Deliver ticket, got ${state.status}`,
     );
   }
+  const kind = deps.resolved.config.commander.agents.commander.harness;
+  const kinds = await deps.workspaces.agentKinds();
+  if (!kinds.includes(kind)) {
+    throw new ProtocolError(`refused: unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
+  }
+  const problems = launchProblems(deps.resolved.config);
+  if (problems.length > 0) {
+    throw new ProtocolError(`refused: ${problems.join("; ")}`);
+  }
   const ticket: ClaimedTicket = {
     id: full.id,
     identifier: full.identifier,
     title: full.title,
     host: deps.host,
     slot: 0,
-    agent: options.agent ?? "claude",
     builder: options.builder ?? deps.resolved.config.commander.agents.builder.model,
   };
   let opened: { workspaceId: string; commander: string; builder: string };
   try {
-    opened = (await deps.sink(ticket)) ?? { workspaceId: "", commander: ticket.agent ?? "claude", builder: ticket.builder ?? "" };
+    opened = (await deps.sink(ticket)) ?? { workspaceId: "", commander: deps.resolved.config.commander.agents.commander.harness, builder: ticket.builder ?? "" };
   } catch (error) {
     if (error instanceof WorkspaceSinkError) throw error;
     throw new WorkspaceSinkError((error as Error).message);
@@ -1156,14 +1164,13 @@ export async function finishClaim(
     title: full.title,
     host: deps.host,
     slot,
-    agent: meta["commander"] ?? "claude",
     builder: meta["builder"] ?? resolved.config.commander.agents.builder.model,
   };
   let opened: { workspaceId: string; commander: string; builder: string };
   try {
     opened = (await deps.sink(ticket, { workspaceId })) ?? {
       workspaceId,
-      commander: ticket.agent ?? "claude",
+      commander: resolved.config.commander.agents.commander.harness,
       builder: ticket.builder ?? "",
     };
   } catch (error) {

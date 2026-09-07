@@ -197,6 +197,14 @@ describe("wake on a finished reviewer", () => {
       await h.watcher.pollOnce();
       const agent = h.workspaces.agents.find((a) => a.name === "commander-sta-1");
       expect(agent).toBeDefined();
+      // The rebuild launches the configured Commander profile whole:
+      // harness, model, and effort on the agent.start call.
+      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
+      expect(started?.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-1",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(2);
       expect(inbox[0]).toContain("This is a resumed run.");

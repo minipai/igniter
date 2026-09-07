@@ -42,8 +42,11 @@ progress:
 # Optional: `herdr --remote <value> --session factory` target for README.
 # herdr_remote: art@192.168.88.8
 
-# Agent overrides. Omitted fields inherit src/commander/config.yaml. Igniter
-# uses the full Builder tier because the free tier rate-limits mid-build.
+# Agent overrides. Any field of any profile (commander, builder,
+# builder.fallback, reviewer, deliverer: harness, model, effort) may be
+# overridden here; omitted fields inherit src/commander/config.yaml.
+# Igniter uses the full Builder tier because the free tier rate-limits
+# mid-build.
 agents:
   builder:
     model: opencode-go/muse-spark-1.3-contributor

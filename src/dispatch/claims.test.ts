@@ -410,8 +410,13 @@ describe("pollOnce", () => {
       expect(workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
       expect(workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
       const start = workspaces.calls.find((call) => call.method === "agent.start");
-      expect(start?.params).toMatchObject({ kind: "claude", name: "commander-sta-1" });
-      expect(start?.params).not.toHaveProperty("args");
+      // The rebuild follows the resolved Commander profile, not the stale
+      // per-ticket token: Codex with high effort by default.
+      expect(start?.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-1",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
       expect(fake.world.issues[0]!.stateId).toBe(BUILD);
       expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {

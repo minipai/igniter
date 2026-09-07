@@ -270,10 +270,13 @@ describe("claim", () => {
       const workspace = h.workspaces.workspaces.find((w) => w.workspaceId === wsId)!;
       expect(workspace.tokens).toMatchObject({
         ticket: "STA-1",
-        commander: "claude",
         status: "build",
         progress: "in_progress",
       });
+      expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ harness: "opencode" });
+      expect(JSON.parse(workspace.tokens["profile_reviewer"]!)).toMatchObject({ effort: "high" });
+      expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
+      expect(workspace.tokens).not.toHaveProperty("commander");
       // No secrets ride into the workspace.
       const created = h.workspaces.calls.find((c) => c.method === "workspace.create");
       expect(created?.params).toMatchObject({ label: "STA-1", env: {} });

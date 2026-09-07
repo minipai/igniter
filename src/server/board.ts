@@ -96,6 +96,9 @@ export interface BoardInputs {
   rules: string;
   host: string;
   linearOrg: string;
+  /** Commander harness from the resolved configuration: no per-ticket
+   *  Commander is stored in workspace metadata. */
+  commanderKind: string;
   outputs: Map<string, PaneOutput>;
   now?: () => number;
 }
@@ -170,7 +173,7 @@ export function buildBoardSnapshot(inputs: BoardInputs): BoardSnapshot {
     const panes: BoardTicketPanes = {
       commander: toBoardPane({
         name: agentName("commander", row.identifier),
-        kind: tokens["commander"] ?? null,
+        kind: inputs.commanderKind,
         found: commanderFound,
         snapshot,
         outputs: inputs.outputs,

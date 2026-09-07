@@ -188,6 +188,7 @@ export async function startWatchedServe(options: WatchedServeOptions): Promise<W
         rules,
         host,
         linearOrg: watcher.resolved.config.linearOrg,
+        commanderKind: watcher.resolved.config.commander.agents.commander.harness,
         outputs: outputs.outputs,
       });
     },

@@ -16,6 +16,7 @@ import {
 } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "./claims";
 import { DEFAULT_COMMANDER_CONFIG, parseDispatchConfig } from "./config";
+import { recordStageProfiles } from "./agents";
 import { LinearClient } from "./linear";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
@@ -85,6 +86,7 @@ describe("argv parsing", () => {
       for (const argv of [
         ["start"], ["pause"], ["resume"], ["fail"], ["restart"],
         ["fail", "STA-1"], ["restart", "STA-1"], ["start", "--builder", "x"],
+        ["start", "STA-1", "--agent", "hal"],
         ["pause", "STA-1", "--bogus"], ["state"], ["state", "x"],
         ["begin", "STA-1"], ["submit"], ["submit", "--input", "file"],
         ["block"], ["block", "--reason", ""], ["unblock", "x"],
@@ -210,14 +212,25 @@ describe("start", () => {
       ]);
       expect(h.workspaces.tokensFor("STA-176")).toMatchObject({
         ticket: "STA-176",
-        commander: "claude",
         builder: "custom/builder-x",
         status: "build",
         progress: "in_progress",
       });
+      // The run freeze compacts to three JSON profile tokens, so the claim
+      // report stays within Herdr's 16-token cap (six claim tokens + three).
+      const frozen = h.workspaces.tokensFor("STA-176");
+      expect(JSON.parse(frozen["profile_builder"]!)).toMatchObject({ harness: "opencode" });
+      expect(JSON.parse(frozen["profile_reviewer"]!)).toMatchObject({ harness: "claude", effort: "high" });
+      expect(JSON.parse(frozen["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
+      const claimReport = h.workspaces.calls.find((c) => c.method === "workspace.report_metadata");
+      expect(Object.keys((claimReport?.params as { tokens: Record<string, string> }).tokens)).toHaveLength(9);
+      expect(h.workspaces.tokensFor("STA-176")).not.toHaveProperty("commander");
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "claude", name: "commander-sta-176" });
-      expect(started?.params).not.toHaveProperty("args");
+      expect(started?.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-176",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
       const inbox = h.workspaces.promptsFor("commander-sta-176");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("STA-176");
@@ -232,7 +245,7 @@ describe("start", () => {
       expect(inbox[0]).not.toContain("GraphQL");
       expect(h.lines).toEqual([
         "STA-176 claimed: Todo → Build (slot 0)",
-        "STA-176 workspace opened (ws-1) commander=claude builder=custom/builder-x",
+        "STA-176 workspace opened (ws-1) commander=codex builder=custom/builder-x",
       ]);
     } finally {
       h.stop();
@@ -259,14 +272,106 @@ describe("start", () => {
     }
   });
 
-  test("refuses unknown agent kinds with the known list", async () => {
+  test("the per-ticket --agent override is gone: start takes no agent flag", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const out = await runCommand(["start", "STA-1", "--agent", "hal"], h.ctx);
       expect(out.ok).toBe(false);
+      expect(out.text).toContain("usage: igniter start");
+      expect(h.workspaces.workspaces).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("start defaults to the configured Commander profile, not claude", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["start", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("commander=codex");
+      const started = h.workspaces.calls.find((call) => call.method === "agent.start");
+      expect(started?.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-1",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("commander");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a claim refuses an unknown Commander harness with the known kinds", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      h.ctx.resolved.config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: { commander: { harness: "hal" } },
+      });
+      const out = await runCommand(["start", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
       expect(out.text).toContain('unknown agent kind "hal"');
-      expect(out.text).toContain("claude");
+      expect(out.text).toContain("codex");
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a claim refuses a stage effort its harness cannot express before opening anything", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      h.ctx.resolved.config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: { deliverer: { effort: "high" } },
+      });
+      const out = await runCommand(["start", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain('agents."deliverer"');
+      expect(out.text).toContain('unsupported effort "high" for harness "opencode"');
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(h.world.issues[0]!.comments).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a rebuild over a live workspace keeps the run's recorded profiles", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      // The run recorded opencode profiles at claim time; the configuration
+      // drifted to gemini since, and the Commander is gone.
+      h.workspaces.seedWorkspace("STA-7", {
+        ticket: "STA-7",
+        builder: "custom/builder-x",
+        profile_builder: JSON.stringify({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
+        profile_reviewer: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
+      }, { commander: false });
+      h.ctx.resolved.config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: {
+          builder: { harness: "gemini", model: "new/builder", effort: "low" },
+          reviewer: { harness: "opencode", model: "new/reviewer" },
+        },
+      });
+      const out = await runCommand(["start", "STA-7"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("finished in existing workspace");
+      const tokens = h.workspaces.tokensFor("STA-7");
+      expect(JSON.parse(tokens["profile_builder"]!)).toMatchObject({ harness: "opencode" });
+      expect(JSON.parse(tokens["profile_reviewer"]!)).toMatchObject({ model: "claude-sonnet-5" });
+      expect(tokens["builder"]).toBe("custom/builder-x");
     } finally {
       h.stop();
     }
@@ -434,6 +539,29 @@ describe("pause and resume", () => {
     }
   });
 
+  test("a resume with an untranslatable Commander effort fails before launch", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        status: "build",
+        progress: "in_progress",
+      }, { commander: false });
+      h.ctx.resolved.config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: { commander: { effort: "turbo" } },
+      });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain('unsupported effort "turbo" for harness "codex"');
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("resume without a commander starts a new one that continues from metadata", async () => {
     const h = await harness();
     try {
@@ -449,7 +577,11 @@ describe("pause and resume", () => {
       expect(out.ok).toBe(true);
       expect(out.text).toContain("new commander commander-sta-1 started");
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "codex", name: "commander-sta-1" });
+      expect(started?.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-1",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("This is a resumed run.");
@@ -478,7 +610,11 @@ describe("pause and resume", () => {
       expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
       const starts = h.workspaces.calls.filter((c) => c.method === "agent.start");
       expect(starts).toHaveLength(1);
-      expect(starts[0]!.params).toMatchObject({ kind: "codex", name: "commander-sta-1" });
+      expect(starts[0]!.params).toMatchObject({
+        kind: "codex",
+        name: "commander-sta-1",
+        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      });
       expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
     } finally {
       h.stop();
@@ -666,7 +802,7 @@ describe("fail", () => {
       expect(h.workspaces.workspaces[0]!.closed).toBe(true);
       expect(h.lines).toEqual([
         "STA-1 claimed: Todo → Build (slot 0)",
-        "STA-1 workspace opened (ws-1) commander=claude builder=opencode/muse-spark-1.3-contributor-free",
+        "STA-1 workspace opened (ws-1) commander=codex builder=opencode/muse-spark-1.3-contributor-free",
         "STA-1 failed: builder wedged",
         "STA-1 workspace closed (ws-1)",
       ]);
@@ -856,6 +992,78 @@ describe("work order", () => {
     expect(order).toContain("model `custom/builder`");
     for (const stage of ["build", "review", "deliver"] as const) {
       expect(order).toContain(assets.prompts[stage]);
+    }
+  });
+
+  test("Deliver uses the explicit deliverer profile and the work order renders effort", () => {
+    const commanderConfig = parseDispatchConfig({
+      project: "igniter",
+      agents: { deliverer: { harness: "claude", model: "d-model", effort: "max" } },
+    }).commander;
+    const order = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig,
+    });
+    // Deliver no longer reuses the Builder profile.
+    expect(order).toContain("Deliver: prompt `/");
+    expect(order).toContain("/stages/deliver.md`; agent `deliverer`; harness `claude`; model `d-model`; effort `max`");
+    // Bundled effort renders on the stages that set it.
+    const bundled = buildWorkOrder({
+      identifier: "STA-176",
+      title: "Dispatch commands",
+      issueUrl: "https://linear.app/starcoder/issue/STA-176",
+      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
+      branch: "feature/sta-176",
+      commanderConfig: DEFAULT_COMMANDER_CONFIG,
+    });
+    expect(bundled).toContain("Acceptance: prompt `/");
+    expect(bundled).toContain("harness `claude`; model `claude-sonnet-5`; effort `high`");
+    expect(bundled).toContain("Builder fallback: harness `codex`; model `openai/gpt-5.6-terra`; effort `high`");
+  });
+
+  test("a resume reuses the recorded stage profiles when the configuration drifts", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
+      // The run recorded the bundled profiles at claim time.
+      const recorded = recordStageProfiles(h.ctx.resolved.config);
+      h.workspaces.seedWorkspace("STA-1", {
+        ticket: "STA-1",
+        status: "build",
+        progress: "in_progress",
+        checkpoint: HEAD,
+        ...recorded,
+      }, { commander: false });
+      // The configuration drifts mid-run: new harnesses, models, efforts.
+      h.ctx.resolved.config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: {
+          commander: { harness: "claude", model: "new/commander", effort: "max" },
+          builder: { harness: "gemini", model: "new/builder", effort: "low" },
+          reviewer: { harness: "opencode", model: "new/reviewer" },
+          deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
+        },
+      });
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      // The rebuilt Commander itself follows the live configuration…
+      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
+      expect(started?.params).toMatchObject({ kind: "claude", name: "commander-sta-1", args: ["--model", "new/commander", "--effort", "max"] });
+      // …but its work order still carries the run's recorded stage profiles.
+      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("harness `opencode`; model `opencode/muse-spark-1.3-contributor-free`");
+      expect(inbox[0]).toContain("harness `claude`; model `claude-sonnet-5`; effort `high`");
+      expect(inbox[0]).not.toContain("new/builder");
+      expect(inbox[0]).not.toContain("new/reviewer");
+      expect(inbox[0]).not.toContain("new/deliverer");
+    } finally {
+      h.stop();
     }
   });
 

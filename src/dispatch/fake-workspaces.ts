@@ -28,6 +28,9 @@ export interface FakeCall {
   params: Record<string, unknown>;
 }
 
+/** Real Herdr rejects a metadata report wider than this; the fake matches. */
+export const MAX_METADATA_TOKENS = 16;
+
 export class FakeWorkspaces implements CommandWorkspaces {
   workspaces: FakeWorkspace[] = [];
   agents: FakeAgent[] = [];
@@ -176,6 +179,13 @@ export class FakeWorkspaces implements CommandWorkspaces {
   async reportMetadata(workspaceId: string, tokens: Record<string, string | null>): Promise<void> {
     this.calls.push({ method: "workspace.report_metadata", params: { workspace_id: workspaceId, tokens } });
     this.failWhen("workspace.report_metadata");
+    // The real Herdr rejects an over-wide report; the fake enforces the
+    // same 16-token cap so an over-wide write fails in tests, not in prod.
+    if (Object.keys(tokens).length > MAX_METADATA_TOKENS) {
+      throw new Error(
+        `fake herdr: a metadata report may update at most ${MAX_METADATA_TOKENS} tokens (got ${Object.keys(tokens).length})`,
+      );
+    }
     const workspace = this.workspaces.find((w) => w.workspaceId === workspaceId);
     if (!workspace) throw new Error(`fake herdr: workspace ${workspaceId} does not exist`);
     for (const [key, value] of Object.entries(tokens)) {

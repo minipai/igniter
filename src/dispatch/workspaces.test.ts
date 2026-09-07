@@ -13,6 +13,22 @@ import {
   tokensByTicket,
   type WorkspaceSnapshot,
 } from "./workspaces";
+import { FakeWorkspaces, MAX_METADATA_TOKENS } from "./fake-workspaces";
+
+describe("metadata report width", () => {
+  test("the fake rejects an over-wide report like the real Herdr", async () => {
+    const workspaces = new FakeWorkspaces();
+    workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
+    const workspaceId = workspaces.workspaces[0]!.workspaceId;
+    const sixteen: Record<string, string> = {};
+    for (let i = 0; i < MAX_METADATA_TOKENS; i += 1) sixteen[`k${i}`] = "v";
+    await workspaces.reportMetadata(workspaceId, sixteen);
+    const seventeen = { ...sixteen, overflow: "v" };
+    await expect(workspaces.reportMetadata(workspaceId, seventeen)).rejects.toThrow(
+      "may update at most 16 tokens",
+    );
+  });
+});
 
 describe("extractRunningTickets", () => {
   test("agent names and token values map to tickets; everything else is ignored", () => {

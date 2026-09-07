@@ -5,8 +5,10 @@ const commanderConfig = Bun.YAML.parse(
   await Bun.file(new URL("./config.yaml", import.meta.url)).text(),
 ) as {
   agents: {
-    builder: { harness: string; model: string; fallback: { harness: string; model: string } };
-    reviewer: { harness: string; model: string };
+    commander: { harness: string; model: string; effort?: string };
+    builder: { harness: string; model: string; effort?: string; fallback: { harness: string; model: string; effort?: string } };
+    reviewer: { harness: string; model: string; effort?: string };
+    deliverer: { harness: string; model: string; effort?: string };
   };
   stages: Record<"build" | "review" | "deliver", { prompt: string; agent: string }>;
 };
@@ -27,9 +29,15 @@ describe("Commander delivery protocol", () => {
     expect(commanderConfig.stages.build.prompt).toBe("stages/build.md");
     expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
     expect(commanderConfig.stages.deliver.prompt).toBe("stages/deliver.md");
+    expect(commanderConfig.agents.commander.harness).toBe("codex");
+    expect(commanderConfig.agents.commander.model).toBe("openai/gpt-5.6-sol");
+    expect(commanderConfig.agents.commander.effort).toBe("high");
     expect(commanderConfig.agents.builder.harness).toBe("opencode");
     expect(commanderConfig.agents.reviewer.harness).toBe("claude");
+    expect(commanderConfig.agents.reviewer.effort).toBe("high");
+    expect(commanderConfig.agents.deliverer.harness).toBe("opencode");
     expect(commanderConfig.agents.builder.fallback.harness).toBe("codex");
+    expect(commanderConfig.agents.builder.fallback.effort).toBe("high");
     expect(commonRules).toContain("builder.fallback");
     expect(stageRules[0]).toStartWith("# Build agent");
     expect(stageRules[1]).toStartWith("# Acceptance agent");
@@ -81,7 +89,7 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
     expect(commanderConfig.stages.build.agent).toBe("builder");
     expect(commanderConfig.stages.review.agent).toBe("reviewer");
-    expect(commanderConfig.stages.deliver.agent).toBe("builder");
+    expect(commanderConfig.stages.deliver.agent).toBe("deliverer");
     expect(stageRules[0]).toContain("`diffwalk inspect`");
     expect(stageRules[0]).toContain("`diffwalk check`");
     expect(stageRules[0]).toContain("`diffwalk publish`");

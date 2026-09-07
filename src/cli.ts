@@ -205,7 +205,7 @@ try {
     console.error("usage: igniter <serve|dev|status|start|pause|resume|fail|restart|answer|state|begin|submit|block|unblock> [--port N]");
     console.error("  serve [--no-watch] [--port N]");
     console.error("  status");
-    console.error("  start <ticket> [--agent <kind>] [--builder <model>]");
+    console.error("  start <ticket> [--builder <model>]");
     console.error("  pause <ticket> | resume <ticket>");
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");

@@ -22,7 +22,7 @@
 // worker session wakes again.
 
 import type { LinearIssue } from "./linear.ts";
-import { commanderPane, resumedWorkOrder, type RecoveryScope } from "./commands.ts";
+import { commanderPane, resumedWorkOrder, startCommander, type RecoveryScope } from "./commands.ts";
 import { confirmPromptDelivery, workOrderHash } from "./prompt-delivery.ts";
 import { progressOf } from "./protocol.ts";
 import {
@@ -116,14 +116,13 @@ export async function wakeReviewers(
           `review wake-up: ${reviewerName(issue.identifier)} ${finished ? "done" : "gone"}, commander ${commander.agentStatus} prompted to read the report`,
         );
       } else {
-        const kind = workspace.tokens["commander"] ?? "claude";
         const name = commanderName(issue.identifier);
         const paneId = await commanderPane(deps, issue.identifier, workspace.workspaceId, snapshot);
         if (!paneId) {
           await deps.decisions.record(issue.identifier, "review wake-up failed: workspace has no pane");
           continue;
         }
-        await deps.workspaces.startAgent({ paneId, kind, name });
+        await startCommander(deps, issue.identifier, paneId);
         const order = resumedWorkOrder(deps, issue, { ...workspace.tokens, status: "review", progress: "in_progress" });
         // The outer catch records the diagnosis and retries on the next
         // poll; the wake-up key lands only after both prompts went out.

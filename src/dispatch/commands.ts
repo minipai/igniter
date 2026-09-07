@@ -29,6 +29,7 @@ import {
   type ResolvedDispatch,
 } from "./claims.ts";
 import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
+import { commanderConfigForRun, keptStageProfiles, launchFor, recordStageProfiles } from "./agents.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { LinearClient } from "./linear.ts";
 import {
@@ -115,7 +116,7 @@ function usage(command: string): string {
     case "status":
       return "usage: igniter status";
     case "start":
-      return "usage: igniter start <ticket> [--agent <kind>] [--builder <model>]";
+      return "usage: igniter start <ticket> [--builder <model>]";
     case "pause":
       return "usage: igniter pause <ticket>";
     case "resume":
@@ -478,13 +479,13 @@ async function answerCommand(args: string[], ctx: CommandContext): Promise<Comma
     return fail(`no live commander for ${full.identifier}`);
   }
   try {
-    await ctx.workspaces.sendKeys(agent.paneId, answerKeysFor(workspace.tokens["commander"], key));
+    await ctx.workspaces.sendKeys(agent.paneId, answerKeysFor(ctx.resolved.config.commander.agents.commander.harness, key));
   } catch (error) {
     await decisions.record(full.identifier, `answer failed: ${(error as Error).message}`);
     return fail(`answer failed: ${(error as Error).message}`);
   }
   const verdict = key === "y" ? "allowed once" : "denied";
-  const sent = answerKeysFor(workspace.tokens["commander"], key).join("+");
+  const sent = answerKeysFor(ctx.resolved.config.commander.agents.commander.harness, key).join("+");
   await decisions.record(full.identifier, `answered ${key} (${verdict}, sent ${sent})`);
   return { ok: true, text: `answered ${key} for ${full.identifier} (${verdict}, sent ${sent}); commander pane received the key` };
 }
@@ -494,8 +495,8 @@ async function answerCommand(args: string[], ctx: CommandContext): Promise<Comma
 // ---------------------------------------------------------------------------
 
 /**
- * The keys an answer sends, by the commander's agent kind (workspace
- * `commander` token). Claude Code answers its numbered permission dialog
+ * The keys an answer sends, by the Commander harness from the resolved
+ * configuration. Claude Code answers its numbered permission dialog
  * with enter/esc; every other kind gets the literal y/n key.
  */
 export function answerKeysFor(kind: string | undefined, key: string): string[] {
@@ -507,13 +508,11 @@ export function answerKeysFor(kind: string | undefined, key: string): string[] {
 
 async function startCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
-  const agentFlag = takeFlag(args, "agent");
-  const builderFlag = takeFlag(agentFlag.rest, "builder");
+  const builderFlag = takeFlag(args, "builder");
   const rest = builderFlag.rest;
   if (rest.length !== 1 || !rest[0] || rest[0].startsWith("--")) {
     return fail(usage("start"));
   }
-  if (agentFlag.value !== undefined && agentFlag.value === "") return fail(usage("start"));
   if (builderFlag.value !== undefined && builderFlag.value === "") return fail(usage("start"));
   const identifier = rest[0] as string;
 
@@ -531,20 +530,7 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     return fail(`start refused: ticket is ${full.state.name}`);
   }
 
-  const kind = agentFlag.value ?? "claude";
   const builder = builderFlag.value ?? resolved.config.commander.agents.builder.model;
-  if (agentFlag.value !== undefined) {
-    let kinds: string[];
-    try {
-      kinds = await ctx.workspaces.agentKinds();
-    } catch (error) {
-      return fail(`herdr unreachable: ${(error as Error).message}`);
-    }
-    if (!kinds.includes(kind)) {
-      await decisions.record(full.identifier, `start refused: unknown agent kind "${kind}"`);
-      return fail(`unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
-    }
-  }
 
   const deps = depsOf(ctx);
   const status = statusOf(resolved, full.state.id);
@@ -568,7 +554,7 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     }
     try {
       const at = deriveState(resolved, full);
-      const opened = await adoptTicket(deps, full, { agent: kind, builder });
+      const opened = await adoptTicket(deps, full, { builder });
       return { ok: true, text: `adopted ${full.identifier}: workspace ${opened.workspaceId} reopened at ${at.status}+${at.progress ?? "no progress"} (Linear kept)` };
     } catch (error) {
       return refuse(ctx, full.identifier, error);
@@ -601,7 +587,7 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     }
   }
   try {
-    const ticket = await claimTicket(deps, full, { agent: kind, builder });
+    const ticket = await claimTicket(deps, full, { builder });
     return {
       ok: true,
       text: `claimed ${full.identifier} → ${resolved.config.states.build}+${resolved.config.progress.in_progress} (slot ${ticket.slot}); workspace ${ticket.workspaceId} opened, commander=${ticket.commander} builder=${ticket.builder}`,
@@ -760,6 +746,24 @@ export async function commanderPane(
   return freeIn(await ctx.workspaces.snapshot());
 }
 
+/**
+ * Start the Commander for a ticket from the resolved `agents.commander`
+ * profile: no per-ticket Commander override is stored. The profile's
+ * effort becomes native Herdr `agent.start` args; an effort the harness
+ * cannot express throws a concrete error before anything launches.
+ */
+export async function startCommander(
+  ctx: RecoveryScope,
+  identifier: string,
+  paneId: string,
+): Promise<string> {
+  const profile = ctx.resolved.config.commander.agents.commander;
+  const { kind, args } = launchFor(profile);
+  const name = commanderName(identifier);
+  await ctx.workspaces.startAgent({ paneId, kind, name, ...(args.length > 0 ? { args } : {}) });
+  return name;
+}
+
 async function resumeCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("resume"));
@@ -821,7 +825,6 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
         return fail(`at max_running (${resolved.config.maxRunning})`);
       }
     }
-    const kind = workspace.tokens["commander"] ?? "claude";
     const name = commanderName(full.identifier);
     const meta = {
       ...workspace.tokens,
@@ -834,7 +837,7 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
         await decisions.record(full.identifier, "resume failed: workspace has no pane");
         return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
       }
-      await ctx.workspaces.startAgent({ paneId, kind, name });
+      await startCommander(ctx, full.identifier, paneId);
       const unstated = await deliverStartPrompt(ctx, {
         project: resolved.config.project,
         ticket: full.identifier,
@@ -899,7 +902,6 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
     await decisions.record(full.identifier, "resumed by command");
     return { ok: true, text: `resumed ${full.identifier}; commander prompted to continue` };
   }
-  const kind = workspace.tokens["commander"] ?? "claude";
   const name = commanderName(full.identifier);
   try {
     const paneId = await commanderPane(ctx, full.identifier, workspace.workspaceId, snapshot);
@@ -907,7 +909,7 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
       await decisions.record(full.identifier, "resume failed: workspace has no pane");
       return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
     }
-    await ctx.workspaces.startAgent({ paneId, kind, name });
+    await startCommander(ctx, full.identifier, paneId);
     const unstated = await deliverStartPrompt(ctx, {
       project: resolved.config.project,
       ticket: full.identifier,
@@ -1157,13 +1159,14 @@ export function scratchBlock(input: WorkOrderInput): string {
   const agents = input.commanderConfig?.agents;
   const builderHarness = agents?.builder?.harness;
   const reviewerHarness = agents?.reviewer?.harness;
+  const delivererHarness = agents?.deliverer?.harness;
   const fallbackHarness = agents?.builder?.fallback?.harness;
-  if (!builderHarness || !reviewerHarness || !fallbackHarness) return "";
+  if (!builderHarness || !reviewerHarness || !delivererHarness || !fallbackHarness) return "";
   const lines = [
     `Worker scratch (created and cleaned by igniter; use only your own):`,
     `- Build: \`${scratch.builder}\` (harness \`${builderHarness}\`)`,
     `- Acceptance: \`${scratch.reviewer}\` (harness \`${reviewerHarness}\`)`,
-    `- Deliver: \`${scratch.deliverer}\` (harness \`${builderHarness}\`)`,
+    `- Deliver: \`${scratch.deliverer}\` (harness \`${delivererHarness}\`)`,
     `- Builder fallback: harness \`${fallbackHarness}\`; scratch \`${scratch.builder}\``,
     `Pre-authorized scope is the ticket worktree, bundled read-only assets, and your own scratch only. ` +
       `Do not invent generic permission flags; use the configured harness normally and inspect its actual dialogs. ` +
@@ -1187,10 +1190,12 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     const model = stageConfig.agent === "builder" && input.builderModel
       ? input.builderModel
       : agent.model;
+    const effort = agent.effort !== undefined ? `; effort \`${agent.effort}\`` : "";
     return `- ${stageName[stage]}: prompt \`${assets.prompts[stage]}\`; agent \`${stageConfig.agent}\`; ` +
-      `harness \`${agent.harness}\`; model \`${model}\``;
+      `harness \`${agent.harness}\`; model \`${model}\`${effort}`;
   }).join("\n");
   const fallback = input.commanderConfig.agents.builder.fallback;
+  const fallbackEffort = fallback.effort !== undefined ? `; effort \`${fallback.effort}\`` : "";
   const scratchSection = input.scratch ? scratchBlock(input) : "";
   const delivery =
     input.delivery !== undefined
@@ -1214,7 +1219,7 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `\n` +
     `Effective stage workers (bundled defaults plus repository overrides):\n` +
     `${stageLines}\n` +
-    `- Builder fallback: harness \`${fallback.harness}\`; model \`${fallback.model}\`\n` +
+    `- Builder fallback: harness \`${fallback.harness}\`; model \`${fallback.model}\`${fallbackEffort}\n` +
     `Use these prompt and agent values; do not reconstruct them from defaults.\n` +
     scratchSection +
     `\n` +
@@ -1244,6 +1249,9 @@ export function resumedWorkOrder(
   const progress = tokens["progress"] ?? "?";
   const checkpoint = tokens["checkpoint"] ?? "?";
   const worktree = ticketWorktree(ctx.repoRoot, full.identifier);
+  // The run's recorded stage-agent profiles win over the live
+  // configuration, so a mid-run config edit cannot drift the retry.
+  const commanderConfig = commanderConfigForRun(ctx.resolved.config.commander, tokens);
   return (
     buildWorkOrder({
       identifier: full.identifier,
@@ -1251,8 +1259,8 @@ export function resumedWorkOrder(
       issueUrl: issueUrl(ctx.resolved.config, full.identifier),
       worktreePath: worktree.path,
       branch: worktree.branch,
-      builderModel: tokens["builder"] ?? ctx.resolved.config.commander.agents.builder.model,
-      commanderConfig: ctx.resolved.config.commander,
+      builderModel: tokens["builder"] ?? commanderConfig.agents.builder.model,
+      commanderConfig,
       delivery: ctx.resolved.config.delivery,
       scratch: scratchPathsFor(ctx.repoRoot, full.identifier),
     }) +
@@ -1284,7 +1292,10 @@ export interface WorkspaceSinkOptions {
 export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
   const runGit = options.runGit ?? bunGitRunner();
   return async (claim: ClaimedTicket, existing) => {
-    const kind = claim.agent ?? "claude";
+    // The Commander always runs the resolved `agents.commander` profile:
+    // no per-ticket Commander override is stored.
+    const profile = options.config.commander.agents.commander;
+    const { kind, args } = launchFor(profile);
     const builder = claim.builder ?? options.config.commander.agents.builder.model;
     let worktree;
     try {
@@ -1304,6 +1315,10 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
     }
     let workspaceId: string;
     let rootPaneId: string;
+    // A rebuild over a live workspace keeps the run's recorded profiles:
+    // fresh defaults from a possibly edited configuration never downgrade
+    // the freeze on a second resume.
+    let keptProfiles: Record<string, string> = {};
     if (existing) {
       workspaceId = existing.workspaceId;
       try {
@@ -1312,6 +1327,7 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
         if (!workspace || workspace.tokens["ticket"] !== claim.identifier) {
           throw new Error(`workspace ${workspaceId} is not owned by ${claim.identifier}`);
         }
+        keptProfiles = keptStageProfiles(workspace.tokens);
         const name = commanderName(claim.identifier);
         const named = snapshot.agents.find((agent) => agent.name === name);
         if (named) {
@@ -1379,18 +1395,20 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
     try {
       await options.workspaces.reportMetadata(workspaceId, {
         ticket: claim.identifier,
-        commander: kind,
         builder,
         slot: String(claim.slot),
         scratch_builder: scratch.builder,
         scratch_reviewer: scratch.reviewer,
         scratch_deliverer: scratch.deliverer,
+        ...recordStageProfiles(options.config),
+        ...keptProfiles,
       });
       const name = commanderName(claim.identifier);
       await options.workspaces.startAgent({
         paneId: rootPaneId,
         kind,
         name,
+        ...(args.length > 0 ? { args } : {}),
       });
       const order = buildWorkOrder({
         identifier: claim.identifier,

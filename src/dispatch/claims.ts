@@ -74,7 +74,6 @@ export interface ClaimedTicket {
   title: string;
   host: string;
   slot: number;
-  agent?: string;
   builder?: string;
 }
 
@@ -481,10 +480,7 @@ export class Watcher {
             this.handedOff.add(ticket.id);
             claimed.push(ticket);
           } else {
-            const ticket = await claimTicket(deps, full as Parameters<typeof claimTicket>[1], {
-              agent: undefined,
-              builder: undefined,
-            });
+            const ticket = await claimTicket(deps, full as Parameters<typeof claimTicket>[1], {});
             this.handedOff.add(ticket.id);
             claimed.push(ticket);
           }

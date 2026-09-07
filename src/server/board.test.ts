@@ -57,7 +57,6 @@ async function harness(): Promise<Harness> {
       ticket: "STA-1",
       status: "build",
       progress: "in_progress",
-      commander: "claude",
       builder: "opencode",
     },
     { commanderStatus: "blocked", paneText: "[commander] holding for approval\n[commander] waiting on owner response…" },
@@ -81,7 +80,6 @@ async function harness(): Promise<Harness> {
       ticket: "STA-2",
       status: "build",
       progress: "in_progress",
-      commander: "codex",
       stalled: "1",
     },
     { commanderStatus: "working", paneText: "[commander] waiting for selector" },
@@ -93,7 +91,6 @@ async function harness(): Promise<Harness> {
       ticket: "STA-3",
       status: "build",
       progress: "in_progress",
-      commander: "claude",
     },
     { commanderStatus: "working", paneText: "[commander] delegating build task" },
   );
@@ -135,6 +132,7 @@ async function boardInputs(h: Harness): Promise<BoardInputs> {
     rules: "# Commander rules\n",
     host: "minipc",
     linearOrg: "starcoder",
+    commanderKind: h.ctx.resolved.config.commander.agents.commander.harness,
     outputs,
     now: () => NOW,
   };
@@ -160,7 +158,7 @@ describe("buildBoardSnapshot", () => {
       expect(waiting.railState).toBe("reply");
       expect(waiting.pulse).toContain("waiting on you");
       expect(waiting.panes.commander.agentStatus).toBe("blocked");
-      expect(waiting.panes.commander.kind).toBe("claude");
+      expect(waiting.panes.commander.kind).toBe("codex");
       expect(waiting.panes.commander.lastLine).toBe("[commander] waiting on owner response…");
       expect(waiting.panes.builder.kind).toBe("opencode");
       expect(waiting.panes.builder.lastLine).toBe("[opencode] requesting approval: rm -rf dist");
@@ -207,41 +205,37 @@ describe("answer command", () => {
   test("maps y/n to the commander's dialog and logs what was sent", async () => {
     const h = await harness();
     try {
-      // STA-1 runs a claude commander: y becomes enter on its dialog.
+      // The default Commander profile is Codex: the literal key goes through.
       const out = await runCommand(["answer", "STA-1", "y"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("answered y for STA-1");
       const commander = h.workspaces.agents.find((a) => a.name === "commander-sta-1");
       if (!commander) throw new Error("commander agent is missing");
-      expect(h.workspaces.sentKeys).toEqual([{ paneId: commander.paneId, keys: ["enter"] }]);
-      expect(h.lines.join("\n")).toContain("STA-1 answered y (allowed once, sent enter)");
+      expect(h.workspaces.sentKeys).toEqual([{ paneId: commander.paneId, keys: ["y"] }]);
+      expect(h.lines.join("\n")).toContain("STA-1 answered y (allowed once, sent y)");
 
       const denied = await runCommand(["answer", "STA-3", "n"], h.ctx);
       expect(denied.ok).toBe(true);
-      expect(h.lines.join("\n")).toContain("STA-3 answered n (denied, sent esc)");
+      expect(h.lines.join("\n")).toContain("STA-3 answered n (denied, sent n)");
     } finally {
       h.stop();
     }
   });
 
-  test("other commander kinds get the literal y/n key", async () => {
+  test("answer keys follow the configured Commander harness, not a workspace token", async () => {
     const h = await harness();
     try {
-      // STA-2 runs a codex commander: the literal key goes through.
+      // A stale per-ticket commander token no longer steers the answer:
+      // the resolved configuration (Codex here) does.
+      const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2");
+      if (!workspace) throw new Error("STA-2 workspace is missing");
+      workspace.tokens["commander"] = "claude";
       const out = await runCommand(["answer", "STA-2", "y"], h.ctx);
       expect(out.ok).toBe(true);
       const commander = h.workspaces.agents.find((a) => a.name === "commander-sta-2");
       if (!commander) throw new Error("commander agent is missing");
       expect(h.workspaces.sentKeys).toEqual([{ paneId: commander.paneId, keys: ["y"] }]);
       expect(h.lines.join("\n")).toContain("STA-2 answered y (allowed once, sent y)");
-
-      // A missing commander token falls back to the literal key too.
-      const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2");
-      if (!workspace) throw new Error("STA-2 workspace is missing");
-      delete workspace.tokens["commander"];
-      const fallback = await runCommand(["answer", "STA-2", "n"], h.ctx);
-      expect(fallback.ok).toBe(true);
-      expect(h.workspaces.sentKeys[1]).toEqual({ paneId: commander.paneId, keys: ["n"] });
     } finally {
       h.stop();
     }
