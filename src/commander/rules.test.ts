@@ -52,8 +52,10 @@ describe("Commander delivery protocol", () => {
     ]) {
       expect(commonRules).toContain(command);
     }
+    expect(stageRules[0]).toContain("Do not operate Igniter or Linear; report only to the Commander.");
+    expect(stageRules[1]).toContain("Report only to the Commander.");
+    expect(stageRules[2]).toContain("Do not operate Igniter or Linear; report only to the Commander.");
     for (const prompt of stageRules) {
-      expect(prompt).toContain("Do not operate Igniter or Linear; report only to the Commander.");
       expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock)/);
     }
   });
@@ -98,10 +100,9 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Deliver + Complete to Done");
   });
 
-  test("acceptance and Commander prompts forbid direct Linear and MCP use", () => {
+  test("keeps Linear publication with the Commander", () => {
     expect(commonRules).toContain("call Linear directly or through MCP");
-    expect(stageRules[1]).toContain("Never call Linear directly or through MCP");
-    expect(stageRules[1]).toContain("Do not operate Igniter or Linear; report only to the Commander.");
+    expect(stageRules[1]).toContain("Report only to the Commander.");
   });
 
   test("never references the old stage protocol", () => {

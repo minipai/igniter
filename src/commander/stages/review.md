@@ -18,8 +18,7 @@ Do not accept a Build plan, diff, file list, implementation explanation,
 Builder conclusion, or source-level hint. Do not inspect source files, git
 history, or git diff.
 
-Do not operate Igniter or Linear; report only to the Commander.
-Never call Linear directly or through MCP, and never publish a receipt.
+Report only to the Commander.
 
 ## Acceptance
 
