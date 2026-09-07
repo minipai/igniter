@@ -1,6 +1,6 @@
 // The dispatch board: top bar, left rail, right stage. Live without
 // reloading: the snapshot loads from GET /api/board, typed SSE events on
-// /events trigger a re-fetch, and a slow timer covers missed events. Every
+// /events trigger a re-fetch. Every
 // action that sends input is a native <form onSubmit>; y/n keys answer the
 // visible approval only when no input has focus.
 
@@ -46,7 +46,7 @@ interface BoardData {
   usedSlots: number;
   maxRunning: number;
   linearOrg: string;
-  lastPollAt: string | null;
+  lastRefreshAt: string | null;
   needsYou: number;
   queue: QueueEntryData[];
   activity: string[];
@@ -156,7 +156,7 @@ function activitySummary(line: string): string {
   return parsed ? `${parsed.time} ${parsed.ticket} ${parsed.message}` : line;
 }
 
-const BOARD_EVENTS = ["pane", "workspace", "poll", "decision", "resync"];
+const BOARD_EVENTS = ["pane", "workspace", "refresh", "decision", "resync"];
 
 function RailTicketRow(props: {
   ticket: BoardTicketData;
@@ -332,7 +332,7 @@ export function Home() {
   const [focusedPane, setFocusedPane] = createSignal<string | null>(null);
   const [cleared, setCleared] = createSignal<Record<string, ClearedEntry>>({});
   const [answerError, setAnswerError] = createSignal("");
-  const [pollNow, setPollNow] = createSignal(Date.now());
+  const [clockNow, setClockNow] = createSignal(Date.now());
 
   async function loadBoard(): Promise<BoardData | null> {
     let data: BoardData | null = null;
@@ -408,10 +408,7 @@ export function Home() {
 
   onSettled(() => {
     void loadBoard();
-    const tick = setInterval(() => setPollNow(Date.now()), 1000);
-    const slow = setInterval(() => {
-      void loadBoard();
-    }, 5000);
+    const tick = setInterval(() => setClockNow(Date.now()), 1000);
     let source: EventSource | null = null;
     let reloadTimer: ReturnType<typeof setTimeout> | null = null;
     const queueReload = (): void => {
@@ -442,7 +439,6 @@ export function Home() {
     document.addEventListener("keydown", onKey);
     return () => {
       clearInterval(tick);
-      clearInterval(slow);
       if (reloadTimer) clearTimeout(reloadTimer);
       document.removeEventListener("keydown", onKey);
       source?.close();
@@ -476,17 +472,11 @@ export function Home() {
     return data.tickets.filter((t) => effectiveBlock(t, done) === "approval").length;
   });
 
-  const pollAge = createMemo((): string | null => {
-    const at = board()?.lastPollAt ?? null;
+  const refreshAge = createMemo((): string | null => {
+    const at = board()?.lastRefreshAt ?? null;
     if (!at) return null;
-    const ms = pollNow() - Date.parse(at);
+    const ms = clockNow() - Date.parse(at);
     return `${Math.max(0, Math.floor(ms / 1000))}`;
-  });
-
-  const pollLate = createMemo((): boolean => {
-    const at = board()?.lastPollAt ?? null;
-    if (!at) return true;
-    return pollNow() - Date.parse(at) > 60000;
   });
 
   return (
@@ -499,11 +489,11 @@ export function Home() {
           <span class="text-sm text-muted-foreground truncate font-mono" data-testid="host">{board()?.host ?? "…"}</span>
         </div>
         <div class="flex items-center gap-3">
-          <span class="poll" data-testid="poll" data-late={pollLate() ? "true" : "false"}>
+          <span class="poll" data-testid="refresh">
             <i class="poll-dot" />
-            <Show when={pollAge() !== null} fallback={<span>dispatch not running</span>}>
+            <Show when={refreshAge() !== null} fallback={<span>not refreshed</span>}>
               <span>
-                last Linear poll <span class="n" data-testid="poll-age">{pollAge()}</span>s ago
+                refreshed <span class="n" data-testid="refresh-age">{refreshAge()}</span>s ago
               </span>
             </Show>
           </span>
@@ -592,7 +582,7 @@ export function Home() {
                 block={effectiveBlock(found, cleared())}
                 clearedText={cleared()[found.identifier]?.text}
                 focusName={focusNameFor(found, focusedPane())}
-                now={pollNow()}
+                now={clockNow()}
                 answerError={answerError()}
                 onAnswer={answerTicket}
                 onFocus={setFocusedPane}
@@ -638,7 +628,7 @@ export function Home() {
                 <div class="sheet">
                   <div class="sheet-head">
                     <span>What the runner decided today</span>
-                    <span class="sheet-note">newest first · polls are not decisions and are not listed</span>
+                    <span class="sheet-note">newest first · data refreshes are not decisions and are not listed</span>
                   </div>
                   <ul class="sheet-list">
                     <For each={activity()} fallback={<li class="sheet-row">no decisions yet</li>}>

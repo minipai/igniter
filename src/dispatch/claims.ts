@@ -113,7 +113,7 @@ export function buildMissingBody(todoStatus: string): string {
     `${MISSING_MARKER}\n` +
     `Cannot claim this ticket: it has no acceptance-criteria checklist. ` +
     `Add a \`## 驗收條件\` (or \`## Acceptance criteria\`) section with checklist items to the description; ` +
-    `dispatch re-checks every poll while it sits in ${todoStatus}.`
+    `run \`igniter start <ticket>\` again after adding the criteria while it sits in ${todoStatus}.`
   );
 }
 
@@ -124,6 +124,38 @@ export function sortCandidates(issues: LinearIssue[]): LinearIssue[] {
     if (rank(a.priority) !== rank(b.priority)) return rank(a.priority) - rank(b.priority);
     if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt ? -1 : 1;
     return a.identifier < b.identifier ? -1 : 1;
+  });
+}
+
+/** Read the Todo queue once without normalizing, claiming, or opening workspaces. */
+export async function readQueue(
+  client: LinearClient,
+  resolved: ResolvedDispatch,
+): Promise<QueueEntry[]> {
+  const candidates = sortCandidates(
+    await client.listIssuesByState(resolved.projectId, resolved.stateIds.todo),
+  );
+  let free = resolved.config.maxRunning - (await countBuildSlots(client, resolved));
+  return candidates.map((candidate) => {
+    const entry = {
+      identifier: candidate.identifier,
+      title: candidate.title,
+      priority: candidate.priority,
+    };
+    if (!hasAcceptanceCriteria(candidate.description)) {
+      return { ...entry, reason: "skipped: no acceptance criteria" as QueueReason };
+    }
+    const progresses = (candidate.labels ?? [])
+      .map((label) => progressOf(resolved, label.id))
+      .filter((progress) => progress !== undefined);
+    if (progresses.length === 1 && progresses[0] === "blocked") {
+      return { ...entry, reason: "parked: blocked" as QueueReason };
+    }
+    if (free > 0) {
+      free -= 1;
+      return { ...entry, reason: "next" as QueueReason };
+    }
+    return { ...entry, reason: "waiting, slots full" as QueueReason };
   });
 }
 
@@ -760,7 +792,7 @@ export interface CommandCallOptions {
 }
 
 export interface DispatchApi {
-  queue(): { lastPollAt: string | null; order: QueueEntry[] };
+  queue(): Promise<{ lastRefreshAt: string | null; order: QueueEntry[] }>;
   activity(limit: number): Promise<string[]>;
   command(argv: string[], options?: CommandCallOptions): Promise<CommandResult>;
 }

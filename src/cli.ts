@@ -3,13 +3,12 @@ import { loadDispatchConfig } from "./dispatch/config.ts";
 import {
   type CommandCallOptions,
 } from "./dispatch/claims.ts";
-import { assertCommanderAssets } from "./commander/assets.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { bunGitRunner } from "./dispatch/worktrees.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
-import { startWatchedServe } from "./server/watched-serve.ts";
+import { startDispatchServe } from "./server/dispatch-serve.ts";
 
 function flagValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -37,29 +36,13 @@ function repoRoot(): string {
 
 async function serveCommand(): Promise<void> {
   if (hasFlag("--no-watch")) {
-    // Bundled Commander assets fail fast here, before anything serves: a
-    // missing rules.md, config.yaml, or stage prompt names itself.
-    await assertCommanderAssets();
-    // UI-only mode: still honor the configured bind address, never 0.0.0.0.
-    const configPath = `${repoRoot()}/.igniter/config.yaml`;
-    const config = (await Bun.file(configPath).exists()) ? await loadDispatchConfig(repoRoot()) : null;
-    const host = config?.listenHost ?? "127.0.0.1";
-    const port = resolvePort(config?.listenPort ?? API_PORT);
-    const server = startServer({ port, hostname: host });
-    console.log(`igniter serving on http://${host}:${server.port} (watch disabled)`);
-    return;
+    throw new Error("`igniter serve --no-watch` was removed; `igniter serve` never starts a Linear watch");
   }
-  // File-level config errors fail fast here, before the server starts. The
-  // watched entry asserts the bundled Commander assets itself.
   const config = await loadDispatchConfig(repoRoot());
   const client = new LinearClient({ apiKey: requireLinearApiKey() });
   const root = repoRoot();
   const port = resolvePort(config.listenPort);
-  // Signals stay registered across the Linear-unreachable retry below: a
-  // first signal stops the server gracefully, a second one exits at once.
-  // The entry reports the bound server through onServer before validation
-  // finishes, so both paths below see the same server.
-  let handle: Awaited<ReturnType<typeof startWatchedServe>> | undefined;
+  let handle: Awaited<ReturnType<typeof startDispatchServe>> | undefined;
   let server: ReturnType<typeof startServer> | undefined;
   let stopping = false;
   const stop = () => {
@@ -79,11 +62,8 @@ async function serveCommand(): Promise<void> {
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  // An unreachable Linear is not a configuration error: the server stays up
-  // and validation retries until Linear answers. Unknown statuses, teams,
-  // projects, label groups, or labels still exit 1 immediately.
   try {
-    handle = await startWatchedServe({
+    handle = await startDispatchServe({
       repoRoot: root,
       config,
       client,
@@ -92,14 +72,13 @@ async function serveCommand(): Promise<void> {
       port,
       onServer: (started) => {
         server = started;
-        console.log(`igniter serving on http://${config.listenHost}:${started.port} (watching ${config.project})`);
+        console.log(`igniter serving on http://${config.listenHost}:${started.port} (commands only; no Linear watch)`);
       },
     });
   } catch (error) {
     console.error((error as Error).message);
     process.exit(1);
   }
-  console.log(`watch live: claiming from ${config.states.todo}`);
 }
 
 /**
@@ -145,15 +124,13 @@ async function readStdin(): Promise<string> {
 
 function devCommand(): void {
   const port = resolvePort(API_PORT);
-  // UI work must never move real tickets: dev serves the API without the watch.
-  const api = Bun.spawn(["bun", "src/cli.ts", "serve", "--no-watch", "--port", String(port)], {
-    stdio: ["inherit", "inherit", "inherit"],
-  });
+  // UI work must never read or mutate real tickets.
+  const api = startServer({ port, hostname: "127.0.0.1" });
   const web = Bun.spawn(["bun", "vite", "--port", String(WEB_PORT), "--strictPort"], {
     stdio: ["inherit", "inherit", "inherit"],
   });
   const stop = () => {
-    api.kill();
+    api.stop();
     web.kill();
   };
   process.on("SIGINT", () => {
@@ -166,7 +143,7 @@ function devCommand(): void {
   });
 }
 
-const DISPATCH_COMMANDS = ["status", "start", "pause", "resume", "fail", "restart", "answer"];
+const DISPATCH_COMMANDS = ["status", "start", "reconcile", "pause", "resume", "fail", "restart", "answer"];
 const WORKSPACE_COMMANDS = ["state", "begin", "submit", "block", "unblock"];
 
 async function versionCommand(): Promise<void> {
@@ -202,10 +179,11 @@ try {
     }
     await forwardCommand(process.argv.slice(2), options);
   } else {
-    console.error("usage: igniter <serve|dev|status|start|pause|resume|fail|restart|answer|state|begin|submit|block|unblock> [--port N]");
-    console.error("  serve [--no-watch] [--port N]");
+    console.error("usage: igniter <serve|dev|status|start|reconcile|pause|resume|fail|restart|answer|state|begin|submit|block|unblock> [--port N]");
+    console.error("  serve [--port N]");
     console.error("  status");
     console.error("  start <ticket> [--builder <model>]");
+    console.error("  reconcile <ticket>");
     console.error("  pause <ticket> | resume <ticket>");
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");

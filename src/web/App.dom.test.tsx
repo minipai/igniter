@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 // Board page: rail order, Needs-you count, block bar + answer flow, pane
-// focus, poll heartbeat, and the three dispatch views. Fetch, EventSource,
+// focus, refresh age, and the three dispatch views. Fetch, EventSource,
 // and timers are faked; no network, no daemon.
 
 import { render } from "@solidjs/web";
@@ -15,7 +15,7 @@ interface FixtureOptions {
   approvals?: string[];
   quiet?: string[];
   alive?: string[];
-  lastPollAt?: string;
+  lastRefreshAt?: string;
   queue?: { identifier: string; title: string; priority: number; reason: string }[];
   activity?: string[];
   rules?: string;
@@ -81,7 +81,7 @@ function boardFixture(options: FixtureOptions = {}) {
     usedSlots: 2,
     maxRunning: 3,
     linearOrg: "starcoder",
-    lastPollAt: options.lastPollAt ?? new Date(Date.now() - 12_000).toISOString(),
+    lastRefreshAt: options.lastRefreshAt ?? new Date(Date.now() - 12_000).toISOString(),
     needsYou: approvals.length,
     queue: options.queue ?? [
       { identifier: "STA-5", title: "Queued one", priority: 2, reason: "next" },
@@ -309,7 +309,7 @@ describe("answering approvals", () => {
     first.railState = "alive";
     first.pulse = "alive · output just now ago";
     boardJson = { ...boardJson };
-    FakeEventSource.instances[0]?.fire("poll");
+    FakeEventSource.instances[0]?.fire("refresh");
     await settleTimers(300);
 
     // A later genuine approval blocks again: count +1, bar visible.
@@ -317,7 +317,7 @@ describe("answering approvals", () => {
     first.railState = "reply";
     first.pulse = "waiting on you · 1m";
     boardJson = { ...boardJson };
-    FakeEventSource.instances[0]?.fire("poll");
+    FakeEventSource.instances[0]?.fire("refresh");
     await settleTimers(300);
     expect(document.querySelector('[data-testid="needs-you"]')?.textContent).toContain("Needs you 1");
 
@@ -405,19 +405,33 @@ describe("panes", () => {
   });
 });
 
-describe("poll heartbeat", () => {
-  it("ticks every second and resets on a poll event", async () => {
+describe("refresh age", () => {
+  it("ticks every second and resets on a refresh event", async () => {
     renderApp();
     await settle();
 
-    expect(document.querySelector('[data-testid="poll-age"]')?.textContent).toBe("12");
+    expect(document.querySelector('[data-testid="refresh-age"]')?.textContent).toBe("12");
     await settleTimers(3000);
-    expect(document.querySelector('[data-testid="poll-age"]')?.textContent).toBe("15");
+    expect(document.querySelector('[data-testid="refresh-age"]')?.textContent).toBe("15");
 
-    boardJson = { ...boardJson, lastPollAt: new Date(Date.now()).toISOString() };
-    FakeEventSource.instances[0]?.fire("poll");
+    boardJson = { ...boardJson, lastRefreshAt: new Date(Date.now()).toISOString() };
+    FakeEventSource.instances[0]?.fire("refresh");
     await settleTimers(300);
-    expect(document.querySelector('[data-testid="poll-age"]')?.textContent).toBe("0");
+    expect(document.querySelector('[data-testid="refresh-age"]')?.textContent).toBe("0");
+  });
+
+  it("does not poll the board on a timer", async () => {
+    renderApp();
+    await settle();
+    const boardFetches = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/board").length;
+    expect(boardFetches()).toBe(1);
+
+    await settleTimers(60_000);
+    expect(boardFetches()).toBe(1);
+
+    FakeEventSource.instances[0]?.fire("refresh");
+    await settleTimers(300);
+    expect(boardFetches()).toBe(2);
   });
 });
 

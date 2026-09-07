@@ -34,7 +34,7 @@
     font-size: 11px;
   }
   .badge > .n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-  /* poll heartbeat: the one line that says the runner itself is alive */
+  /* explicit refresh age: this is data freshness, not a runner heartbeat */
   .poll { display: inline-flex; align-items: center; gap: calc(var(--spacing) * 1.5); font-size: var(--text-xs); color: var(--color-muted-foreground); white-space: nowrap; }
   .poll > .n { font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--color-foreground); }
   .poll-dot { width: 7px; height: 7px; border-radius: 9999px; background-color: var(--color-success); animation: blink 2.4s ease-in-out infinite; }

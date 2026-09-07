@@ -1625,9 +1625,12 @@ export async function normalizeOwnerMove(
 
   if (linearStatus === "review") {
     if (kind === "review-pass") return quiet(); // Waiting for the owner to approve or send back.
+    if (kind === "build") {
+      return inheritInto(deps, reread, latest, "review", "approved: Build+Complete → Review+Pending");
+    }
     return fail(
-      `${full.identifier}: Review+Complete but the newest receipt is ${kind}, not review-pass; ` +
-        `only a passing review completes the stage, refusing`,
+      `${full.identifier}: Review+Complete but the newest receipt is ${kind}, not build or review-pass; ` +
+        `only a completed Build handoff or passing review belongs here, refusing`,
     );
   }
   if (linearStatus === "deliver") {

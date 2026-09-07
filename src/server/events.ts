@@ -1,6 +1,6 @@
 // SSE boundary for dispatch events. The skeleton proves the boundary
 // exists: headers, an initial ready event, heartbeats. When a board hub is
-// attached, typed board events (pane, workspace, poll, decision, resync)
+// attached, typed board events (pane, workspace, refresh, decision, resync)
 // are re-broadcast so the page updates without polling.
 
 import type { BoardHub } from "./board.ts";

@@ -30,9 +30,9 @@ describe("stage mapping", () => {
 
 describe("launchArgsFor", () => {
   test("the model always rides along, even with no effort", () => {
-    expect(launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol" })).toEqual([
+    expect(launchArgsFor({ harness: "codex", model: "gpt-5.6-sol" })).toEqual([
       "-m",
-      "openai/gpt-5.6-sol",
+      "gpt-5.6-sol",
     ]);
     expect(launchArgsFor({ harness: "claude", model: "claude-sonnet-5" })).toEqual([
       "--model",
@@ -45,9 +45,9 @@ describe("launchArgsFor", () => {
   });
 
   test("codex effort becomes the model_reasoning_effort config override", () => {
-    expect(launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol", effort: "high" })).toEqual([
+    expect(launchArgsFor({ harness: "codex", model: "gpt-5.6-sol", effort: "high" })).toEqual([
       "-m",
-      "openai/gpt-5.6-sol",
+      "gpt-5.6-sol",
       "-c",
       'model_reasoning_effort="high"',
     ]);
@@ -86,8 +86,21 @@ describe("launchArgsFor", () => {
   test("a harness with no effort option fails instead of dropping the effort", () => {
     // The installed opencode TUI (`opencode [project]`, what Herdr starts)
     // documents no effort flag — only `opencode run` has --variant.
-    expect(() => launchArgsFor({ harness: "opencode", model: "m", effort: "high" })).toThrow(
+    expect(() => launchArgsFor({ harness: "opencode", model: "provider/m", effort: "high" })).toThrow(
       'unsupported effort "high" for harness "opencode"',
+    );
+  });
+
+  test("keeps Codex and OpenCode model namespaces distinct", () => {
+    expect(() => launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol" })).toThrow(
+      'Codex expects a bare model id such as "gpt-5.6-sol"',
+    );
+    // The diagnostic names where provider/model syntax belongs.
+    expect(() => launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol" })).toThrow(
+      "provider/model ids belong to OpenCode",
+    );
+    expect(() => launchArgsFor({ harness: "opencode", model: "gpt-5.6-sol" })).toThrow(
+      "OpenCode expects a provider/model id",
     );
   });
 
@@ -98,9 +111,9 @@ describe("launchArgsFor", () => {
   });
 
   test("launchFor carries the harness as the Herdr kind with model and effort", () => {
-    expect(launchFor({ harness: "codex", model: "openai/gpt-5.6-sol", effort: "high" })).toEqual({
+    expect(launchFor({ harness: "codex", model: "gpt-5.6-sol", effort: "high" })).toEqual({
       kind: "codex",
-      args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+      args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
     });
     // Every stage profile translates too: the helper serves any launch.
     expect(
@@ -116,6 +129,16 @@ describe("launchArgsFor", () => {
 describe("launchProblems", () => {
   test("bundled defaults launch cleanly", () => {
     expect(launchProblems(parseDispatchConfig({ project: "x" }))).toEqual([]);
+  });
+
+  test("names a model written for the wrong harness", () => {
+    const config = parseDispatchConfig({
+      project: "x",
+      agents: { commander: { model: "openai/gpt-5.6-sol" } },
+    });
+    expect(launchProblems(config)).toEqual([
+      expect.stringContaining('agents."commander": unsupported model "openai/gpt-5.6-sol" for harness "codex"'),
+    ]);
   });
 
   test("names every profile whose effort its harness cannot express", () => {
@@ -147,7 +170,7 @@ describe("run-recorded stage profiles", () => {
     expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
       harness: "opencode",
       model: "opencode/muse-spark-1.3-contributor-free",
-      fallback: { harness: "codex", model: "openai/gpt-5.6-terra", effort: "high" },
+      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
     expect(JSON.parse(recorded["profile_reviewer"]!)).toEqual({
       harness: "claude",

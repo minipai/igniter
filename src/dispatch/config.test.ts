@@ -117,10 +117,10 @@ describe("parseDispatchConfig", () => {
 
   test("loads bundled agent profiles and applies repository overrides", () => {
     const defaults = parseDispatchConfig({ project: "x" }).commander;
-    expect(defaults.agents.commander).toEqual({ harness: "codex", model: "openai/gpt-5.6-sol", effort: "high" });
+    expect(defaults.agents.commander).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
     expect(defaults.agents.builder.harness).toBe("opencode");
     expect(defaults.agents.builder.effort).toBeUndefined();
-    expect(defaults.agents.builder.fallback).toEqual({ harness: "codex", model: "openai/gpt-5.6-terra", effort: "high" });
+    expect(defaults.agents.builder.fallback).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
     expect(defaults.agents.reviewer).toEqual({ harness: "claude", model: "claude-sonnet-5", effort: "high" });
     expect(defaults.agents.deliverer).toEqual({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" });
     expect(defaults.stages.build.agent).toBe("builder");
@@ -131,7 +131,7 @@ describe("parseDispatchConfig", () => {
       project: "x",
       agents: {
         commander: { model: "custom/commander" },
-        builder: { harness: "codex", fallback: { model: "fallback/model" } },
+        builder: { harness: "codex", model: "gpt-5.6-sol", fallback: { model: "fallback/model" } },
         reviewer: { model: "review/model" },
         deliverer: { harness: "claude", effort: "low" },
       },
@@ -139,7 +139,7 @@ describe("parseDispatchConfig", () => {
     // A single-field override inherits every other bundled field.
     expect(overridden.agents.commander).toEqual({ harness: "codex", model: "custom/commander", effort: "high" });
     expect(overridden.agents.builder.harness).toBe("codex");
-    expect(overridden.agents.builder.model).toBe("opencode/muse-spark-1.3-contributor-free");
+    expect(overridden.agents.builder.model).toBe("gpt-5.6-sol");
     expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
     expect(overridden.agents.builder.fallback.effort).toBe("high");
     expect(overridden.agents.reviewer.model).toBe("review/model");
@@ -274,11 +274,11 @@ describe("loadDispatchConfig", () => {
 
 test("omitted agents fall back to the bundled profiles", () => {
   expect(parseDispatchConfig({ project: "x" }).commander.agents).toEqual({
-    commander: { harness: "codex", model: "openai/gpt-5.6-sol", effort: "high" },
+    commander: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     builder: {
       harness: "opencode",
       model: "opencode/muse-spark-1.3-contributor-free",
-      fallback: { harness: "codex", model: "openai/gpt-5.6-terra", effort: "high" },
+      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     },
     reviewer: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
     deliverer: { harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },

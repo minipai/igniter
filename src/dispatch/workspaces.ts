@@ -208,6 +208,9 @@ export interface HerdrWorkspacesOptions {
   env?: Record<string, string | undefined>;
 }
 
+/** Igniter agents never inherit these real provider credentials. */
+const AGENT_SECRET_NAMES = ["LINEAR_API_KEY", "RESEND_API_KEY", "FAL_API_KEY"] as const;
+
 /** The socket path resolves once and is cached; only a failure retries. */
 export function createSocketPathCache(options: {
   socketPath?: string;
@@ -339,8 +342,14 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       return { tabId };
     },
     startAgent: async (input) => {
+      await call("pane.send_input", {
+        pane_id: input.paneId,
+        text: `unset ${AGENT_SECRET_NAMES.join(" ")}`,
+        keys: ["Enter"],
+      });
       // The root pane's shell needs ~100-300ms after workspace.create; any
-      // other error is real and throws at once.
+      // other error is real and throws at once. The unset above is queued in
+      // that same shell, so these retries also wait for it to finish.
       const startedAt = Date.now();
       for (;;) {
         try {

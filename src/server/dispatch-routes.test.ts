@@ -53,7 +53,7 @@ async function serve(): Promise<Served> {
   const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot: dir, runGit: git });
   const watcher = new Watcher({ client, resolved, host: "h", decisions, workspaces, sink, git, repoRoot: dir });
   const api: DispatchApi = {
-    queue: () => ({ lastPollAt: watcher.lastPollAt, order: watcher.lastQueue }),
+    queue: async () => ({ lastRefreshAt: watcher.lastPollAt, order: watcher.lastQueue }),
     activity: (limit) => readActivityTail(logPath, limit),
     command: (argv: string[], options: CommandCallOptions = {}): Promise<CommandResult> =>
       runCommand(argv, {
@@ -188,10 +188,10 @@ describe("POST /api/command", () => {
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const before = (await (await fetch(`${served.base}/api/queue`)).json()) as {
-        lastPollAt: null;
+        lastRefreshAt: null;
         order: unknown[];
       };
-      expect(before).toEqual({ lastPollAt: null, order: [] });
+      expect(before).toEqual({ lastRefreshAt: null, order: [] });
 
       await postCommand(served.base, ["start", "STA-1"]);
       const activity = (await (await fetch(`${served.base}/api/activity?limit=10`)).json()) as { lines: string[] };

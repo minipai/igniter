@@ -146,7 +146,7 @@ describe("buildBoardSnapshot", () => {
       expect(board.host).toBe("minipc");
       expect(board.usedSlots).toBe(4 - 0);
       expect(board.maxRunning).toBe(2);
-      expect(board.lastPollAt).toBe(LAST_POLL);
+      expect(board.lastRefreshAt).toBe(LAST_POLL);
       expect(board.needsYou).toBe(1);
       expect(board.tickets.map((t) => t.identifier)).toEqual(["STA-1", "STA-2", "STA-3"]);
       expect(board.queue).toHaveLength(2);
@@ -327,7 +327,7 @@ describe("GET /api/board", () => {
   }, 20_000);
 });
 describe("SSE hub", () => {
-  test("re-broadcasts pane, workspace, poll, and decision events", async () => {
+  test("re-broadcasts pane, workspace, refresh, and decision events", async () => {
     const hub = createBoardHub();
     const controller = new AbortController();
     const res = createEventStream(controller.signal, hub);
@@ -343,14 +343,14 @@ describe("SSE hub", () => {
 
     hub.emit("pane", { paneId: "pane-1" });
     hub.emit("workspace", { workspaceId: "ws-1" });
-    hub.emit("poll", { lastPollAt: LAST_POLL });
+    hub.emit("refresh", { lastRefreshAt: LAST_POLL });
     const logged = withBoardEvents({ record: async () => {} }, hub);
     await logged.record("STA-1", "answered y (allowed once)");
     text = "";
     for (let i = 0; i < 4; i++) text += await readChunk();
     expect(text).toContain("event: pane\ndata: {\"paneId\":\"pane-1\"}");
     expect(text).toContain("event: workspace\ndata: {\"workspaceId\":\"ws-1\"}");
-    expect(text).toContain("event: poll");
+    expect(text).toContain("event: refresh");
     expect(text).toContain("event: decision");
     expect(text).toContain("answered y (allowed once)");
     controller.abort();

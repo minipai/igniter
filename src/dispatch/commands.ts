@@ -42,6 +42,7 @@ import {
   describeState,
   finishClaim,
   latestValidReceipt,
+  normalizeOwnerMove,
   statusOf,
   submitMutation,
   unblockMutation,
@@ -109,7 +110,7 @@ export interface CommandContext {
 }
 
 const TOP_USAGE =
-  "usage: igniter <status|start <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|state --json|begin|submit --input -|block --reason TEXT|unblock>";
+  "usage: igniter <status|start <ticket>|reconcile <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|state --json|begin|submit --input -|block --reason TEXT|unblock>";
 
 function usage(command: string): string {
   switch (command) {
@@ -117,6 +118,8 @@ function usage(command: string): string {
       return "usage: igniter status";
     case "start":
       return "usage: igniter start <ticket> [--builder <model>]";
+    case "reconcile":
+      return "usage: igniter reconcile <ticket>";
     case "pause":
       return "usage: igniter pause <ticket>";
     case "resume":
@@ -164,7 +167,7 @@ function takeFlag(args: string[], name: string): { value?: string; rest: string[
   return { value, rest };
 }
 
-const DISPATCH_COMMANDS = new Set(["status", "start", "pause", "resume", "fail", "restart", "answer"]);
+const DISPATCH_COMMANDS = new Set(["status", "start", "reconcile", "pause", "resume", "fail", "restart", "answer"]);
 const WORKSPACE_COMMANDS = new Set(["state", "begin", "submit", "block", "unblock"]);
 
 export function runCommand(
@@ -181,6 +184,8 @@ export function runCommand(
         return statusCommand(ctx);
       case "start":
         return startCommand(args, ctx);
+      case "reconcile":
+        return reconcileCommand(args, ctx);
       case "pause":
         return pauseCommand(args, ctx);
       case "resume":
@@ -439,6 +444,36 @@ function progressName(ctx: CommandContext, progress: string): string {
     blocked: ctx.resolved.config.progress.blocked,
   };
   return names[progress] ?? progress;
+}
+
+// ---------------------------------------------------------------------------
+// reconcile
+// ---------------------------------------------------------------------------
+
+async function reconcileCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
+  if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("reconcile"));
+  const identifier = args[0];
+  const full = (await ctx.client.fetchIssue(identifier)) as FullIssue | null;
+  if (!full) {
+    await ctx.decisions.record(identifier, `reconcile failed: ticket "${identifier}" was not found in Linear`);
+    return fail(`ticket "${identifier}" was not found in Linear`);
+  }
+  if (full.projectId !== ctx.resolved.projectId) {
+    await ctx.decisions.record(full.identifier, `reconcile failed: not in project "${ctx.resolved.config.project}"`);
+    return fail(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
+  }
+  const outcome = await normalizeOwnerMove(depsOf(ctx), full);
+  if (outcome.result) await ctx.decisions.record(full.identifier, outcome.result.text);
+  if (outcome.followUp || outcome.closeDue) {
+    const applied = outcome.result?.text ?? `${full.identifier} Linear state converged`;
+    return fail(`${applied}; workspace follow-up did not finish — inspect it, then run reconcile again`);
+  }
+  if (outcome.result) return outcome.result;
+  const state = deriveState(ctx.resolved, full);
+  return {
+    ok: true,
+    text: `${full.identifier}: no owner transition to reconcile (${state.status}+${state.progress ?? "none"})`,
+  };
 }
 
 // ---------------------------------------------------------------------------

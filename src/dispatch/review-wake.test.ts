@@ -203,7 +203,7 @@ describe("wake on a finished reviewer", () => {
       expect(started?.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-1",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(2);

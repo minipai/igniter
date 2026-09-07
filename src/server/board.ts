@@ -74,7 +74,7 @@ export interface BoardSnapshot {
   usedSlots: number;
   maxRunning: number;
   linearOrg: string;
-  lastPollAt: string | null;
+  lastRefreshAt: string | null;
   needsYou: number;
   queue: QueueEntry[];
   activity: string[];
@@ -243,7 +243,7 @@ export function buildBoardSnapshot(inputs: BoardInputs): BoardSnapshot {
     usedSlots: inputs.status.slots.used,
     maxRunning: inputs.status.slots.max,
     linearOrg: inputs.linearOrg,
-    lastPollAt: inputs.status.lastPollAt,
+    lastRefreshAt: inputs.status.lastPollAt,
     needsYou: tickets.filter((t) => t.block === "approval").length,
     queue: inputs.queue,
     activity: inputs.activity,

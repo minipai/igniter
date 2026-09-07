@@ -110,7 +110,9 @@ call Linear directly or through MCP, or publish receipts.
 
 The owner moves Review + Complete to Deliver to approve delivery, or back to
 Build to request changes. The owner moves Deliver + Complete to Done only after
-the change has landed. Dispatch normalizes Progress on owner moves.
+the change has landed. After an owner move, the Global Commander runs
+`igniter reconcile <ticket>` to normalize Progress and workspace state for that
+ticket. Igniter never scans the project for owner moves in the background.
 
 A receipt covers only its named checkpoint. Any new feature commit requires a
 new Build report and another acceptance attempt.

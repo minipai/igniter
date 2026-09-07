@@ -259,6 +259,7 @@ describe("cli command coverage", () => {
     try {
       const dir = repoPointingAt(fake.port);
       const cases: string[][] = [
+        ["reconcile", "STA-1"],
         ["pause", "STA-1"],
         ["resume", "STA-1"],
         ["fail", "STA-1", "--reason", "wedged"],

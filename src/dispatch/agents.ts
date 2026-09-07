@@ -39,10 +39,22 @@ export function launchArgsFor(profile: Pick<CommanderAgentConfig, "harness" | "m
   const effort = profile.effort;
   switch (profile.harness) {
     case "codex":
+      if (profile.model.includes("/")) {
+        throw new Error(
+          `unsupported model "${profile.model}" for harness "codex": ` +
+            `Codex expects a bare model id such as "gpt-5.6-sol"; provider/model ids belong to OpenCode`,
+        );
+      }
       return ["-m", profile.model, ...codexEffortArgs(effort)];
     case "claude":
       return ["--model", profile.model, ...claudeEffortArgs(effort)];
     case "opencode":
+      if (!profile.model.includes("/")) {
+        throw new Error(
+          `unsupported model "${profile.model}" for harness "opencode": ` +
+            `OpenCode expects a provider/model id`,
+        );
+      }
       if (effort !== undefined) {
         throw new Error(
           `unsupported effort "${effort}" for harness "opencode": ` +

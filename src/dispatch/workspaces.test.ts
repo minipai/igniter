@@ -194,6 +194,7 @@ describe("startAgent against a live socket", () => {
   test("retries while the fresh pane's shell is not up yet", async () => {
     let starts = 0;
     const fake = await startFakeHerdr({
+      "pane.send_input": () => ({ type: "ok" }),
       "agent.start": () => {
         starts += 1;
         if (starts <= 2) throw new Error("agent target pane pane-1 is not an available shell");
@@ -205,6 +206,14 @@ describe("startAgent against a live socket", () => {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
       await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "commander-sta-1" });
       expect(starts).toBe(3);
+      expect(fake.calls[0]).toEqual({
+        method: "pane.send_input",
+        params: {
+          pane_id: "pane-1",
+          text: "unset LINEAR_API_KEY RESEND_API_KEY FAL_API_KEY",
+          keys: ["Enter"],
+        },
+      });
       expect(fake.calls.filter((c) => c.method === "agent.get")).toHaveLength(1);
     } finally {
       await fake.stop();
@@ -214,6 +223,7 @@ describe("startAgent against a live socket", () => {
   test("any other start error throws at once", async () => {
     let starts = 0;
     const fake = await startFakeHerdr({
+      "pane.send_input": () => ({ type: "ok" }),
       "agent.start": () => {
         starts += 1;
         throw new Error("agent kind hal is unknown");
@@ -233,6 +243,7 @@ describe("startAgent against a live socket", () => {
   test("waits for interactive_ready past launch_pending before returning", async () => {
     let gets = 0;
     const fake = await startFakeHerdr({
+      "pane.send_input": () => ({ type: "ok" }),
       "agent.start": () => ({ type: "agent_started" }),
       "agent.get": () => {
         gets += 1;

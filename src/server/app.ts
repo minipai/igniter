@@ -58,7 +58,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (pathname === "/api/queue" && req.method === "GET") {
       if (!dispatch) return json({ error: "dispatch not running" }, 503);
-      return json(dispatch.queue());
+      try {
+        return json(await dispatch.queue());
+      } catch (error) {
+        return json({ error: (error as Error).message }, error instanceof LinearError ? 502 : 500);
+      }
     }
     if (pathname === "/api/activity" && req.method === "GET") {
       if (!dispatch) return json({ error: "dispatch not running" }, 503);
@@ -71,7 +75,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
       try {
         snapshot = await options.board();
       } catch (error) {
-        return json({ error: (error as Error).message }, 500);
+        return json({ error: (error as Error).message }, error instanceof LinearError ? 502 : 500);
       }
       if (!snapshot) return json({ error: "dispatch still starting; retry shortly" }, 503);
       return json(snapshot);

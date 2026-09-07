@@ -84,7 +84,7 @@ describe("argv parsing", () => {
       expect(await runCommand(["frobnicate"], h.ctx)).toMatchObject({ ok: false });
       expect((await runCommand(["frobnicate"], h.ctx)).text).toContain("usage: igniter");
       for (const argv of [
-        ["start"], ["pause"], ["resume"], ["fail"], ["restart"],
+        ["start"], ["reconcile"], ["pause"], ["resume"], ["fail"], ["restart"],
         ["fail", "STA-1"], ["restart", "STA-1"], ["start", "--builder", "x"],
         ["start", "STA-1", "--agent", "hal"],
         ["pause", "STA-1", "--bogus"], ["state"], ["state", "x"],
@@ -229,7 +229,7 @@ describe("start", () => {
       expect(started?.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-176",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       const inbox = h.workspaces.promptsFor("commander-sta-176");
       expect(inbox).toHaveLength(1);
@@ -296,7 +296,7 @@ describe("start", () => {
       expect(started?.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-1",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("commander");
     } finally {
@@ -472,6 +472,27 @@ describe("start", () => {
       h.stop();
     }
   });
+
+  test("a Codex provider/model mismatch fails before any Herdr creation or start", async () => {
+    const h = await harness();
+    try {
+      const config = parseDispatchConfig({
+        project: "igniter",
+        team: "Starcoder",
+        agents: { commander: { model: "openai/gpt-5.6-sol" } },
+      });
+      const sink = createWorkspaceSink({ workspaces: h.workspaces, config, repoRoot: h.repoRoot, runGit: h.git });
+      await expect(
+        sink({ id: "id-1", identifier: "STA-1", title: "Mismatch", host: "h", slot: 0 }),
+      ).rejects.toThrow("provider/model ids belong to OpenCode");
+      expect(h.workspaces.calls.filter((c) => c.method === "workspace.create")).toHaveLength(0);
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.workspaces.agents).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
 });
 
 describe("pause and resume", () => {
@@ -580,7 +601,7 @@ describe("pause and resume", () => {
       expect(started?.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-1",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(1);
@@ -613,7 +634,7 @@ describe("pause and resume", () => {
       expect(starts[0]!.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-1",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
     } finally {
@@ -908,7 +929,7 @@ describe("work order", () => {
       "bun install",
       "b-model",
       "claude-sonnet-5",
-      "openai/gpt-5.6-terra",
+      "gpt-5.6-sol",
       "/stages/build.md",
       "/stages/review.md",
       "/stages/deliver.md",
@@ -1022,7 +1043,7 @@ describe("work order", () => {
     });
     expect(bundled).toContain("Acceptance: prompt `/");
     expect(bundled).toContain("harness `claude`; model `claude-sonnet-5`; effort `high`");
-    expect(bundled).toContain("Builder fallback: harness `codex`; model `openai/gpt-5.6-terra`; effort `high`");
+    expect(bundled).toContain("Builder fallback: harness `codex`; model `gpt-5.6-sol`; effort `high`");
   });
 
   test("a resume reuses the recorded stage profiles when the configuration drifts", async () => {

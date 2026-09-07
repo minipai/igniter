@@ -415,7 +415,7 @@ describe("pollOnce", () => {
       expect(start?.params).toMatchObject({
         kind: "codex",
         name: "commander-sta-1",
-        args: ["-m", "openai/gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
+        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
       });
       expect(fake.world.issues[0]!.stateId).toBe(BUILD);
       expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);

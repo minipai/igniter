@@ -379,7 +379,7 @@ describe("owner transitions from Linear state", () => {
       expect(issueOf(h, "STA-4").labelIds).toEqual([COMPLETE]);
       expect(h.lines).toContainEqual(expect.stringContaining("STA-1"));
       expect(h.lines).toContainEqual(expect.stringContaining("only a review-pass approval converges here"));
-      expect(h.lines).toContainEqual(expect.stringContaining("only a passing review completes the stage"));
+      expect(h.lines).toContainEqual(expect.stringContaining("only a completed Build handoff or passing review belongs here"));
       expect(h.lines).toContainEqual(expect.stringContaining("lands the delivery first"));
       expect(h.lines).toContainEqual(expect.stringContaining("holds no valid Igniter receipt"));
     } finally {
