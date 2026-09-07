@@ -1,35 +1,15 @@
 #!/usr/bin/env bun
 import { loadDispatchConfig } from "./dispatch/config.ts";
 import {
-  createClaimLock,
-  createDispatchLog,
-  readActivityTail,
-  validateWithRetry,
-  validateStartup,
-  startWatch,
-  defaultHost,
-  Watcher,
   type CommandCallOptions,
-  type DispatchApi,
-  type ResolvedDispatch,
-  type WatchHandle,
 } from "./dispatch/claims.ts";
-import { createWorkspaceSink, collectStatus, runCommand } from "./dispatch/commands.ts";
-import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { assertCommanderAssets } from "./commander/assets.ts";
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { bunGitRunner } from "./dispatch/worktrees.ts";
+import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
-import {
-  buildBoardSnapshot,
-  createBoardHub,
-  createPaneOutputCache,
-  readRulesText,
-  startHerdrBoardFeed,
-  withBoardEvents,
-  type BoardSnapshot,
-} from "./server/board.ts";
+import { startWatchedServe } from "./server/watched-serve.ts";
 
 function flagValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -56,10 +36,10 @@ function repoRoot(): string {
 }
 
 async function serveCommand(): Promise<void> {
-  // Bundled Commander assets fail fast here, before anything serves: a
-  // missing rules.md, config.yaml, or stage prompt names itself.
-  await assertCommanderAssets();
   if (hasFlag("--no-watch")) {
+    // Bundled Commander assets fail fast here, before anything serves: a
+    // missing rules.md, config.yaml, or stage prompt names itself.
+    await assertCommanderAssets();
     // UI-only mode: still honor the configured bind address, never 0.0.0.0.
     const configPath = `${repoRoot()}/.igniter/config.yaml`;
     const config = (await Bun.file(configPath).exists()) ? await loadDispatchConfig(repoRoot()) : null;
@@ -69,121 +49,30 @@ async function serveCommand(): Promise<void> {
     console.log(`igniter serving on http://${host}:${server.port} (watch disabled)`);
     return;
   }
-  // File-level config errors fail fast here, before the server starts.
+  // File-level config errors fail fast here, before the server starts. The
+  // watched entry asserts the bundled Commander assets itself.
   const config = await loadDispatchConfig(repoRoot());
   const client = new LinearClient({ apiKey: requireLinearApiKey() });
-  const port = resolvePort(config.listenPort);
-  const logPath = `${repoRoot().replace(/\/+$/, "")}/.igniter/dispatch.log`;
-  const hub = createBoardHub();
-  const decisions = withBoardEvents(createDispatchLog(logPath), hub);
-  const workspaces = createHerdrWorkspaces();
-  const outputs = createPaneOutputCache({ workspaces });
-  const claimLock = createClaimLock();
-
-  // The server starts before Linear validation finishes (an unreachable
-  // Linear retries while the web UI stays up), so the dispatch behind the
-  // routes fills in once validation succeeds.
-  const holder: { current?: Watcher } = {};
   const root = repoRoot();
-  const host = defaultHost();
-  const git = bunGitRunner();
-  const sink = createWorkspaceSink({
-    workspaces,
-    config,
-    repoRoot: root,
-    runGit: git,
-  });
-  const commandContext = (watcher: Watcher) => ({
-    client,
-    resolved: watcher.resolved,
-    host,
-    decisions,
-    workspaces,
-    sink,
-    repoRoot: root,
-    git,
-    lastPollAt: () => watcher.lastPollAt,
-  });
-  const dispatch: DispatchApi = {
-    queue: () => {
-      const watcher = holder.current;
-      return watcher ? { lastPollAt: watcher.lastPollAt, order: watcher.lastQueue } : { lastPollAt: null, order: [] };
-    },
-    activity: (limit) => readActivityTail(logPath, limit),
-    command: (argv: string[], options: CommandCallOptions = {}) => {
-      const watcher = holder.current;
-      if (!watcher) return Promise.resolve({ ok: false, text: "dispatch still starting; retry shortly" });
-      return claimLock(() => runCommand(argv, commandContext(watcher), options));
-    },
-  };
-  const server = startServer({
-    port,
-    hostname: config.listenHost,
-    dispatch,
-    hub,
-    board: async (): Promise<BoardSnapshot | null> => {
-      const watcher = holder.current;
-      if (!watcher) return null;
-      const statusCtx = commandContext(watcher);
-      let collected;
-      try {
-        collected = await collectStatus(statusCtx);
-      } catch {
-        // Linear or Herdr down: the page still shows queue, activity, and
-        // rules with an empty rail instead of a 503.
-        collected = {
-          data: {
-            slots: { used: 0, max: watcher.resolved.config.maxRunning },
-            lastPollAt: watcher.lastPollAt,
-            tickets: [],
-          },
-          snapshot: null,
-          herdrNote: null,
-        };
-      }
-      if (collected.snapshot) {
-        const live = new Set(
-          collected.data.tickets.filter((t) => t.hasWorkspace).map((t) => t.identifier.toLowerCase()),
-        );
-        await Promise.allSettled(
-          collected.snapshot.agents
-            .filter((agent) => [...live].some((id) => agent.name.endsWith(`-${id}`)))
-            .map((agent) => outputs.refresh(agent.paneId)),
-        );
-      }
-      const [activity, rules] = await Promise.all([
-        readActivityTail(logPath, 100).catch(() => [] as string[]),
-        readRulesText(),
-      ]);
-      return buildBoardSnapshot({
-        status: collected.data,
-        snapshot: collected.snapshot,
-        queue: watcher.lastQueue,
-        // Newest decision first, like the Activity view shows them.
-        activity: [...activity].reverse(),
-        rules,
-        host,
-        linearOrg: watcher.resolved.config.linearOrg,
-        outputs: outputs.outputs,
-      });
-    },
-  });
-  console.log(`igniter serving on http://${config.listenHost}:${server.port} (watching ${config.project})`);
-  let watch: WatchHandle | null = null;
-  let feed: { stop: () => void } | null = null;
+  const port = resolvePort(config.listenPort);
+  // Signals stay registered across the Linear-unreachable retry below: a
+  // first signal stops the server gracefully, a second one exits at once.
+  // The entry reports the bound server through onServer before validation
+  // finishes, so both paths below see the same server.
+  let handle: Awaited<ReturnType<typeof startWatchedServe>> | undefined;
+  let server: ReturnType<typeof startServer> | undefined;
   let stopping = false;
   const stop = () => {
     if (stopping) {
-      server.stop();
+      server?.stop();
       process.exit(1);
     }
     stopping = true;
     void (async () => {
       try {
-        await watch?.stop();
+        if (handle) await handle.stop();
+        else server?.stop();
       } finally {
-        feed?.stop();
-        server.stop();
         process.exit(0);
       }
     })();
@@ -193,44 +82,23 @@ async function serveCommand(): Promise<void> {
   // An unreachable Linear is not a configuration error: the server stays up
   // and validation retries until Linear answers. Unknown statuses, teams,
   // projects, label groups, or labels still exit 1 immediately.
-  let resolved: ResolvedDispatch;
   try {
-    resolved = await validateWithRetry(() => validateStartup(client, config), {
-      maxAttempts: Number.POSITIVE_INFINITY,
-      baseDelayMs: 5000,
-      onRetry: (attempt, error) => {
-        console.error(`Linear unreachable (attempt ${attempt}): ${error.message}; retrying — web UI stays up`);
+    handle = await startWatchedServe({
+      repoRoot: root,
+      config,
+      client,
+      workspaces: createHerdrWorkspaces(),
+      git: bunGitRunner(),
+      port,
+      onServer: (started) => {
+        server = started;
+        console.log(`igniter serving on http://${config.listenHost}:${started.port} (watching ${config.project})`);
       },
     });
   } catch (error) {
     console.error((error as Error).message);
-    server.stop();
     process.exit(1);
   }
-  const watcher = new Watcher({
-    client,
-    resolved,
-    host,
-    decisions,
-    workspaces,
-    sink,
-    git,
-    repoRoot: root,
-  });
-  holder.current = watcher;
-  // The watch loop and the commands share the watcher — and the lock — so
-  // there is ever exactly one claimant in the process.
-  watch = startWatch({ watcher, lock: claimLock });
-  // Poll completions reach the page over SSE so its "last Linear poll"
-  // seconds reset without polling.
-  const pollOnce = watcher.pollOnce.bind(watcher);
-  watcher.pollOnce = async () => {
-    const result = await pollOnce();
-    hub.emit("poll", { lastPollAt: watcher.lastPollAt });
-    return result;
-  };
-  const feedHandle = startHerdrBoardFeed({ hub, outputs });
-  feed = feedHandle;
   console.log(`watch live: claiming from ${config.states.todo}`);
 }
 
