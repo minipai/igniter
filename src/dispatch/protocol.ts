@@ -21,6 +21,7 @@ import type { LinearClient, LinearComment, LinearIssue, LinearLabel } from "./li
 import type { ResolvedDispatch, DecisionLog, CommandResult, ClaimSink, ClaimedTicket } from "./claims.ts";
 import { WorkspaceSinkError } from "./claims.ts";
 import type { CommandWorkspaces, SnapshotWorkspace } from "./workspaces.ts";
+import { commanderName } from "./workspaces.ts";
 import { cleanupTicketCheckout, ticketWorktree, type GitRunner } from "./worktrees.ts";
 import { LinearError } from "./linear.ts";
 
@@ -172,8 +173,26 @@ export function submissionId(payload: unknown): string {
   return createHash("sha256").update(canonicalJson(payload)).digest("hex").slice(0, 16);
 }
 
-export function receiptMarker(kind: ReceiptKind, checkpoint: string, submission: string): string {
-  return `<!-- igniter:receipt ${kind} ${checkpoint} ${submission} -->`;
+export const RECEIPT_VERSION = 1;
+
+const RECEIPT_KINDS: ReceiptKind[] = ["build", "review-pass", "review-fail", "deliver"];
+
+/**
+ * The machine-readable receipt tail of every receipt comment: one fenced
+ * YAML block after the human report. Owners and Herdr read the same block;
+ * no hidden HTML marker is written anymore. Old HTML receipts stay in
+ * history but are never parsed back into state.
+ */
+export function receiptBlock(kind: ReceiptKind, checkpoint: string, submission: string): string {
+  return (
+    "```yaml\n" +
+    "igniter_receipt:\n" +
+    `  version: ${RECEIPT_VERSION}\n` +
+    `  kind: ${kind}\n` +
+    `  checkpoint: ${checkpoint}\n` +
+    `  submission: ${submission}\n` +
+    "```"
+  );
 }
 
 export interface ParsedReceipt {
@@ -182,33 +201,137 @@ export interface ParsedReceipt {
   submission: string;
 }
 
-const RECEIPT_MARKER_RE = /<!-- igniter:receipt (build|review-pass|review-fail|deliver) (\S+) (\S+) -->/;
-
-export function parseReceiptMarker(body: string): ParsedReceipt | null {
-  const match = RECEIPT_MARKER_RE.exec(body);
-  if (!match) return null;
-  return { kind: match[1] as ReceiptKind, checkpoint: match[2] as string, submission: match[3] as string };
+/** A receipt block that fails validation names what is wrong with it. */
+export class ReceiptParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReceiptParseError";
+  }
 }
 
+const FENCE_RE = /^```(yaml|yml)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
+const RECEIPT_HEAD_RE = /^igniter_receipt[ \t]*:[ \t]*$/;
+const RECEIPT_FIELD_RE = /^  ([A-Za-z_]+)[ \t]*:[ \t]*(\S+)[ \t]*$/;
+const RECEIPT_FIELDS = ["version", "kind", "checkpoint", "submission"] as const;
+
+/** A fenced block counts as a receipt block when it names the receipt head, even malformed. */
+function isReceiptBlock(content: string): boolean {
+  return content.split("\n").some((line) => /^\s*igniter_receipt\b/.test(line));
+}
+
+function receiptBlocks(body: string): string[] {
+  const blocks: string[] = [];
+  for (const match of body.matchAll(FENCE_RE)) {
+    const content = match[2] ?? "";
+    if (isReceiptBlock(content)) blocks.push(content);
+  }
+  return blocks;
+}
+
+/**
+ * Parse the single `igniter_receipt` YAML block in a comment body. Null
+ * when the body holds no receipt block. Throws ReceiptParseError on a
+ * duplicate block, an unknown version or kind, missing or extra fields,
+ * or any malformed YAML shape.
+ */
+export function parseReceiptBlock(body: string): ParsedReceipt | null {
+  const blocks = receiptBlocks(body);
+  if (blocks.length === 0) return null;
+  if (blocks.length > 1) {
+    throw new ReceiptParseError(`refused: comment holds ${blocks.length} igniter_receipt blocks; one receipt needs exactly one`);
+  }
+  const content = blocks[0] as string;
+  const lines = content.split("\n").map((line) => line.replace(/\r$/, ""));
+  const headIndex = lines.findIndex((line) => line.trim() !== "");
+  const head = headIndex >= 0 ? lines[headIndex] : undefined;
+  if (head === undefined || !RECEIPT_HEAD_RE.test(head)) {
+    throw new ReceiptParseError(`refused: receipt block must start with "igniter_receipt:"`);
+  }
+  const seen = new Map<string, string>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] as string;
+    if (line.trim() === "" || index === headIndex) continue;
+    if (line.trimStart().startsWith("#")) {
+      throw new ReceiptParseError(`refused: receipt block holds a comment line; one receipt needs exactly version, kind, checkpoint, submission`);
+    }
+    const field = RECEIPT_FIELD_RE.exec(line);
+    if (!field) {
+      throw new ReceiptParseError(`refused: malformed receipt line ${JSON.stringify(line)}; fields need two-space "key: value" scalars`);
+    }
+    const key = field[1] as string;
+    const value = field[2] as string;
+    if (!((RECEIPT_FIELDS as readonly string[]).includes(key))) {
+      throw new ReceiptParseError(`refused: unknown receipt field "${key}"; expected version, kind, checkpoint, submission`);
+    }
+    if (seen.has(key)) {
+      throw new ReceiptParseError(`refused: duplicate receipt field "${key}"`);
+    }
+    seen.set(key, value);
+  }
+  for (const key of RECEIPT_FIELDS) {
+    if (!seen.has(key)) {
+      throw new ReceiptParseError(`refused: receipt block misses "${key}"; one receipt needs version, kind, checkpoint, submission`);
+    }
+  }
+  const version = seen.get("version") as string;
+  if (version !== String(RECEIPT_VERSION)) {
+    throw new ReceiptParseError(`refused: unknown receipt version ${JSON.stringify(version)}; this dispatch reads version 1`);
+  }
+  const kind = seen.get("kind") as string;
+  if (!(RECEIPT_KINDS as readonly string[]).includes(kind)) {
+    throw new ReceiptParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, review-pass, review-fail, or deliver`);
+  }
+  return {
+    kind: kind as ReceiptKind,
+    checkpoint: seen.get("checkpoint") as string,
+    submission: seen.get("submission") as string,
+  };
+}
+
+export interface FoundReceipt {
+  id: string | null;
+  body: string;
+  receipt: ParsedReceipt;
+}
+
+/**
+ * The newest comment holding a receipt of the given kind and submission.
+ * Comments without a block or with an invalid block never match; the
+ * retry dedupes on submission identity, not on prose.
+ */
 export function findReceipt(
   comments: { id?: string; body: string }[],
   kind: ReceiptKind,
   submission: string,
-): { id: string | null; body: string } | null {
+): FoundReceipt | null {
   for (let i = comments.length - 1; i >= 0; i--) {
-    const parsed = parseReceiptMarker(comments[i]?.body ?? "");
+    let parsed: ParsedReceipt | null;
+    try {
+      parsed = parseReceiptBlock(comments[i]?.body ?? "");
+    } catch {
+      continue;
+    }
     if (parsed && parsed.kind === kind && parsed.submission === submission) {
-      return { id: comments[i]?.id ?? null, body: comments[i]?.body ?? "" };
+      return { id: comments[i]?.id ?? null, body: comments[i]?.body ?? "", receipt: parsed };
     }
   }
   return null;
 }
 
-/** Latest receipt of any kind, for owner-move validation against metadata. */
-export function latestReceipt(comments: { body: string }[]): (ParsedReceipt & { body: string }) | null {
+/**
+ * The newest valid Igniter receipt, newest comment first. Comments without
+ * a block — and comments with an invalid one — are skipped, so one pasted
+ * code fence can never brick the ticket's protocol state.
+ */
+export function latestValidReceipt(comments: { id?: string; body: string }[]): FoundReceipt | null {
   for (let i = comments.length - 1; i >= 0; i--) {
-    const parsed = parseReceiptMarker(comments[i]?.body ?? "");
-    if (parsed) return { ...parsed, body: comments[i]?.body ?? "" };
+    let parsed: ParsedReceipt | null;
+    try {
+      parsed = parseReceiptBlock(comments[i]?.body ?? "");
+    } catch {
+      continue;
+    }
+    if (parsed) return { id: comments[i]?.id ?? null, body: comments[i]?.body ?? "", receipt: parsed };
   }
   return null;
 }
@@ -477,14 +600,13 @@ export function parseDeliverSubmit(raw: unknown): DeliverSubmit {
 }
 
 // ---------------------------------------------------------------------------
-// Receipt bodies (Markdown for people; the marker line is the machine part,
-// and workspace metadata carries the identity — Markdown is never parsed
-// back into state)
+// Receipt bodies (a Markdown report for people, then the one YAML receipt
+// block both owners and dispatch parse back into state; workspace metadata
+// only caches the same identity for display)
 // ---------------------------------------------------------------------------
 
 export function buildReceiptBody(payload: BuildSubmit, submission: string): string {
   const lines = [
-    receiptMarker("build", payload.checkpoint, submission),
     `# Build receipt`,
     ``,
     `Checkpoint: \`${payload.checkpoint}\``,
@@ -495,6 +617,8 @@ export function buildReceiptBody(payload: BuildSubmit, submission: string): stri
     ``,
     `Reproduction:`,
     payload.reproduction,
+    ``,
+    receiptBlock("build", payload.checkpoint, submission),
   ];
   return lines.join("\n") + "\n";
 }
@@ -512,7 +636,6 @@ export function formatReviewEvidence(evidence: ReviewEvidence): string[] {
 export function reviewReceiptBody(payload: ReviewSubmit, submission: string): string {
   const verdict = payload.verdict === "pass" ? "PASS" : "FAIL";
   const lines = [
-    receiptMarker(payload.verdict === "pass" ? "review-pass" : "review-fail", payload.checkpoint, submission),
     `Agent acceptance: ${verdict}`,
     ``,
     `Checkpoint: \`${payload.checkpoint}\``,
@@ -527,13 +650,14 @@ export function reviewReceiptBody(payload: ReviewSubmit, submission: string): st
     ``,
     `Reproduction:`,
     payload.reproduction,
+    ``,
+    receiptBlock(payload.verdict === "pass" ? "review-pass" : "review-fail", payload.checkpoint, submission),
   ];
   return lines.join("\n") + "\n";
 }
 
 export function deliverReceiptBody(payload: DeliverSubmit, submission: string): string {
   const lines = [
-    receiptMarker("deliver", payload.checkpoint, submission),
     `# Deliver receipt`,
     ``,
     `Checkpoint: \`${payload.checkpoint}\``,
@@ -542,6 +666,8 @@ export function deliverReceiptBody(payload: DeliverSubmit, submission: string): 
     ``,
     `Merge preparation: complete. Still for the owner:`,
     ...payload.owner_actions.map((a) => `- ${a}`),
+    ``,
+    receiptBlock("deliver", payload.checkpoint, submission),
   ];
   return lines.join("\n") + "\n";
 }
@@ -805,7 +931,11 @@ export function describeState(
   state: AuthoritativeState,
 ): StateJson {
   const { next, note } = nextFor(state.status, state.progress);
-  const receiptKind = (meta["receipt_kind"] ?? null) as ReceiptKind | null;
+  // The Linear receipt is the protocol truth; workspace tokens only fill
+  // the display cache when Linear holds no receipt yet.
+  const linear = latestValidReceipt(full.comments);
+  const receiptKind = (linear?.receipt.kind ?? meta["receipt_kind"] ?? null) as ReceiptKind | null;
+  const checkpoint = linear?.receipt.checkpoint ?? meta["checkpoint"] ?? null;
   return {
     ticket: {
       identifier: full.identifier,
@@ -815,17 +945,17 @@ export function describeState(
     },
     status: state.status,
     progress: state.progress,
-    checkpoint: meta["checkpoint"] ?? null,
+    checkpoint,
     receipt: {
       kind: receiptKind,
-      id: meta["receipt_id"] ?? null,
-      checkpoint: meta["checkpoint"] ?? null,
-      submission: meta["submission"] ?? null,
+      id: linear?.id ?? meta["receipt_id"] ?? null,
+      checkpoint,
+      submission: linear?.receipt.submission ?? meta["submission"] ?? null,
     },
     block_reason: meta["block_reason"] ?? null,
     next,
     note,
-    submit_schema: submitSchemaFor(state.status, meta["checkpoint"] ?? null),
+    submit_schema: submitSchemaFor(state.status, checkpoint),
   };
 }
 
@@ -945,11 +1075,11 @@ export async function claimTicket(
 }
 
 /**
- * Adopt a ticket whose workspace was lost: reopen through the same sink,
- * then reset its Progress to Pending inside the current status. The
- * receipt identity died with the old workspace, so the run continues from
- * a fresh submit; nothing is rebuilt from comments. Pending always leaves
- * a legal next step (`begin`), so no adopted ticket is ever stuck.
+ * Adopt a ticket whose workspace was lost: reopen through the same sink and
+ * mirror the authoritative Linear state into it. Linear is never written
+ * here — the receipt history in the comments already carries the run's
+ * identity, so even a Complete stage is kept as is (its `state --json`
+ * note says what it waits for) instead of being reset to Pending.
  */
 export async function adoptTicket(
   deps: ClaimDeps,
@@ -982,16 +1112,22 @@ export async function adoptTicket(
     await deps.decisions.record(full.identifier, `adopted: no workspace found`);
     return opened;
   }
-  await setProgress(deps, full, "pending");
-  const verified = await readback(deps, full.id);
-  const restate = deriveState(deps.resolved, verified);
-  if (restate.status !== state.status || restate.progress !== "pending") {
-    throw new WorkspaceSinkError(`Linear did not converge on ${state.status}+pending`, opened.workspaceId);
+  const linear = latestValidReceipt(full.comments);
+  try {
+    await mirror(deps, opened.workspaceId, {
+      status: state.status,
+      progress: state.progress,
+      checkpoint: linear?.receipt.checkpoint ?? null,
+      receipt_id: linear?.id ?? null,
+      receipt_kind: linear?.receipt.kind ?? null,
+      submission: linear?.receipt.submission ?? null,
+    });
+  } catch (error) {
+    throw new WorkspaceSinkError((error as Error).message, opened.workspaceId);
   }
-  await mirror(deps, opened.workspaceId, { status: state.status, progress: "pending" });
   await deps.decisions.record(
     full.identifier,
-    `adopted: no workspace found, reopened (${opened.workspaceId}) at ${state.status}+pending`,
+    `adopted: no workspace found, reopened (${opened.workspaceId}) at ${state.status}+${state.progress ?? "no progress"} (Linear kept)`,
   );
   return opened;
 }
@@ -1096,7 +1232,6 @@ export async function submitMutation(
         `${full.identifier} is ${state.status}+${state.progress ?? "no progress"} (run \`igniter begin\` first)`,
     );
   }
-  const meta = metaOf(await workspaceOf(deps, workspaceId));
   if (state.status === "build") {
     const payload = parseBuildSubmit(raw, state.criteria);
     return submitBuild(deps, workspaceId, full, payload);
@@ -1106,12 +1241,20 @@ export async function submitMutation(
       throw new ProtocolError(`refused: this ticket is in Review; submit {"v":1,"kind":"review",...}`);
     }
     const payload = parseReviewSubmit(raw, state.criteria);
-    if (meta["checkpoint"] && payload.checkpoint !== meta["checkpoint"]) {
+    const bound = latestReceiptOf(full.comments, "build");
+    if (!bound) {
       throw new ProtocolError(
-        `refused: submit names checkpoint ${payload.checkpoint} but the build receipt binds ${meta["checkpoint"]}; ` +
+        `refused: submit names checkpoint ${payload.checkpoint} but Linear holds no build receipt; ` +
+          `a build submit comes first`,
+      );
+    }
+    if (payload.checkpoint !== bound.receipt.checkpoint) {
+      throw new ProtocolError(
+        `refused: submit names checkpoint ${payload.checkpoint} but the build receipt binds ${bound.receipt.checkpoint}; ` +
           `a new checkpoint needs a new build submit first`,
       );
     }
+    checkNotSuperseded(full, payload.checkpoint);
     return submitReview(deps, workspaceId, full, payload);
   }
   if (state.status === "deliver") {
@@ -1119,12 +1262,20 @@ export async function submitMutation(
       throw new ProtocolError(`refused: this ticket is in Deliver; submit {"v":1,"kind":"deliver",...}`);
     }
     const payload = parseDeliverSubmit(raw);
-    if (meta["checkpoint"] && payload.checkpoint !== meta["checkpoint"]) {
+    const bound = latestReceiptOf(full.comments, "review-pass");
+    if (!bound) {
       throw new ProtocolError(
-        `refused: submit names checkpoint ${payload.checkpoint} but approval binds ${meta["checkpoint"]}; ` +
+        `refused: submit names checkpoint ${payload.checkpoint} but Linear holds no review-pass receipt; ` +
+          `the owner approves in Linear first`,
+      );
+    }
+    if (payload.checkpoint !== bound.receipt.checkpoint) {
+      throw new ProtocolError(
+        `refused: submit names checkpoint ${payload.checkpoint} but approval binds ${bound.receipt.checkpoint}; ` +
           `re-approval starts from a new build submit`,
       );
     }
+    checkNotSuperseded(full, payload.checkpoint);
     return submitDeliver(deps, workspaceId, full, payload);
   }
   throw new ProtocolError(
@@ -1132,11 +1283,37 @@ export async function submitMutation(
   );
 }
 
-async function workspaceOf(deps: ProtocolDeps, workspaceId: string): Promise<SnapshotWorkspace> {
-  const snapshot = await deps.workspaces.snapshot();
-  const workspace = snapshot.workspaces.find((w) => w.workspaceId === workspaceId);
-  if (!workspace) throw new ProtocolError(`unknown workspace "${workspaceId}"`);
-  return workspace;
+/**
+ * A newer valid receipt for another stage supersedes the binding receipt:
+ * the submit names a checkpoint history already moved past.
+ */
+function checkNotSuperseded(full: FullIssue, checkpoint: string): void {
+  const newest = latestValidReceipt(full.comments);
+  if (newest && newest.receipt.checkpoint !== checkpoint) {
+    throw new ProtocolError(
+      `refused: submit names checkpoint ${checkpoint} but the newest Linear receipt binds ${newest.receipt.checkpoint}; ` +
+        `history moved on, a fresh submit comes first`,
+    );
+  }
+}
+
+/** Newest valid receipt of one kind, newest comment first. */
+export function latestReceiptOf(
+  comments: { id?: string; body: string }[],
+  kind: ReceiptKind,
+): FoundReceipt | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    let parsed: ParsedReceipt | null;
+    try {
+      parsed = parseReceiptBlock(comments[i]?.body ?? "");
+    } catch {
+      continue;
+    }
+    if (parsed && parsed.kind === kind) {
+      return { id: comments[i]?.id ?? null, body: comments[i]?.body ?? "", receipt: parsed };
+    }
+  }
+  return null;
 }
 
 async function submitBuild(
@@ -1317,23 +1494,74 @@ export async function unblockMutation(
 }
 
 // ---------------------------------------------------------------------------
-// Owner moves in Linear (the watcher normalizes these against metadata and
-// the current receipt; an inherited Complete is never a new completion)
+// Owner moves in Linear (normalized from the current Linear status +
+// Progress + the newest valid receipt alone; workspace metadata never
+// authorizes a transition, and an inherited Complete is never a new
+// completion)
 // ---------------------------------------------------------------------------
 
+/** Follow-up work a later poll retries: mirror the converged state and wake the Commander. */
+export interface OwnerMoveFollowUp {
+  /** Null when Herdr was unreachable: the retry locates the workspace by ticket. */
+  workspaceId: string | null;
+  tokens: Record<string, string | null>;
+  wakeText: string;
+}
+
+export interface OwnerMoveOutcome {
+  /** Null when Linear is already converged: the watcher stays silent. */
+  result: CommandResult | null;
+  /** Set when the mirror or the wake-up failed and a later poll should retry. */
+  followUp: OwnerMoveFollowUp | null;
+  /** Set when the Done workspace close failed and a later poll should retry it. */
+  closeDue: { workspaceId: string | null; checkpoint: string } | null;
+}
+
+/** The receipt checkpoint must still bind the ticket branch lineage. */
+async function checkpointInLineage(
+  deps: ProtocolDeps,
+  identifier: string,
+  checkpoint: string,
+): Promise<boolean> {
+  // Linear-controlled text never reaches git as a flag.
+  if (checkpoint.startsWith("-")) return false;
+  const { branch } = ticketWorktree(deps.repoRoot, identifier);
+  try {
+    await deps.git.run(["merge-base", "--is-ancestor", checkpoint, branch], deps.repoRoot);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function wakeTextFor(
+  identifier: string,
+  status: ProtocolStatus,
+  checkpoint: string,
+  submission: string,
+): string {
+  return (
+    `igniter: the owner moved ${identifier}; Linear is now ${status}+pending ` +
+    `(receipt ${submission} binds ${checkpoint}). Run \`igniter state --json\` and continue from there; do not restart.`
+  );
+}
+
 /**
- * Normalize one owner status move. The workspace metadata must still name
- * the previous status+Complete, and the stored receipt must bind the current
- * checkpoint. Anything else is refused with a line and left alone.
+ * Normalize one owner move from the current Linear state alone. Returns
+ * null when Linear is already converged (a Complete the owner still owns,
+ * or a clean Done): the watcher records nothing. Anything else returns a
+ * line and leaves Linear alone, except the three approved handoffs, which
+ * clear the inherited Complete first and only then best-effort mirror,
+ * wake, or close — a Herdr failure never rolls a verified Linear
+ * transition back.
  */
 export async function normalizeOwnerMove(
-  deps: ClaimDeps,
-  workspaceId: string,
-  meta: WorkspaceMeta,
+  deps: ProtocolDeps,
   full: FullIssue,
-): Promise<CommandResult> {
+): Promise<OwnerMoveOutcome> {
   const { resolved } = deps;
-  const fail = (text: string): CommandResult => ({ ok: false, text });
+  const fail = (text: string): OwnerMoveOutcome => ({ result: { ok: false, text }, followUp: null, closeDue: null });
+  const quiet = (): OwnerMoveOutcome => ({ result: null, followUp: null, closeDue: null });
   if (full.projectId !== resolved.projectId) {
     return fail(`${full.identifier} is not in project "${resolved.config.project}"; ignoring`);
   }
@@ -1341,111 +1569,246 @@ export async function normalizeOwnerMove(
   if (!linearStatus) {
     return fail(`${full.identifier} sits in unknown Linear status "${full.state.name}"; ignoring`);
   }
-  const metaStatus = meta["status"];
-  const metaProgress = meta["progress"];
-  if ((metaStatus !== "review" && metaStatus !== "deliver") || metaProgress !== "complete") {
+  const progresses = (full.labels ?? [])
+    .map((l) => progressOf(resolved, l.id))
+    .filter((p): p is ProtocolProgress => p !== undefined);
+  if (progresses.length > 1) {
     return fail(
-      `${full.identifier}: workspace metadata is ${metaStatus ?? "?"}+${metaProgress ?? "?"}; ` +
-        `owner moves only normalize from Review+Complete or Deliver+Complete`,
+      `${full.identifier}: carries ${progresses.length} Progress labels (${progresses.join(", ")}); ` +
+        `an owner must leave exactly one before dispatch converges it`,
     );
   }
-  if (linearStatus === metaStatus) {
-    return fail(`${full.identifier}: Linear still shows ${metaStatus}; nothing to normalize`);
+  const progress = progresses[0] ?? null;
+
+  // Worker-owned states and clean landings converge by themselves.
+  if (progress !== "complete" && !(linearStatus === "done" && progress !== null)) {
+    return quiet();
   }
-  const checkpoint = meta["checkpoint"];
-  const submission = meta["submission"];
-  const receiptKind = meta["receipt_kind"];
-  if (!checkpoint || !submission || !receiptKind) {
+
+  const reread = (await deps.client.fetchIssue(full.id)) as FullIssue | null;
+  if (!reread) return fail(`${full.identifier} vanished from Linear; ignoring`);
+  const latest = latestValidReceipt(reread.comments);
+  if (!latest) {
     return fail(
-      `${full.identifier}: owner moved ${metaStatus} → ${linearStatus} but the workspace holds no receipt identity; ` +
+      `${full.identifier}: ${linearStatus}+${progress ?? "no progress"} holds no valid Igniter receipt; ` +
         `refusing to treat the inherited state as progress`,
     );
   }
-  const reread = await deps.client.fetchIssue(full.id);
-  if (!reread) return fail(`${full.identifier} vanished from Linear; ignoring`);
-  const receipt = findReceipt(reread.comments, receiptKind as ReceiptKind, submission);
-  if (!receipt) {
+  const { kind, checkpoint } = latest.receipt;
+
+  if (linearStatus === "done") {
+    if (progress === null) return quiet();
+    if (kind !== "deliver") {
+      return fail(
+        `${full.identifier}: Done still carries Progress "${progress}" but the newest receipt is ${kind}, not deliver; ` +
+          `the owner lands the delivery first, then moves to Done`,
+      );
+    }
+    return landDone(deps, reread, latest);
+  }
+
+  // An inherited Complete only converges when its receipt checkpoint still
+  // binds the ticket branch lineage; a replaced branch refuses with a line.
+  if (!(await checkpointInLineage(deps, full.identifier, checkpoint))) {
     return fail(
-      `${full.identifier}: owner moved ${metaStatus} → ${linearStatus} but receipt ${submission} does not read back; refusing`,
+      `${full.identifier}: ${linearStatus}+complete names checkpoint ${checkpoint} but it is not in the ticket branch lineage; ` +
+        `the receipt is stale, refusing`,
     );
   }
-  const parsed = parseReceiptMarker(receipt.body);
-  if (!parsed || parsed.checkpoint !== checkpoint) {
+
+  if (linearStatus === "review") {
+    if (kind === "review-pass") return quiet(); // Waiting for the owner to approve or send back.
     return fail(
-      `${full.identifier}: owner moved ${metaStatus} → ${linearStatus} but the receipt binds a stale checkpoint; refusing`,
+      `${full.identifier}: Review+Complete but the newest receipt is ${kind}, not review-pass; ` +
+        `only a passing review completes the stage, refusing`,
     );
   }
-  if (metaStatus === "review" && linearStatus === "deliver" && receiptKind === "review-pass") {
-    await setProgress(deps, reread as FullIssue, "pending");
-    const verified = await readback(deps, full.id);
-    const restate = deriveState(resolved, verified);
-    if (restate.status !== "deliver" || restate.progress !== "pending") {
-      throw new ProtocolError(`Linear did not converge on deliver+pending; the next poll retries`);
+  if (linearStatus === "deliver") {
+    if (kind === "deliver") return quiet(); // Waiting for the owner to confirm the landing.
+    if (kind === "review-pass") {
+      return inheritInto(deps, reread, latest, "deliver", "approved: Review+Complete → Deliver+Pending");
     }
-    await mirror(deps, workspaceId, {
-      status: "deliver",
-      progress: "pending",
-      receipt_id: null,
-      receipt_kind: null,
-      submission: null,
-    });
-    return { ok: true, text: `approved: Review+Complete → Deliver+Pending (PASS receipt ${submission} binds ${checkpoint})` };
+    return fail(
+      `${full.identifier}: Deliver+Complete but the newest receipt is ${kind}; ` +
+        `only a review-pass approval converges here, refusing`,
+    );
   }
-  if (metaStatus === "review" && linearStatus === "build" && (receiptKind === "review-pass" || receiptKind === "review-fail")) {
-    await setProgress(deps, reread as FullIssue, "pending");
-    const verified = await readback(deps, full.id);
-    const restate = deriveState(resolved, verified);
-    if (restate.status !== "build" || restate.progress !== "pending") {
-      throw new ProtocolError(`Linear did not converge on build+pending; the next poll retries`);
+  if (linearStatus === "build") {
+    if (kind === "review-pass" || kind === "review-fail") {
+      return inheritInto(deps, reread, latest, "build", "sent back: Review+Complete → Build+Pending");
     }
-    await mirror(deps, workspaceId, {
-      status: "build",
-      progress: "pending",
-      receipt_id: null,
-      receipt_kind: null,
-      submission: null,
-    });
-    return { ok: true, text: `sent back: Review+Complete → Build+Pending (receipt ${submission} binds ${checkpoint})` };
-  }
-  if (metaStatus === "deliver" && linearStatus === "done" && receiptKind === "deliver") {
-    await setProgress(deps, reread as FullIssue, null);
-    const verified = await readback(deps, full.id);
-    const restate = deriveState(resolved, verified);
-    if (restate.status !== "done" || restate.progress !== null) {
-      throw new ProtocolError(`Linear did not converge on done; the next poll retries`);
-    }
-    try {
-      await deps.workspaces.close(workspaceId);
-    } catch (error) {
-      throw new ProtocolError(`landed but workspace close failed: ${(error as Error).message}`);
-    }
-    // The Done landing stands whatever happens below: cleanup only
-    // recycles the checkout and never rolls the ticket back. Every
-    // Activity record here is guarded, so even a logging failure cannot
-    // turn this landed Done into a throw.
-    let cleanupNote = "checkout cleanup skipped";
-    try {
-      const cleanup = await cleanupTicketCheckout(deps.git, deps.repoRoot, full.identifier, {
-        checkpoint,
-        targetBranch: deps.resolved.config.targetBranch,
-      });
-      try {
-        await deps.decisions.record(full.identifier, cleanup.detail);
-      } catch {
-        // The detail is lost but the landing stands; the next line still
-        // names the outcome.
-      }
-      cleanupNote = cleanup.ok ? "checkout cleaned" : "checkout kept";
-    } catch (error) {
-      try {
-        await deps.decisions.record(full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
-      } catch {
-        // Logging must never fail a validated Done.
-      }
-    }
-    return { ok: true, text: `done: Deliver+Complete → Done (delivery receipt ${submission} binds ${checkpoint}); workspace closed; ${cleanupNote}` };
+    return fail(
+      `${full.identifier}: Build+Complete but the newest receipt is ${kind}, not a review receipt; ` +
+        `refusing to treat the inherited state as progress`,
+    );
   }
   return fail(
-    `${full.identifier}: owner moved ${metaStatus} → ${linearStatus}, which matches no approved handoff; ignoring`,
+    `${full.identifier}: ${linearStatus}+complete matches no approved handoff; ignoring`,
   );
+}
+
+/**
+ * Clear the inherited Complete into Pending inside the moved-to status,
+ * then best-effort mirror the converged pair plus the Linear receipt and
+ * wake the Commander. The Linear transition stands whatever Herdr does;
+ * a failed mirror or wake-up returns as follow-up work for a later poll.
+ */
+async function inheritInto(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  latest: FoundReceipt,
+  status: ProtocolStatus,
+  headline: string,
+): Promise<OwnerMoveOutcome> {
+  const { checkpoint, submission } = latest.receipt;
+  await setProgress(deps, full, "pending");
+  const verified = await readback(deps, full.id);
+  const restate = deriveState(deps.resolved, verified);
+  if (restate.status !== status || restate.progress !== "pending") {
+    throw new ProtocolError(`Linear did not converge on ${status}+pending; the next poll retries`);
+  }
+  const tokens: Record<string, string | null> = {
+    status,
+    progress: "pending",
+    checkpoint,
+    receipt_id: latest.id,
+    receipt_kind: latest.receipt.kind,
+    submission,
+  };
+  const wakeText = wakeTextFor(full.identifier, status, checkpoint, submission);
+  const followUp = await mirrorAndWake(deps, full, tokens, wakeText);
+  const suffix = followUp ? `; mirror or wake-up deferred, the next poll retries` : "";
+  const text = `${headline} (${latest.receipt.kind} receipt ${submission} binds ${checkpoint})${suffix}`;
+  return {
+    result: { ok: true, text },
+    followUp,
+    closeDue: null,
+  };
+}
+
+/**
+ * Mirror the converged state into the ticket workspace and prompt its
+ * Commander. Returns null on full success; otherwise a follow-up naming
+ * what the next poll retries. A missing workspace is a note, never a
+ * failure: Linear already converged without it. An unreachable Herdr or
+ * a missing Commander keeps a follow-up, so the retry heals it.
+ */
+async function mirrorAndWake(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  tokens: Record<string, string | null>,
+  wakeText: string,
+): Promise<OwnerMoveFollowUp | null> {
+  let snapshot;
+  try {
+    snapshot = await deps.workspaces.snapshot();
+  } catch (error) {
+    await guardRecord(
+      deps,
+      full.identifier,
+      `mirror deferred: herdr unreachable (${(error as Error).message}); the next poll retries`,
+    );
+    return { workspaceId: null, tokens, wakeText };
+  }
+  const workspace = snapshot.workspaces.find((w) => w.tokens["ticket"] === full.identifier);
+  if (!workspace) {
+    await guardRecord(deps, full.identifier, `no workspace for ${full.identifier}; Linear converged without it`);
+    return null;
+  }
+  try {
+    await deps.workspaces.reportMetadata(workspace.workspaceId, tokens);
+  } catch (error) {
+    const note = `workspace mirror failed (${(error as Error).message}); the next poll retries`;
+    await guardRecord(deps, full.identifier, note);
+    return { workspaceId: workspace.workspaceId, tokens, wakeText };
+  }
+  const commander = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
+  if (!commander) {
+    await guardRecord(
+      deps,
+      full.identifier,
+      `commander not running; the wake-up rides on the next poll`,
+    );
+    return { workspaceId: workspace.workspaceId, tokens, wakeText };
+  }
+  try {
+    await deps.workspaces.prompt(commander.name, wakeText);
+  } catch (error) {
+    const note = `commander wake-up failed (${(error as Error).message}); the next poll retries`;
+    await guardRecord(deps, full.identifier, note);
+    return { workspaceId: workspace.workspaceId, tokens, wakeText };
+  }
+  return null;
+}
+
+/**
+ * Land a Done the owner moved: clear the leftover Progress, then
+ * best-effort close the workspace and recycle the checkout. The landing
+ * stands whatever happens below — a failed close returns as close-due
+ * for a later poll, and cleanup only keeps with a reason, never throws.
+ */
+async function landDone(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  latest: FoundReceipt,
+): Promise<OwnerMoveOutcome> {
+  const { checkpoint, submission } = latest.receipt;
+  await setProgress(deps, full, null);
+  const verified = await readback(deps, full.id);
+  const restate = deriveState(deps.resolved, verified);
+  if (restate.status !== "done" || restate.progress !== null) {
+    throw new ProtocolError(`Linear did not converge on done; the next poll retries`);
+  }
+  let closeDue: { workspaceId: string | null; checkpoint: string } | null = null;
+  let closeNote = "no workspace to close";
+  let snapshot;
+  try {
+    snapshot = await deps.workspaces.snapshot();
+  } catch (error) {
+    snapshot = null;
+    // Herdr is unreachable, not gone: the close retries on a later poll.
+    closeDue = { workspaceId: null, checkpoint };
+    closeNote = `workspace close deferred (herdr unreachable: ${(error as Error).message}); the next poll retries`;
+  }
+  if (closeDue === null) {
+    const workspace = snapshot?.workspaces.find((w) => w.tokens["ticket"] === full.identifier) ?? null;
+    if (!workspace) {
+      closeNote = "no workspace to close";
+    } else {
+      try {
+        await deps.workspaces.close(workspace.workspaceId);
+        closeNote = "workspace closed";
+      } catch (error) {
+        closeDue = { workspaceId: workspace.workspaceId, checkpoint };
+        closeNote = `workspace close failed (${(error as Error).message}); the next poll retries`;
+      }
+    }
+  }
+  // else: snapshot failed above; closeNote and closeDue are already set.
+  // The Done landing stands whatever happens below: cleanup only recycles
+  // the checkout and never rolls the ticket back.
+  let cleanupNote = "checkout cleanup skipped";
+  try {
+    const cleanup = await cleanupTicketCheckout(deps.git, deps.repoRoot, full.identifier, {
+      checkpoint,
+      targetBranch: deps.resolved.config.targetBranch,
+    });
+    await guardRecord(deps, full.identifier, cleanup.detail);
+    cleanupNote = cleanup.ok ? "checkout cleaned" : "checkout kept";
+  } catch (error) {
+    await guardRecord(deps, full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
+  }
+  const text =
+    `done: Deliver+Complete → Done (delivery receipt ${submission} binds ${checkpoint}); ` +
+    `${closeNote}; ${cleanupNote}`;
+  return { result: { ok: true, text }, followUp: null, closeDue };
+}
+
+/** Activity lines must never fail a validated transition. */
+async function guardRecord(deps: ProtocolDeps, ticket: string, message: string): Promise<void> {
+  try {
+    await deps.decisions.record(ticket, message);
+  } catch {
+    // The Linear transition stands; the line is lost.
+  }
 }

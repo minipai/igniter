@@ -17,7 +17,11 @@ import { parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import {
   parseAcceptanceCriteria,
+  parseReceiptBlock,
+  receiptBlock,
   submissionId,
+  type ParsedReceipt,
+  type ReceiptKind,
 } from "./protocol";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
@@ -94,6 +98,25 @@ function workspaceIdOf(h: Harness, identifier: string): string {
 
 function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
   return runCommand(argv, h.ctx, { workspaceId: workspaceIdOf(h, identifier), input });
+}
+
+/**
+ * The newest comment carries one human report plus exactly one versioned
+ * YAML receipt block — and no hidden HTML marker. Returns the submission
+ * identity for retry assertions.
+ */
+function expectYamlReceipt(body: string, kind: ReceiptKind, checkpoint: string): string {
+  expect(body).not.toContain("<!-- igniter:");
+  expect(body.match(/```yaml/g)).toHaveLength(1);
+  const parsed: ParsedReceipt | null = parseReceiptBlock(body);
+  expect(parsed).toMatchObject({ kind, checkpoint });
+  expect(parsed?.submission).toMatch(/^[0-9a-f]{16}$/);
+  return (parsed as ParsedReceipt).submission;
+}
+
+/** Owner-move transitions verify the receipt checkpoint against this lineage. */
+function seedLineage(h: Harness, identifier: string, checkpoint = HEAD): void {
+  h.git.ancestors.add(`${checkpoint} feature/${identifier.toLowerCase()}`);
 }
 
 function buildPayload(head = HEAD) {
@@ -447,8 +470,8 @@ describe("submit", () => {
       expect(issue.stateId).toBe(REVIEW);
       expect(issue.labelIds).toEqual([PENDING]);
       const receipt = issue.comments.at(-1)!;
-      expect(receipt.body).toContain("<!-- igniter:receipt build ");
-      expect(receipt.body).toContain(HEAD);
+      expectYamlReceipt(receipt.body, "build", HEAD);
+      expect(receipt.body).toContain("# Build receipt");
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({
         status: "review",
         progress: "pending",
@@ -513,7 +536,7 @@ describe("submit", () => {
       expect(issue.labelIds).toEqual([COMPLETE]);
       const receipt = issue.comments.at(-1)!;
       expect(receipt.body).toContain("Agent acceptance: PASS");
-      expect(receipt.body).toContain("<!-- igniter:receipt review-pass ");
+      expectYamlReceipt(receipt.body, "review-pass", HEAD);
       expect(issue.attachments.map((a) => a.url).sort()).toEqual(
         ["https://example.test/shines", "https://example.test/works"],
       );
@@ -602,12 +625,33 @@ describe("submit", () => {
       await claim(h, "STA-1");
       issueOf(h, "STA-1").stateId = DELIVER;
       issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
-      h.workspaces.reportMetadata(workspaceIdOf(h, "STA-1"), { status: "deliver", progress: "in_progress", checkpoint: HEAD });
+      // The approval receipt lives in Linear, not in workspace metadata.
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
       expect(out.ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
-      expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("<!-- igniter:receipt deliver ");
+      expectYamlReceipt(issueOf(h, "STA-1").comments.at(-1)!.body, "deliver", HEAD);
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ receipt_kind: "deliver" });
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("deliver submit without a review-pass receipt is refused", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      issueOf(h, "STA-1").stateId = DELIVER;
+      issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+      const before = JSON.stringify(issueOf(h, "STA-1"));
+      const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("no review-pass receipt");
+      expect(JSON.stringify(issueOf(h, "STA-1"))).toBe(before);
     } finally {
       h.stop();
     }
@@ -675,6 +719,7 @@ describe("owner moves", () => {
     await wsCmd(h, identifier, ["begin"]);
     const out = await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
     expect(out.ok).toBe(true);
+    seedLineage(h, identifier);
   }
 
   function watcherOf(h: Harness): Watcher {

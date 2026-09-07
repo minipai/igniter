@@ -12,6 +12,7 @@ export interface FakeState {
 export interface FakeComment {
   id: string;
   body: string;
+  createdAt: string;
 }
 
 export interface FakeAttachment {
@@ -125,15 +126,25 @@ let issueCounter = 0;
 let commentCounter = 0;
 let attachmentCounter = 0;
 let clock = 0;
+let commentClock = 0;
 
 function nextUpdatedAt(): string {
   clock += 1;
   return `2026-09-04T00:00:${String(clock).padStart(2, "0")}.000Z`;
 }
 
+function nextCommentAt(): string {
+  commentClock += 1;
+  return `2026-09-04T00:00:00.${String(commentClock).padStart(6, "0")}Z`;
+}
+
 export function addIssue(
   world: FakeLinearWorld,
-  issue: Partial<FakeIssue> & { identifier: string; stateId: string },
+  issue: Partial<Omit<FakeIssue, "comments">> & {
+    identifier: string;
+    stateId: string;
+    comments?: { id: string; body: string; createdAt?: string }[];
+  },
 ): FakeIssue {
   issueCounter += 1;
   const full: FakeIssue = {
@@ -146,7 +157,7 @@ export function addIssue(
     stateId: issue.stateId,
     projectId: issue.projectId ?? "proj-1",
     labelIds: issue.labelIds ?? [],
-    comments: issue.comments ?? [],
+    comments: (issue.comments ?? []).map((c) => ({ createdAt: nextCommentAt(), ...c })),
     attachments: issue.attachments ?? [],
   };
   world.issues.push(full);
@@ -300,7 +311,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
           const issue = world.issues.find((i) => i.id === variables["issueId"]);
           if (!issue) return Response.json({ errors: [{ message: "issue not found" }] });
           commentCounter += 1;
-          const comment = { id: `comment-${commentCounter}`, body: String(variables["body"]) };
+          const comment = { id: `comment-${commentCounter}`, body: String(variables["body"]), createdAt: nextCommentAt() };
           issue.comments.push(comment);
           return Response.json({ data: { commentCreate: { success: true, comment } } });
         }
@@ -362,10 +373,13 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
           const byId = world.issues.find((i) => i.id === variables["id"]);
           const issue = byId ?? world.issues.find((i) => i.identifier === variables["id"]);
           if (!issue) return Response.json({ data: { issue: null } });
+          // Like production Linear: newest comments first, oldest-first
+          // order is never promised. The client normalizes on createdAt.
+          const ordered = [...issue.comments].reverse();
           const first = Number(/comments\(first:\s*(\d+)/.exec(query)?.[1] ?? 100);
           const after = variables["after"];
           const start = typeof after === "string" && after !== "" ? Number(after) + 1 : 0;
-          const nodes = issue.comments.slice(start, start + first);
+          const nodes = ordered.slice(start, start + first);
           const end = start + nodes.length;
           return Response.json({
             data: {
@@ -381,7 +395,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
                 comments: {
                   nodes,
                   pageInfo: {
-                    hasNextPage: end < issue.comments.length,
+                    hasNextPage: end < ordered.length,
                     endCursor: end > start ? String(end - 1) : null,
                   },
                 },

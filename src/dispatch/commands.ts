@@ -40,6 +40,7 @@ import {
   deriveState,
   describeState,
   finishClaim,
+  latestValidReceipt,
   statusOf,
   submitMutation,
   unblockMutation,
@@ -337,7 +338,8 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
   };
 
   const used = await countBuildSlots(client, resolved);
-  const tickets: StatusTicketData[] = listed.map((issue) => {
+  const tickets: StatusTicketData[] = [];
+  for (const issue of listed) {
     const workspace = snapshot ? findWorkspace(snapshot, issue.identifier) : undefined;
     const tk = tokens.get(issue.identifier) ?? workspace?.tokens ?? {};
     const status = statusOf(resolved, issue.state.id);
@@ -348,14 +350,28 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
     } catch {
       progress = null;
     }
-    const receiptKind = tk["receipt_kind"];
-    const receiptId = tk["receipt_id"];
-    return {
+    // The Linear receipt is the protocol truth; workspace tokens only fill
+    // the display cache when the fetch or the receipt is missing.
+    let receiptKind = tk["receipt_kind"];
+    let receiptId = tk["receipt_id"];
+    let checkpoint = tk["checkpoint"] ?? null;
+    try {
+      const full = await client.fetchIssue(issue.id);
+      const linear = full ? latestValidReceipt(full.comments) : null;
+      if (linear) {
+        receiptKind = linear.receipt.kind;
+        receiptId = linear.id ?? undefined;
+        checkpoint = linear.receipt.checkpoint;
+      }
+    } catch {
+      // Keep the cached tokens; the row still lists the ticket.
+    }
+    tickets.push({
       identifier: issue.identifier,
       title: issue.title,
       state: issue.state.name,
       progress,
-      checkpoint: tk["checkpoint"] ?? null,
+      checkpoint,
       receipt: receiptKind && receiptId ? `${receiptKind}:${receiptId}` : null,
       hasWorkspace: workspace !== undefined,
       stage: status,
@@ -369,8 +385,8 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
       blocked: progress === "blocked",
       stalled: tk["stalled"] === "1",
       overBudget: false,
-    };
-  });
+    });
+  }
 
   const data: StatusData = { slots: { used, max }, lastPollAt, tickets };
   return { data, snapshot, herdrNote };
@@ -532,15 +548,17 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
   const owned = open && open.tokens["ticket"] === full.identifier ? open : undefined;
 
   // An active ticket with a workspace is already running; one without is
-  // adopted through the same path the watcher uses.
+  // adopted through the same path the watcher uses. Adoption keeps the
+  // Linear state as is; the receipt history carries the run's identity.
   if (status === "build" || status === "review" || status === "deliver") {
     if (owned) {
       await decisions.record(full.identifier, "start refused: already running");
       return fail(`${full.identifier} is already running`);
     }
     try {
+      const at = deriveState(resolved, full);
       const opened = await adoptTicket(deps, full, { agent: kind, builder });
-      return { ok: true, text: `adopted ${full.identifier}: workspace ${opened.workspaceId} reopened at ${status}+pending` };
+      return { ok: true, text: `adopted ${full.identifier}: workspace ${opened.workspaceId} reopened at ${at.status}+${at.progress ?? "no progress"} (Linear kept)` };
     } catch (error) {
       return refuse(ctx, full.identifier, error);
     }

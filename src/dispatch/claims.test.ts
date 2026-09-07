@@ -26,6 +26,7 @@ import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from 
 import { createWorkspaceSink } from "./commands";
 import { FakeGit } from "./fake-git";
 import { FakeWorkspaces } from "./fake-workspaces";
+import { receiptBlock } from "./protocol";
 import type { CommandWorkspaces } from "./workspaces";
 
 const BACKLOG = "st-backlog";
@@ -61,6 +62,7 @@ interface Watched {
   watcher: Watcher;
   seen: string[];
   lines: string[];
+  git: FakeGit;
 }
 
 function watch(
@@ -72,11 +74,12 @@ function watch(
   const lines = opts.lines ?? [];
   const dir = mkdtempSync(join(tmpdir(), "igniter-watch-"));
   const workspaces = opts.workspaces ?? new FakeWorkspaces();
+  const git = new FakeGit();
   const sink = createWorkspaceSink({
     workspaces,
     config: resolved.config,
     repoRoot: dir,
-    runGit: new FakeGit(),
+    runGit: git,
   });
   const watcher = new Watcher({
     client,
@@ -93,10 +96,10 @@ function watch(
       },
     },
     workspaces,
-    git: new FakeGit(),
+    git,
     repoRoot: dir,
   });
-  return { watcher, seen, lines };
+  return { watcher, seen, lines, git };
 }
 
 describe("validateStartup", () => {
@@ -364,8 +367,9 @@ describe("pollOnce", () => {
       const { watcher, seen, lines } = watch(client, resolved);
       await watcher.pollOnce();
       expect(seen).toEqual(["STA-1"]);
+      // Adoption keeps the Linear state: no reset to Pending anymore.
       expect(fake.world.issues[0]!.stateId).toBe(BUILD);
-      expect(fake.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       expect(lines).toContainEqual(expect.stringContaining("STA-1 adopted: no workspace found, reopened (ws-1)"));
     } finally {
       fake.stop();
@@ -452,11 +456,13 @@ describe("pollOnce", () => {
       });
       fake.world.issues[0]!.comments.push({
         id: "comment-1",
-        body: "<!-- igniter:receipt review-pass head-1 sub-1 -->\nAgent acceptance: PASS\n",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", "head-1", "sub-1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
       });
       // Owner approves in Linear: status moves, the Complete label rides along.
       fake.world.issues[0]!.stateId = DELIVER;
-      const { watcher, lines } = watch(client, resolved, { workspaces });
+      const { watcher, lines, git } = watch(client, resolved, { workspaces });
+      git.ancestors.add("head-1 feature/sta-1");
       await watcher.pollOnce();
       expect(fake.world.issues[0]!.labelIds).toEqual([PENDING]);
       expect(workspaces.tokensFor("STA-1")).toMatchObject({ status: "deliver", progress: "pending" });
@@ -498,7 +504,8 @@ describe("pollOnce", () => {
       });
       fake.world.issues[0]!.comments.push({
         id: "comment-2",
-        body: "<!-- igniter:receipt deliver head-1 sub-2 -->\n# Deliver receipt\n",
+        body: `# Deliver receipt\n\n${receiptBlock("deliver", "head-1", "sub-2")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
       });
       const { watcher, lines } = watch(client, resolved, { workspaces });
       await watcher.pollOnce();

@@ -39,6 +39,7 @@ import {
 } from "./protocol.ts";
 import {
   NoWorkspaces,
+  commanderName,
   extractRunningTickets,
   workspaceForTicket,
   type CommandWorkspaces,
@@ -332,6 +333,12 @@ export class Watcher {
   private readonly handedOff = new Set<string>();
   /** Review completions already woken: ticket, stage, worker session, revision. */
   private readonly reviewWoken = new Set<string>();
+  /** Mirror/wake follow-ups a later poll retries after a failed best-effort. */
+  private readonly followUps = new Map<string, { workspaceId: string | null; tokens: Record<string, string | null>; wakeText: string }>();
+  /** Done workspace closes a later poll retries after a failed best-effort. */
+  private readonly closeDues = new Map<string, { workspaceId: string | null; checkpoint: string }>();
+  /** Last refusal line per ticket: identical refusals stay silent after the first. */
+  private readonly lastRefusal = new Map<string, string>();
   private wasFull = false;
 
   constructor(options: WatcherOptions) {
@@ -368,7 +375,7 @@ export class Watcher {
     try {
       snapshot = await this.workspaces.snapshot();
     } catch (error) {
-      console.warn(`herdr workspaces unreadable, claims and owner moves waiting: ${(error as Error).message}`);
+      console.warn(`herdr workspaces unreadable, claims waiting: ${(error as Error).message}`);
     }
 
     // Todo normalization is Linear-only, so it runs even while Herdr is
@@ -488,14 +495,6 @@ export class Watcher {
         }
       }
 
-      // Owner moves in Linear, normalized against workspace metadata and
-      // the current receipt: approval, send-back, and completion.
-      try {
-        await this.normalizeOwnerMoves(snapshot);
-      } catch (error) {
-        console.warn(`owner-move normalization skipped: ${(error as Error).message}`);
-      }
-
       // Review wake-up: a finished Acceptance worker whose Commander's wait
       // died gets one read-the-report prompt (or a rebuilt Commander).
       // Linear is never written here, and one ticket never stops the rest.
@@ -514,6 +513,23 @@ export class Watcher {
       } catch (error) {
         console.warn(`review wake-up skipped: ${(error as Error).message}`);
       }
+    }
+
+    // Owner moves in Linear, normalized from the Linear state plus the
+    // newest valid receipt alone: approval, send-back, and completion.
+    // Workspace metadata never authorizes these, so they run outside the
+    // snapshot gate — a missing workspace never blocks protocol convergence.
+    try {
+      await this.normalizeOwnerMoves();
+    } catch (error) {
+      console.warn(`owner-move normalization skipped: ${(error as Error).message}`);
+    }
+
+    // Deferred mirror/wake/close follow-ups from earlier transitions.
+    try {
+      await this.retryFollowUps();
+    } catch (error) {
+      console.warn(`follow-up retry skipped: ${(error as Error).message}`);
     }
 
     // Slots-full is a transition, not a poll heartbeat: one line when the
@@ -561,26 +577,115 @@ export class Watcher {
   }
 
   /**
-   * Normalize owner moves in Linear against workspace metadata and the
-   * current receipt: Review+Complete approval and send-back, Deliver+Complete
-   * completion. Anything unvalidated is refused with a line and left
-   * alone — an inherited Complete is never read as a new stage's completion.
+   * Normalize owner moves from Linear alone: every Build, Review, Deliver,
+   * and Done ticket is re-read and converged from its current status plus
+   * Progress plus the newest valid receipt. Quiet states return nothing and
+   * stay silent; transitions and refusals record one line. Follow-ups a
+   * transition defers (mirror, wake-up, close) are kept for later polls.
    */
-  private async normalizeOwnerMoves(snapshot: WorkspaceSnapshot): Promise<void> {
+  private async normalizeOwnerMoves(): Promise<void> {
     const deps = this.protocolDeps();
-    for (const workspace of snapshot.workspaces) {
-      const ticket = workspace.tokens["ticket"];
-      if (!ticket) continue;
-      const metaStatus = workspace.tokens["status"];
-      if (metaStatus !== "review" && metaStatus !== "deliver") continue;
-      if (workspace.tokens["progress"] !== "complete") continue;
-      const full = await this.client.fetchIssue(ticket);
-      if (!full) continue;
-      if (full.projectId !== this.resolved.projectId) continue;
-      const linearStatus = statusOf(this.resolved, full.state.id);
-      if (linearStatus === metaStatus) continue;
-      const out = await normalizeOwnerMove(deps, workspace.workspaceId, workspace.tokens, full as Parameters<typeof normalizeOwnerMove>[3]);
-      await this.decisions.record(full.identifier, out.text);
+    for (const status of ["build", "review", "deliver", "done"] as const) {
+      let issues;
+      try {
+        issues = await this.client.listIssuesByState(this.resolved.projectId, this.resolved.stateIds[status]);
+      } catch (error) {
+        console.warn(`owner-move scan skipped for ${status}: ${(error as Error).message}`);
+        continue;
+      }
+      for (const issue of issues) {
+        const full = await this.client.fetchIssue(issue.id);
+        if (!full) continue;
+        if (full.projectId !== this.resolved.projectId) continue;
+        let outcome;
+        try {
+          outcome = await normalizeOwnerMove(deps, full as Parameters<typeof normalizeOwnerMove>[1]);
+        } catch (error) {
+          await this.decisions.record(full.identifier, `owner move failed: ${(error as Error).message}`);
+          continue;
+        }
+        if (outcome.followUp) this.followUps.set(full.identifier, outcome.followUp);
+        else if (outcome.result?.ok) this.followUps.delete(full.identifier);
+        if (outcome.closeDue) this.closeDues.set(full.identifier, outcome.closeDue);
+        if (outcome.result) {
+          // Refusals repeat while the state stands: record the diagnosis
+          // once, then stay silent until it changes or converges.
+          if (!outcome.result.ok) {
+            if (this.lastRefusal.get(full.identifier) === outcome.result.text) continue;
+            this.lastRefusal.set(full.identifier, outcome.result.text);
+          } else {
+            this.lastRefusal.delete(full.identifier);
+          }
+          await this.decisions.record(full.identifier, outcome.result.text);
+        } else {
+          this.lastRefusal.delete(full.identifier);
+        }
+      }
+    }
+  }
+
+  /**
+   * Retry deferred post-transition work. A follow-up whose Linear state
+   * moved on is dropped instead of mirrored; a close whose ticket left
+   * Done never touches the workspace. Anything else that still fails
+   * stays queued silently, so a dead Herdr never spams Activity.
+   */
+  private async retryFollowUps(): Promise<void> {
+    for (const [ticket, due] of [...this.followUps]) {
+      try {
+        const full = await this.client.fetchIssue(ticket);
+        const linearStatus = full ? statusOf(this.resolved, full.state.id) : null;
+        const linearProgress = full
+          ? (full.labels ?? []).map((l) => progressOf(this.resolved, l.id)).find((p) => p !== undefined) ?? null
+          : null;
+        if (!full || linearStatus !== due.tokens["status"] || linearProgress !== due.tokens["progress"]) {
+          this.followUps.delete(ticket);
+          await this.decisions.record(ticket, `follow-up dropped: Linear moved on`);
+          continue;
+        }
+        const snapshot = await this.workspaces.snapshot();
+        const workspace = due.workspaceId
+          ? snapshot.workspaces.find((w) => w.workspaceId === due.workspaceId)
+          : snapshot.workspaces.find((w) => w.tokens["ticket"] === ticket);
+        if (!workspace || workspace.tokens["ticket"] !== ticket) {
+          this.followUps.delete(ticket);
+          await this.decisions.record(ticket, `follow-up dropped: no workspace for ${ticket}`);
+          continue;
+        }
+        await this.workspaces.reportMetadata(workspace.workspaceId, due.tokens);
+        const commander = snapshot.agents.find((a) => a.name === commanderName(ticket));
+        if (!commander) continue; // Keep the wake-up; the next poll retries.
+        await this.workspaces.prompt(commander.name, due.wakeText);
+        this.followUps.delete(ticket);
+        await this.decisions.record(ticket, `workspace mirror caught up after ${due.tokens["status"]}+${due.tokens["progress"]}`);
+      } catch {
+        // Keep the follow-up; the next poll retries.
+      }
+    }
+    for (const [ticket, due] of [...this.closeDues]) {
+      try {
+        const full = await this.client.fetchIssue(ticket);
+        const linearStatus = full ? statusOf(this.resolved, full.state.id) : null;
+        if (!full || linearStatus !== "done") {
+          this.closeDues.delete(ticket);
+          await this.decisions.record(ticket, `close retry dropped: Linear moved on`);
+          continue;
+        }
+        const snapshot = await this.workspaces.snapshot();
+        const workspace = due.workspaceId
+          ? snapshot.workspaces.find((w) => w.workspaceId === due.workspaceId)
+          : snapshot.workspaces.find((w) => w.tokens["ticket"] === ticket);
+        if (!workspace || workspace.tokens["ticket"] !== ticket) {
+          this.closeDues.delete(ticket);
+          await this.decisions.record(ticket, `close retry dropped: no workspace for ${ticket}`);
+          continue;
+        }
+        await this.workspaces.close(workspace.workspaceId);
+        this.closeDues.delete(ticket);
+        await this.decisions.record(ticket, `workspace closed on retry (${workspace.workspaceId})`);
+      } catch {
+        // Keep the close-due; the next poll retries.
+      }
     }
   }
 

@@ -65,6 +65,8 @@ export interface LinearLabelNode {
 export interface LinearComment {
   id: string;
   body: string;
+  /** Creation time; comment order across pages is normalized on this. */
+  createdAt: string;
 }
 
 export interface LinearAttachment {
@@ -127,7 +129,7 @@ const ISSUE_QUERY = `query($id: String!, $after: String) {
     project { id }
     labels { nodes { id name } }
     comments(first: 100, after: $after) {
-      nodes { id body }
+      nodes { id body createdAt }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -326,6 +328,10 @@ export class LinearClient {
       after = data.issue.comments.pageInfo.endCursor;
     }
     if (!header) return null;
+    // Linear does not promise comment order across pages: normalize to
+    // oldest-first here, once, so every receipt lookup reads newest-last.
+    // The sort is stable, so equal timestamps keep their server order.
+    comments.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
     const { project, labels, comments: _pages, ...issue } = header;
     void _pages;
     return { ...issue, projectId: project.id, labels: labels?.nodes ?? [], comments };

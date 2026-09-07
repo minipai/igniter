@@ -27,7 +27,6 @@ const REVIEW = "st-review";
 const IN_PROGRESS = "label-in-progress";
 const COMPLETE = "label-complete";
 const BLOCKED = "label-blocked";
-const PENDING = "label-pending";
 const CRITERIA = "## 驗收條件\n- [ ] works\n- [ ] shines\n";
 const HEAD = "deadbeefcafe0001";
 
@@ -353,10 +352,10 @@ describe("stays quiet", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       await h.watcher.pollOnce();
-      // The existing orphan path reopens the workspace at Review + Pending;
+      // The orphan path reopens the workspace and keeps the Linear state;
       // the wake-up has no workspace to read and stays out of the way.
       expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-      expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
       expect(h.lines.some((l) => l.includes("review wake-up"))).toBe(false);
     } finally {
       h.stop();

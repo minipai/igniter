@@ -306,15 +306,17 @@ describe("start", () => {
     }
   });
 
-  test("a Review orphan is adopted back to Pending; a half-written Todo claim is finished", async () => {
+  test("a Review orphan is adopted with Linear kept; a half-written Todo claim is finished", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-6", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       const adopted = await runCommand(["start", "STA-6"], h.ctx);
       expect(adopted.ok).toBe(true);
-      expect(adopted.text).toContain("at review+pending");
+      expect(adopted.text).toContain("at review+in_progress");
+      expect(adopted.text).toContain("Linear kept");
       expect(h.world.issues[0]!.stateId).toBe(REVIEW);
-      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.workspaces.tokensFor("STA-6")).toMatchObject({ status: "review", progress: "in_progress" });
 
       // Half-written claim: workspace open, Linear still Todo+Pending.
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
