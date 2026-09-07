@@ -20,7 +20,6 @@ import {
   repairScratchDir,
   scratchFor,
   scratchRootFor,
-  workerLaunch,
   type WorkerScope,
 } from "./worker-scope";
 
@@ -84,30 +83,6 @@ describe("scratch layout", () => {
     expect(readFileSync(outside, "utf8")).toBe("untouched");
     writeFileSync(join(leaf, "note.txt"), "scratch");
     expect(readFileSync(join(leaf, "note.txt"), "utf8")).toBe("scratch");
-  });
-});
-
-describe("harness launch", () => {
-  test("builder and fallback harnesses each get their own scratch settings", () => {
-    const builder = workerLaunch({ harness: "opencode", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/builder" });
-    const fallback = workerLaunch({ harness: "codex", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/builder" });
-    expect(builder.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/builder");
-    expect(fallback.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/builder");
-    expect(builder.args.join(" ")).not.toBe(fallback.args.join(" "));
-    expect(builder.env).toEqual({
-      IGNITER_WORKTREE: "/repo/.igniter/runtime/worktrees/sta-1",
-      IGNITER_SCRATCH: "/repo/.igniter/runtime/scratch/sta-1/builder",
-    });
-    const reviewer = workerLaunch({ harness: "claude", worktreePath: "/repo/.igniter/runtime/worktrees/sta-1", scratchPath: "/repo/.igniter/runtime/scratch/sta-1/reviewer" });
-    expect(reviewer.args.join(" ")).toContain("/repo/.igniter/runtime/scratch/sta-1/reviewer");
-    expect(reviewer.args.join(" ")).not.toBe(builder.args.join(" "));
-    expect(workerLaunch({ harness: "unknown-harness", worktreePath: "/wt", scratchPath: "/s" }).args).toEqual([]);
-  });
-
-  test("a missing field names the expected call shape", () => {
-    expect(() => workerLaunch({ harness: "codex", worktreePath: "/wt" } as never)).toThrow(
-      "workerLaunch needs { harness: string, worktreePath: string, scratchPath: string }",
-    );
   });
 });
 

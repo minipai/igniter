@@ -215,6 +215,9 @@ describe("start", () => {
         status: "build",
         progress: "in_progress",
       });
+      const started = h.workspaces.calls.find((call) => call.method === "agent.start");
+      expect(started?.params).toMatchObject({ kind: "claude", name: "commander-sta-176" });
+      expect(started?.params).not.toHaveProperty("args");
       const inbox = h.workspaces.promptsFor("commander-sta-176");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("STA-176");
@@ -323,6 +326,27 @@ describe("start", () => {
       expect(h.workspaces.workspaces.length).toBe(before);
       expect(h.world.issues[1]!.stateId).toBe(BUILD);
       expect(h.world.issues[1]!.labelIds).toEqual([IN_PROGRESS]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("start rebuilds a missing Commander before finishing a half-written Todo claim", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      h.workspaces.seedWorkspace(
+        "STA-7",
+        { ticket: "STA-7", commander: "claude", builder: "b" },
+        { commander: false },
+      );
+      const before = h.workspaces.workspaces.length;
+      const out = await runCommand(["start", "STA-7"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(h.workspaces.workspaces.length).toBe(before);
+      expect(h.workspaces.promptsFor("commander-sta-7")).toHaveLength(1);
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }
@@ -867,7 +891,7 @@ describe("work order", () => {
 });
 
 describe("worker scratch", () => {
-  test("the work order names each worker scratch with its harness launch flags", () => {
+  test("the work order names each worker scratch without invented harness flags", () => {
     const scratch = scratchPathsFor("/repo", "STA-176");
     const order = buildWorkOrder({
       identifier: "STA-176",
@@ -884,6 +908,11 @@ describe("worker scratch", () => {
     expect(order).toContain("harness `opencode`");
     expect(order).toContain("harness `codex`");
     expect(order).toContain(scratch.builder);
+    expect(order).toContain("Do not invent generic permission flags");
+    expect(order).not.toContain("--claude-allow-dir");
+    expect(order).not.toContain("--codex-allow-path");
+    expect(order).not.toContain("--opencode-allow");
+    expect(order).not.toContain("--remote-control");
     expect(order).toContain("escalate to the owner");
   });
 

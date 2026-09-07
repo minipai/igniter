@@ -73,7 +73,6 @@ import {
   ensureScratchDir,
   scratchFor,
   scratchRootFor,
-  workerLaunch,
   type WorkerName,
 } from "./worker-scope.ts";
 
@@ -1058,7 +1057,7 @@ export interface WorkOrderInput {
   scratch?: WorkerScratchPaths;
 }
 
-/** Per-worker scratch and harness launch lines; each harness names its own flags. */
+/** Per-worker scratch locations. Harness permission UIs are not interchangeable. */
 export function scratchBlock(input: WorkOrderInput): string {
   const scratch = input.scratch;
   if (!scratch || !scratch.builder || !scratch.reviewer || !scratch.deliverer) return "";
@@ -1067,15 +1066,14 @@ export function scratchBlock(input: WorkOrderInput): string {
   const reviewerHarness = agents?.reviewer?.harness;
   const fallbackHarness = agents?.builder?.fallback?.harness;
   if (!builderHarness || !reviewerHarness || !fallbackHarness) return "";
-  const launch = (harness: string, scratchPath: string): string =>
-    workerLaunch({ harness, worktreePath: input.worktreePath, scratchPath }).args.join(" ") || "(no pre-approved flags)";
   const lines = [
     `Worker scratch (created and cleaned by igniter; use only your own):`,
-    `- Build: \`${scratch.builder}\` (harness \`${builderHarness}\`; launch \`${launch(builderHarness, scratch.builder)}\`)`,
-    `- Acceptance: \`${scratch.reviewer}\` (harness \`${reviewerHarness}\`; launch \`${launch(reviewerHarness, scratch.reviewer)}\`)`,
-    `- Deliver: \`${scratch.deliverer}\` (harness \`${builderHarness}\`; launch \`${launch(builderHarness, scratch.deliverer)}\`)`,
-    `- Builder fallback: harness \`${fallbackHarness}\`; launch \`${launch(fallbackHarness, scratch.builder)}\``,
+    `- Build: \`${scratch.builder}\` (harness \`${builderHarness}\`)`,
+    `- Acceptance: \`${scratch.reviewer}\` (harness \`${reviewerHarness}\`)`,
+    `- Deliver: \`${scratch.deliverer}\` (harness \`${builderHarness}\`)`,
+    `- Builder fallback: harness \`${fallbackHarness}\`; scratch \`${scratch.builder}\``,
     `Pre-authorized scope is the ticket worktree, bundled read-only assets, and your own scratch only. ` +
+      `Do not invent generic permission flags; use the configured harness normally and inspect its actual dialogs. ` +
       `Home configs, credentials, system locations, remote hosts, and out-of-scope network always escalate to the owner. ` +
       `Reread the exact pane and revision immediately before answering any permission dialog; a changed dialog refuses the send.`,
   ];
@@ -1190,7 +1188,7 @@ export interface WorkspaceSinkOptions {
  */
 export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
   const runGit = options.runGit ?? bunGitRunner();
-  return async (claim: ClaimedTicket) => {
+  return async (claim: ClaimedTicket, existing) => {
     const kind = claim.agent ?? "claude";
     const builder = claim.builder ?? options.config.commander.agents.builder.model;
     let worktree;
@@ -1211,16 +1209,43 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
     }
     let workspaceId: string;
     let rootPaneId: string;
-    try {
-      // No secrets ride into the workspace: the server holds the Linear
-      // key and resolves the ticket from metadata below.
-      ({ workspaceId, rootPaneId } = await options.workspaces.create({
-        label: claim.identifier,
-        cwd: worktree.path,
-        env: { IGNITER_SCRATCH_ROOT: scratchRoot },
-      }));
-    } catch (error) {
-      throw new WorkspaceSinkError((error as Error).message);
+    if (existing) {
+      workspaceId = existing.workspaceId;
+      try {
+        const snapshot = await options.workspaces.snapshot();
+        const workspace = snapshot.workspaces.find((item) => item.workspaceId === workspaceId);
+        if (!workspace || workspace.tokens["ticket"] !== claim.identifier) {
+          throw new Error(`workspace ${workspaceId} is not owned by ${claim.identifier}`);
+        }
+        const name = commanderName(claim.identifier);
+        const named = snapshot.agents.find((agent) => agent.name === name);
+        if (named) {
+          if (named.workspaceId !== workspaceId) {
+            throw new Error(`${name} is running in workspace ${named.workspaceId}, not ${workspaceId}`);
+          }
+          return { workspaceId, commander: kind, builder };
+        }
+        const busy = new Set(snapshot.agents.map((agent) => agent.paneId));
+        const paneId = snapshot.panes.find(
+          (pane) => pane.workspaceId === workspaceId && !busy.has(pane.paneId),
+        )?.paneId;
+        if (!paneId) throw new Error(`workspace ${workspaceId} has no pane available for ${name}`);
+        rootPaneId = paneId;
+      } catch (error) {
+        throw new WorkspaceSinkError((error as Error).message, workspaceId);
+      }
+    } else {
+      try {
+        // No secrets ride into the workspace: the server holds the Linear
+        // key and resolves the ticket from metadata below.
+        ({ workspaceId, rootPaneId } = await options.workspaces.create({
+          label: claim.identifier,
+          cwd: worktree.path,
+          env: { IGNITER_SCRATCH_ROOT: scratchRoot },
+        }));
+      } catch (error) {
+        throw new WorkspaceSinkError((error as Error).message);
+      }
     }
     try {
       await options.workspaces.reportMetadata(workspaceId, {
@@ -1233,12 +1258,10 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
         scratch_deliverer: scratch.deliverer,
       });
       const name = commanderName(claim.identifier);
-      const launch = workerLaunch({ harness: kind, worktreePath: worktree.path, scratchPath: scratchRoot });
       await options.workspaces.startAgent({
         paneId: rootPaneId,
         kind,
         name,
-        ...(launch.args.length > 0 ? { args: launch.args } : {}),
       });
       await options.workspaces.prompt(
         name,

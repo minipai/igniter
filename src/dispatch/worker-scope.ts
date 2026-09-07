@@ -113,59 +113,6 @@ export async function removeScratchDir(path: string, root: string): Promise<void
 }
 
 // ---------------------------------------------------------------------------
-// Harness-specific launch settings: each harness names its own permission
-// flags; unknown harnesses get no auto-approve flags at all.
-// ---------------------------------------------------------------------------
-
-export interface LaunchScope {
-  worktreePath: string;
-  scratchPath: string;
-}
-
-export interface LaunchInput {
-  /** Agent harness name, e.g. "opencode", "claude", or "codex". */
-  harness: string;
-  worktreePath: string;
-  scratchPath: string;
-}
-
-export interface LaunchConfig {
-  args: string[];
-  env: Record<string, string>;
-}
-
-/**
- * Per-harness launch settings for one worker. Call as
- * `workerLaunch({ harness, worktreePath, scratchPath })`; each known harness
- * names its own permission flags, anything else gets no auto-approve flags.
- */
-export function workerLaunch(input: LaunchInput): LaunchConfig {
-  if (
-    typeof input !== "object" ||
-    input === null ||
-    typeof input.harness !== "string" ||
-    typeof input.worktreePath !== "string" ||
-    typeof input.scratchPath !== "string" ||
-    input.harness === "" ||
-    input.worktreePath === "" ||
-    input.scratchPath === ""
-  ) {
-    throw new Error(`workerLaunch needs { harness: string, worktreePath: string, scratchPath: string }`);
-  }
-  const env = { IGNITER_WORKTREE: input.worktreePath, IGNITER_SCRATCH: input.scratchPath };
-  switch (input.harness.toLowerCase()) {
-    case "opencode":
-      return { args: ["--opencode-allow", input.worktreePath, "--opencode-allow", input.scratchPath], env };
-    case "claude":
-      return { args: ["--claude-allow-dir", input.worktreePath, "--claude-allow-dir", input.scratchPath], env };
-    case "codex":
-      return { args: ["--codex-allow-path", input.worktreePath, "--codex-allow-path", input.scratchPath], env };
-    default:
-      return { args: [], env };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Hard floor: canonicalize, then contain. Anything unrecognized escalates.
 // ---------------------------------------------------------------------------
 

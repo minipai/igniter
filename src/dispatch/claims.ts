@@ -77,7 +77,14 @@ export interface ClaimedTicket {
   builder?: string;
 }
 
-export type ClaimSink = (claim: ClaimedTicket) => Promise<SinkOpened | void> | SinkOpened | void;
+export interface ExistingClaim {
+  workspaceId: string;
+}
+
+export type ClaimSink = (
+  claim: ClaimedTicket,
+  existing?: ExistingClaim,
+) => Promise<SinkOpened | void> | SinkOpened | void;
 
 /** What the real sink hands back after opening the workspace. */
 export interface SinkOpened {

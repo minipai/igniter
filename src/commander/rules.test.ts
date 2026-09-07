@@ -35,6 +35,10 @@ describe("Commander delivery protocol", () => {
     expect(stageRules[1]).toStartWith("# Acceptance agent");
     expect(stageRules[2]).toStartWith("# Deliver agent");
     expect(commonRules).toContain("The Commander does not read stage prompts into its own context.");
+    expect(commonRules).toContain("Never\nstart a Claude stage worker with `--remote-control`");
+    expect(commonRules).not.toContain("--claude-allow-dir");
+    expect(commonRules).not.toContain("--codex-allow-path");
+    expect(commonRules).not.toContain("--opencode-allow");
   });
 
   test("keeps every workspace command with the Commander", () => {

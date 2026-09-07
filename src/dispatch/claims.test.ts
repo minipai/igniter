@@ -82,10 +82,10 @@ function watch(
     client,
     resolved,
     host: opts.host ?? "h",
-    sink: async (t) => {
+    sink: async (t, existing) => {
       seen.push(t.identifier);
       opts.sink?.(t.identifier);
-      return sink(t);
+      return sink(t, existing);
     },
     decisions: opts.decisions ?? {
       record: async (ticket, message) => {
@@ -380,11 +380,57 @@ describe("pollOnce", () => {
       workspaces.seedWorkspace("STA-1", { ticket: "STA-1", commander: "claude", builder: "b" });
       const { watcher, seen, lines } = watch(client, resolved, { workspaces });
       await watcher.pollOnce();
-      expect(seen).toEqual([]);
+      expect(seen).toEqual(["STA-1"]);
       expect(workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+      expect(workspaces.promptsFor("commander-sta-1")).toEqual([]);
       expect(fake.world.issues[0]!.stateId).toBe(BUILD);
       expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       expect(lines).toContainEqual(expect.stringContaining("STA-1 claim finished in existing workspace"));
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a half-written Todo claim rebuilds a missing Commander before moving Linear", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", commander: "claude", builder: "b" },
+        { commander: false },
+      );
+      const { watcher } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+      expect(workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
+      const start = workspaces.calls.find((call) => call.method === "agent.start");
+      expect(start?.params).toMatchObject({ kind: "claude", name: "commander-sta-1" });
+      expect(start?.params).not.toHaveProperty("args");
+      expect(fake.world.issues[0]!.stateId).toBe(BUILD);
+      expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("a failed Commander rebuild leaves a half-written claim at Todo+Pending", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      addIssue(fake.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const workspaces = new FakeWorkspaces();
+      workspaces.seedWorkspace(
+        "STA-1",
+        { ticket: "STA-1", commander: "claude", builder: "b" },
+        { commander: false },
+      );
+      workspaces.failMethods.add("agent.start");
+      const { watcher, lines } = watch(client, resolved, { workspaces });
+      await watcher.pollOnce();
+      expect(fake.world.issues[0]!.stateId).toBe(TODO);
+      expect(fake.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(lines).toContainEqual(expect.stringContaining("STA-1 claim failed: fake herdr exploded"));
     } finally {
       fake.stop();
     }

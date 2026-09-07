@@ -1014,9 +1014,6 @@ export async function finishClaim(
   if (blocked) {
     throw new ProtocolError(`refused: ${full.identifier} is not claimable: ${blocked}`);
   }
-  const from = full.state.name;
-  await moveStatus(deps, full, "build", "in_progress");
-  await mirror(deps, workspaceId, { status: "build", progress: "in_progress" });
   const ticket: ClaimedTicket = {
     id: full.id,
     identifier: full.identifier,
@@ -1026,9 +1023,29 @@ export async function finishClaim(
     agent: meta["commander"] ?? "claude",
     builder: meta["builder"] ?? resolved.config.commander.agents.builder.model,
   };
+  let opened: { workspaceId: string; commander: string; builder: string };
+  try {
+    opened = (await deps.sink(ticket, { workspaceId })) ?? {
+      workspaceId,
+      commander: ticket.agent ?? "claude",
+      builder: ticket.builder ?? "",
+    };
+  } catch (error) {
+    if (error instanceof WorkspaceSinkError) throw error;
+    throw new WorkspaceSinkError((error as Error).message, workspaceId);
+  }
+  if (opened.workspaceId !== workspaceId) {
+    throw new WorkspaceSinkError(
+      `existing claim recovery returned workspace ${opened.workspaceId}, expected ${workspaceId}`,
+      workspaceId,
+    );
+  }
+  const from = full.state.name;
+  await moveStatus(deps, full, "build", "in_progress");
+  await mirror(deps, workspaceId, { status: "build", progress: "in_progress" });
   await deps.decisions.record(full.identifier, `claimed: ${from} → ${resolved.config.states.build} (slot ${slot})`);
   await deps.decisions.record(full.identifier, `claim finished in existing workspace (${workspaceId})`);
-  return { ...ticket, workspaceId, commander: ticket.agent ?? "claude", builder: ticket.builder ?? "" };
+  return { ...ticket, ...opened };
 }
 
 // ---------------------------------------------------------------------------

@@ -159,9 +159,11 @@ instructions, and source paths within the task, plus read/write inside the
 ticket worktree and the worker's own igniter scratch (named in the work
 order). The bundled Commander assets named by absolute path in the work order
 (rules and stage prompts) are Igniter-owned and pre-authorized read-only too.
-Launch each worker with its configured harness flags only; harnesses do not
-share one permission UI. Verify and approve those in-scope requests without
-asking the owner again.
+Launch each worker normally in the ticket worktree. Do not invent or translate
+generic permission flags: harnesses do not share one permission UI. Never
+start a Claude stage worker with `--remote-control`; Herdr owns its pane and
+interaction. Verify and approve in-scope requests from the actual dialog
+without asking the owner again.
 
 Treat Herdr `blocked` only as a hint. Read `source=visible`, require a current
 dialog and action footer at the bottom of the pane, then reread the same pane
