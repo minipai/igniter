@@ -1,0 +1,436 @@
+// Prompt-delivery confirmation against a deterministic fake Herdr: the
+// shared start gate behind the Global Commander and every stage agent.
+// No network, no daemon, no real project.
+//
+// The regression core is the STA-197/STA-222 input-buffer failure: Herdr
+// answers `agent_prompted` while the text only sits in the interactive
+// input box and the agent lifecycle never moves. Success must wait for an
+// observed lifecycle change; anything else keeps protocol state and
+// retries the identical work order.
+
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  confirmPromptDelivery,
+  deliveryKey,
+  promptConsumed,
+  PromptDeliveryError,
+  workOrderHash,
+  type PromptDeliveryIdentity,
+  type PromptDeliveryPolicy,
+} from "./prompt-delivery";
+import {
+  beginMutation,
+  deriveState,
+  type FullIssue,
+} from "./protocol";
+import { validateStartup, type ResolvedDispatch } from "./claims";
+import { createWorkspaceSink, runCommand, type CommandContext } from "./commands";
+import { parseDispatchConfig } from "./config";
+import { LinearClient } from "./linear";
+import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
+import { FakeGit } from "./fake-git";
+import { FakeWorkspaces } from "./fake-workspaces";
+
+const TODO = "st-todo";
+const BUILD = "st-build";
+const PENDING = "label-pending";
+const IN_PROGRESS = "label-in-progress";
+const CRITERIA = "## 驗收條件\n- [ ] works\n";
+const HEAD = "cafe0001deadbeef";
+
+/** Fast deterministic budget: no clock, two sends, two read-backs each. */
+const FAST: PromptDeliveryPolicy = {
+  maxAttempts: 2,
+  pollAttempts: 2,
+  pollIntervalMs: 0,
+  sleep: async () => {},
+};
+
+function identity(over: Partial<PromptDeliveryIdentity> = {}): PromptDeliveryIdentity {
+  return {
+    project: "igniter",
+    ticket: "STA-1",
+    role: "commander",
+    stage: "command",
+    agent: "commander-sta-1",
+    workOrder: workOrderHash("work order text"),
+    ...over,
+  };
+}
+
+/** One live workspace with one running agent, the way a start leaves it. */
+async function liveAgent(fake: FakeWorkspaces, name: string): Promise<{ workspaceId: string; paneId: string }> {
+  const { workspaceId, rootPaneId } = await fake.create({ label: "STA-1", cwd: "/tmp/sta-1", env: {} });
+  await fake.startAgent({ paneId: rootPaneId, kind: "claude", name });
+  return { workspaceId, paneId: rootPaneId };
+}
+
+describe("delivery identity", () => {
+  test("work orders hash stably and distinctly", () => {
+    expect(workOrderHash("same")).toBe(workOrderHash("same"));
+    expect(workOrderHash("same")).not.toBe(workOrderHash("other"));
+  });
+
+  test("the key binds project, ticket, role, stage, agent, revision, and work order", () => {
+    const base = identity();
+    const key = deliveryKey(base, 3);
+    expect(key).toContain("igniter|STA-1|commander|command|commander-sta-1|3|");
+    for (const over of [
+      { project: "other" },
+      { ticket: "STA-2" },
+      { ticket: null },
+      { role: "builder" as const },
+      { stage: "build" as const },
+      { agent: "commander-sta-2" },
+      { workOrder: "deadbeef" },
+    ]) {
+      expect(deliveryKey(identity(over), 3)).not.toBe(key);
+    }
+    expect(deliveryKey(base, 4)).not.toBe(key);
+  });
+
+  test("consumption means any lifecycle signal moved past baseline", () => {
+    const baseline = { status: "idle", session: null, revision: null, paneRevision: 0 };
+    expect(promptConsumed(baseline, baseline)).toBe(false);
+    expect(promptConsumed(baseline, { ...baseline, status: "working" })).toBe(true);
+    expect(promptConsumed(baseline, { ...baseline, session: "sess-1" })).toBe(true);
+    expect(promptConsumed(baseline, { ...baseline, revision: 1 })).toBe(true);
+    expect(promptConsumed(baseline, { ...baseline, paneRevision: 1 })).toBe(true);
+  });
+});
+
+describe("confirmPromptDelivery", () => {
+  async function capture(promise: Promise<unknown>): Promise<PromptDeliveryError> {
+    try {
+      await promise;
+    } catch (error) {
+      if (error instanceof PromptDeliveryError) return error;
+      throw error;
+    }
+    throw new Error("expected prompt delivery to fail");
+  }
+
+  test("a consumed prompt resolves with the observed lifecycle change", async () => {
+    const fake = new FakeWorkspaces();
+    await liveAgent(fake, "commander-sta-1");
+    const out = await confirmPromptDelivery(fake, identity(), "work order text", FAST);
+    expect(out.attempts).toBe(1);
+    expect(out.lostResponse).toBe(false);
+    expect(out.observed.paneRevision).toBe(1);
+    expect(fake.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  test("STA-197/STA-222 input-buffer failure: agent_prompted without a lifecycle change never counts", async () => {
+    const fake = new FakeWorkspaces();
+    fake.promptMode = "input-buffer";
+    await liveAgent(fake, "commander-sta-1");
+    const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
+    expect(error.reason).toBe("stalled");
+    expect(error.attempts).toBe(2);
+    // The diagnosis names project, ticket, role, stage, agent, and reason.
+    for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
+      expect(error.message).toContain(part);
+    }
+    // Retry resends the identical work order to the same agent: no second
+    // agent, no second pane, no second run.
+    expect(fake.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
+    expect(fake.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+    const inbox = fake.promptsFor("commander-sta-1");
+    expect(inbox).toHaveLength(2);
+    expect(inbox[0]).toBe(inbox[1]);
+    expect(error.key).toBe(deliveryKey(identity(), 0));
+  });
+
+  test("a lost response converges by read-back without resending", async () => {
+    const fake = new FakeWorkspaces();
+    fake.promptMode = "lost-response";
+    await liveAgent(fake, "commander-sta-1");
+    const out = await confirmPromptDelivery(fake, identity(), "work order text", FAST);
+    expect(out.lostResponse).toBe(true);
+    expect(out.attempts).toBe(1);
+    expect(fake.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(1);
+    expect(fake.promptsFor("commander-sta-1")).toHaveLength(1);
+  });
+
+  test("an unreachable Herdr names the delivery instead of hanging", async () => {
+    const fake = new FakeWorkspaces();
+    await liveAgent(fake, "commander-sta-1");
+    fake.failMethods.add("snapshot");
+    const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
+    expect(error.reason).toBe("herdr-unreachable");
+    expect(error.attempts).toBe(0);
+    expect(error.message).toContain("ticket=STA-1");
+  });
+
+  test("a missing agent refuses with no send", async () => {
+    const fake = new FakeWorkspaces();
+    const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
+    expect(error.reason).toBe("no-agent");
+    expect(error.attempts).toBe(0);
+    expect(fake.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(0);
+  });
+
+  test("a vanished agent reports no-agent instead of a stall", async () => {
+    const fake = new FakeWorkspaces();
+    await liveAgent(fake, "commander-sta-1");
+    fake.agents = [];
+    const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
+    expect(error.reason).toBe("no-agent");
+    expect(error.message).toContain("agent=commander-sta-1");
+  });
+
+  test("consumed advances only the pane revision; input-buffer moves nothing", async () => {
+    const fake = new FakeWorkspaces();
+    const { paneId } = await liveAgent(fake, "commander-sta-1");
+    await fake.prompt("commander-sta-1", "hi");
+    const agent = fake.agents.find((a) => a.name === "commander-sta-1")!;
+    // The agent row is untouched, so wake-up dedup keys (session+revision)
+    // stay stable; only the pane shows new output.
+    expect(agent.agentStatus).toBe("working");
+    expect(agent.session).toBeNull();
+    expect(agent.revision).toBeNull();
+    expect(fake.paneRevision[paneId]).toBe(1);
+    fake.promptMode = "input-buffer";
+    await fake.prompt("commander-sta-1", "hi again");
+    expect(fake.paneRevision[paneId]).toBe(1);
+    expect(fake.promptsFor("commander-sta-1")).toEqual(["hi", "hi again"]);
+  });
+});
+
+interface Harness {
+  ctx: CommandContext;
+  lines: string[];
+  workspaces: FakeWorkspaces;
+  git: FakeGit;
+  repoRoot: string;
+  client: LinearClient;
+  resolved: ResolvedDispatch;
+  world: ReturnType<typeof standardWorld>;
+  stop: () => void;
+}
+
+async function harness(): Promise<Harness> {
+  const world = standardWorld("test-key");
+  const fake = startFakeLinear(world);
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const resolved = await validateStartup(
+    client,
+    parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),
+  );
+  const lines: string[] = [];
+  const workspaces = new FakeWorkspaces();
+  const git = new FakeGit();
+  git.head = HEAD;
+  const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-delivery-")), "repo");
+  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git, promptDelivery: FAST });
+  const ctx: CommandContext = {
+    client,
+    resolved,
+    host: "h",
+    decisions: {
+      record: async (ticket, message) => {
+        lines.push(`${ticket} ${message}`);
+        // Mirror the production dispatch log (stdout plus dispatch.log):
+        // a stalled or timed-out delivery must be observable outside the
+        // test's own assertions.
+        if (message.includes("prompt delivery")) console.log(`${ticket} ${message}`);
+      },
+    },
+    workspaces,
+    sink,
+    repoRoot,
+    git,
+    lastPollAt: () => null,
+    promptDelivery: FAST,
+  };
+  return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
+}
+
+describe("commander start", () => {
+  test("an input-buffer prompt fails the start and keeps Todo+Pending", async () => {
+    const h = await harness();
+    try {
+      h.workspaces.promptMode = "input-buffer";
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["start", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      // The stall diagnosis is written out through the activity channel
+      // with project, ticket, role, stage, agent, and failure reason.
+      const diagnosis = ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"];
+      for (const part of diagnosis) {
+        expect(out.text).toContain(part);
+        expect(h.lines.join("\n")).toContain(part);
+      }
+      // Protocol state is untouched: Linear keeps Todo+Pending.
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(h.lines.join("\n")).toContain("stalled");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a stalled retry creates nothing twice; a nudged commander finishes the claim", async () => {
+    const h = await harness();
+    try {
+      h.workspaces.promptMode = "input-buffer";
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(false);
+      // The STA-197 observation: the agent sits idle with an empty context.
+      h.workspaces.agents.find((a) => a.name === "commander-sta-1")!.agentStatus = "idle";
+      const retry = await runCommand(["start", "STA-1"], h.ctx);
+      expect(retry.ok).toBe(false);
+      // The idle retry writes out the same full diagnosis, not a bare error.
+      for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
+        expect(retry.text).toContain(part);
+      }
+      expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+      expect(h.workspaces.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
+      // The owner nudges the input box; the agent takes the work order and
+      // the retry finishes the half-written claim without a second run.
+      const agent = h.workspaces.agents.find((a) => a.name === "commander-sta-1")!;
+      agent.agentStatus = "working";
+      agent.revision = (agent.revision ?? 0) + 1;
+      const done = await runCommand(["start", "STA-1"], h.ctx);
+      expect(done.ok).toBe(true);
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.workspaces.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a consumed prompt moves Linear to Build+In progress with proof", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["start", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      // The pane moved past the pre-send baseline: the prompt landed.
+      const agent = h.workspaces.agents.find((a) => a.name === "commander-sta-1")!;
+      expect(h.workspaces.paneRevision[agent.paneId]).toBe(1);
+    } finally {
+      h.stop();
+    }
+  });
+});
+
+describe("commander resume", () => {
+  function seedActive(h: Harness): void {
+    addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+    h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", commander: "claude" }, { commander: false });
+  }
+
+  test("an input-buffer resume prompt fails without touching Linear", async () => {
+    const h = await harness();
+    try {
+      seedActive(h);
+      h.workspaces.promptMode = "input-buffer";
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
+        expect(out.text).toContain(part);
+      }
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.lines.join("\n")).toContain("resume failed: prompt delivery stalled");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a consumed resume rebuilds the commander and reports success", async () => {
+    const h = await harness();
+    try {
+      seedActive(h);
+      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("resumed STA-1");
+      expect(h.workspaces.agents.find((a) => a.name === "commander-sta-1")).toBeDefined();
+    } finally {
+      h.stop();
+    }
+  });
+});
+
+describe("stage start gate (the contract STA-225 reuses)", () => {
+  /** The stage pattern: confirm first, enter In progress only after proof. */
+  async function startStage(h: Harness, agent: string): Promise<boolean> {
+    const full = (await h.client.fetchIssue("STA-2")) as FullIssue | null;
+    if (!full) throw new Error("STA-2 vanished from the fake");
+    const state = deriveState(h.resolved, full);
+    const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2" && !w.closed);
+    if (!workspace) throw new Error("STA-2 has no workspace in the fake");
+    const order = "build work order for STA-2";
+    try {
+      await confirmPromptDelivery(
+        h.workspaces,
+        {
+          project: "igniter",
+          ticket: "STA-2",
+          role: "builder",
+          stage: "build",
+          agent,
+          workOrder: workOrderHash(order),
+        },
+        order,
+        FAST,
+      );
+    } catch {
+      return false;
+    }
+    await beginMutation(
+      { client: h.client, resolved: h.resolved, workspaces: h.workspaces, decisions: h.ctx.decisions, git: h.git, repoRoot: h.repoRoot },
+      workspace.workspaceId,
+      full,
+      state,
+    );
+    return true;
+  }
+
+  function seedStage(h: Harness): void {
+    addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+    h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2", status: "build", progress: "pending" }, { commander: false });
+    const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2")!;
+    const paneId = workspace.panes[0]!;
+    h.workspaces.agents.push({
+      name: "builder-sta-2",
+      kind: "builder",
+      agentStatus: "idle",
+      workspaceId: workspace.workspaceId,
+      paneId,
+      session: null,
+      revision: null,
+      inbox: [],
+    });
+  }
+
+  test("an input-buffer stage prompt keeps the ticket Pending", async () => {
+    const h = await harness();
+    try {
+      seedStage(h);
+      h.workspaces.promptMode = "input-buffer";
+      expect(await startStage(h, "builder-sta-2")).toBe(false);
+      expect(h.world.issues.find((i) => i.identifier === "STA-2")!.labelIds).toEqual([PENDING]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a consumed stage prompt enters In progress exactly once", async () => {
+    const h = await harness();
+    try {
+      seedStage(h);
+      expect(await startStage(h, "builder-sta-2")).toBe(true);
+      expect(h.world.issues.find((i) => i.identifier === "STA-2")!.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-2")).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+});

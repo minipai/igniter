@@ -23,6 +23,7 @@
 
 import type { LinearIssue } from "./linear.ts";
 import { commanderPane, resumedWorkOrder, type RecoveryScope } from "./commands.ts";
+import { confirmPromptDelivery, workOrderHash } from "./prompt-delivery.ts";
 import { progressOf } from "./protocol.ts";
 import {
   commanderName,
@@ -123,9 +124,21 @@ export async function wakeReviewers(
           continue;
         }
         await deps.workspaces.startAgent({ paneId, kind, name });
-        await deps.workspaces.prompt(
-          name,
-          resumedWorkOrder(deps, issue, { ...workspace.tokens, status: "review", progress: "in_progress" }),
+        const order = resumedWorkOrder(deps, issue, { ...workspace.tokens, status: "review", progress: "in_progress" });
+        // The outer catch records the diagnosis and retries on the next
+        // poll; the wake-up key lands only after both prompts went out.
+        await confirmPromptDelivery(
+          deps.workspaces,
+          {
+            project: deps.resolved.config.project,
+            ticket: issue.identifier,
+            role: "commander",
+            stage: "command",
+            agent: name,
+            workOrder: workOrderHash(order),
+          },
+          order,
+          deps.promptDelivery,
         );
         await deps.workspaces.prompt(name, prompt);
         await deps.decisions.record(

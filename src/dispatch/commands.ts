@@ -65,6 +65,15 @@ import {
   type WorkspaceSnapshot,
 } from "./workspaces.ts";
 import {
+  confirmPromptDelivery,
+  deliveryKey,
+  PromptDeliveryError,
+  workOrderHash,
+  type PromptDeliveryPolicy,
+  type PromptRole,
+  type PromptStage,
+} from "./prompt-delivery.ts";
+import {
   bunGitRunner,
   ensureTicketWorktree,
   ticketWorktree,
@@ -94,6 +103,8 @@ export interface CommandContext {
   git?: GitRunner;
   lastPollAt: () => string | null;
   now?: () => number;
+  /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
+  promptDelivery?: PromptDeliveryPolicy;
 }
 
 const TOP_USAGE =
@@ -682,6 +693,46 @@ export interface RecoveryScope {
   decisions: DecisionLog;
   repoRoot: string;
   resolved: ResolvedDispatch;
+  /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
+  promptDelivery?: PromptDeliveryPolicy;
+}
+
+/**
+ * Deliver a start prompt and prove the agent consumed it (STA-224). The
+ * `agent_prompted` answer alone never counts: confirmation reads the agent
+ * lifecycle back and only resolves once status, session, or revision moved.
+ * Null on success, otherwise the full diagnosis (project, ticket, role,
+ * stage, agent, pane revision, reason) for the caller's decision line.
+ */
+async function deliverStartPrompt(
+  scope: Pick<RecoveryScope, "workspaces" | "promptDelivery">,
+  input: {
+    project: string;
+    ticket: string | null;
+    role: PromptRole;
+    stage: PromptStage;
+    agent: string;
+    text: string;
+  },
+): Promise<string | null> {
+  try {
+    await confirmPromptDelivery(
+      scope.workspaces,
+      {
+        project: input.project,
+        ticket: input.ticket,
+        role: input.role,
+        stage: input.stage,
+        agent: input.agent,
+        workOrder: workOrderHash(input.text),
+      },
+      input.text,
+      scope.promptDelivery,
+    );
+    return null;
+  } catch (error) {
+    return (error as Error).message;
+  }
 }
 
 /**
@@ -784,7 +835,15 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
         return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
       }
       await ctx.workspaces.startAgent({ paneId, kind, name });
-      await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, meta));
+      const unstated = await deliverStartPrompt(ctx, {
+        project: resolved.config.project,
+        ticket: full.identifier,
+        role: "commander",
+        stage: "command",
+        agent: name,
+        text: resumedWorkOrder(ctx, full, meta),
+      });
+      if (unstated) throw new Error(unstated);
     } catch (error) {
       await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
       return fail(`resume failed: ${(error as Error).message}`);
@@ -824,7 +883,15 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
   const liveAgent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
   if (liveAgent) {
     try {
-      await ctx.workspaces.prompt(liveAgent.name, resumePrompt(state.status, state.progress === "blocked" ? "pending" : state.progress, unblockedMeta["checkpoint"] ?? null));
+      const unstated = await deliverStartPrompt(ctx, {
+        project: resolved.config.project,
+        ticket: full.identifier,
+        role: "commander",
+        stage: "command",
+        agent: liveAgent.name,
+        text: resumePrompt(state.status, state.progress === "blocked" ? "pending" : state.progress, unblockedMeta["checkpoint"] ?? null),
+      });
+      if (unstated) throw new Error(unstated);
     } catch (error) {
       await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
       return fail(`resume failed: ${(error as Error).message}`);
@@ -841,7 +908,15 @@ async function resumeCommand(args: string[], ctx: CommandContext): Promise<Comma
       return fail(`workspace for ${full.identifier} has no pane to start the commander in`);
     }
     await ctx.workspaces.startAgent({ paneId, kind, name });
-    await ctx.workspaces.prompt(name, resumedWorkOrder(ctx, full, unblockedMeta));
+    const unstated = await deliverStartPrompt(ctx, {
+      project: resolved.config.project,
+      ticket: full.identifier,
+      role: "commander",
+      stage: "command",
+      agent: name,
+      text: resumedWorkOrder(ctx, full, unblockedMeta),
+    });
+    if (unstated) throw new Error(unstated);
   } catch (error) {
     await decisions.record(full.identifier, `resume failed: ${(error as Error).message}`);
     return fail(`resume failed: ${(error as Error).message}`);
@@ -1192,6 +1267,8 @@ export interface WorkspaceSinkOptions {
   config: DispatchConfig;
   repoRoot: string;
   runGit?: GitRunner;
+  /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
+  promptDelivery?: PromptDeliveryPolicy;
 }
 
 /**
@@ -1241,6 +1318,40 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
           if (named.workspaceId !== workspaceId) {
             throw new Error(`${name} is running in workspace ${named.workspaceId}, not ${workspaceId}`);
           }
+          // An idle existing Commander never proved it consumed its start
+          // prompt (STA-197/STA-222): finishing the claim would declare a
+          // start that never happened. A working, blocked, or done one
+          // converged by read-back; anything else refuses with the same
+          // full diagnosis a stalled delivery records, so the activity log
+          // names project, ticket, role, stage, agent, and pane revision.
+          if (named.agentStatus !== "working" && named.agentStatus !== "blocked" && named.agentStatus !== "done") {
+            let paneRevision: number | null = null;
+            try {
+              paneRevision = (await options.workspaces.readPane(named.paneId, 20)).revision;
+            } catch {
+              paneRevision = null;
+            }
+            const stalled = {
+              project: options.config.project,
+              ticket: claim.identifier,
+              role: "commander" as const,
+              stage: "command" as const,
+              agent: name,
+              workOrder: "unproven",
+            };
+            throw new PromptDeliveryError({
+              key: deliveryKey(stalled, paneRevision),
+              identity: stalled,
+              reason: "stalled",
+              attempts: 0,
+              baseline: {
+                status: named.agentStatus,
+                session: named.session,
+                revision: named.revision,
+                paneRevision,
+              },
+            });
+          }
           return { workspaceId, commander: kind, builder };
         }
         const busy = new Set(snapshot.agents.map((agent) => agent.paneId));
@@ -1281,20 +1392,37 @@ export function createWorkspaceSink(options: WorkspaceSinkOptions): ClaimSink {
         kind,
         name,
       });
-      await options.workspaces.prompt(
-        name,
-        buildWorkOrder({
-          identifier: claim.identifier,
-          title: claim.title,
-          issueUrl: issueUrl(options.config, claim.identifier),
-          worktreePath: worktree.path,
-          branch: worktree.branch,
-          builderModel: builder,
-          commanderConfig: options.config.commander,
-          delivery: options.config.delivery,
-          scratch,
-        }),
-      );
+      const order = buildWorkOrder({
+        identifier: claim.identifier,
+        title: claim.title,
+        issueUrl: issueUrl(options.config, claim.identifier),
+        worktreePath: worktree.path,
+        branch: worktree.branch,
+        builderModel: builder,
+        commanderConfig: options.config.commander,
+        delivery: options.config.delivery,
+        scratch,
+      });
+      try {
+        await confirmPromptDelivery(
+          options.workspaces,
+          {
+            project: options.config.project,
+            ticket: claim.identifier,
+            role: "commander",
+            stage: "command",
+            agent: name,
+            workOrder: workOrderHash(order),
+          },
+          order,
+          options.promptDelivery,
+        );
+      } catch (error) {
+        // The prompt never proved consumed, so Linear stays untouched: the
+        // claim throws before any status move and the next start safely
+        // retries the identical work order in the same workspace.
+        throw new WorkspaceSinkError((error as Error).message, workspaceId);
+      }
     } catch (error) {
       throw new WorkspaceSinkError((error as Error).message, workspaceId);
     }

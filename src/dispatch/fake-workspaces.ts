@@ -41,6 +41,15 @@ export class FakeWorkspaces implements CommandWorkspaces {
   /** Throw from every method whose name appears here. */
   failMethods = new Set<string>();
   failMessage = "fake herdr exploded";
+  /**
+   * Deterministic prompt-consumption simulation for prompt-delivery tests:
+   * - `consumed`: the agent takes the prompt (lifecycle advances);
+   * - `input-buffer`: the text lands in the input box only (STA-197/STA-222);
+   * - `lost-response`: the prompt lands, then the response is lost (throws).
+   */
+  promptMode: "consumed" | "input-buffer" | "lost-response" = "consumed";
+  /** Per-agent override of promptMode. */
+  promptModes: Record<string, "consumed" | "input-buffer" | "lost-response"> = {};
   private workspaceCounter = 0;
   private paneCounter = 0;
   private tabCounter = 0;
@@ -130,6 +139,23 @@ export class FakeWorkspaces implements CommandWorkspaces {
     const agent = this.agents.find((a) => a.name === agentName);
     if (!agent) throw new Error(`fake herdr: agent ${agentName} is not running`);
     agent.inbox.push(text);
+    const mode = this.promptModes[agentName] ?? this.promptMode;
+    if (mode === "lost-response") {
+      this.consumePrompt(agent);
+      throw new Error("fake herdr: prompt applied but the response was lost");
+    }
+    if (mode === "consumed") this.consumePrompt(agent);
+    // input-buffer: the text sits in the input box; the lifecycle is untouched.
+  }
+
+  /**
+   * Advance the lifecycle the way a Herdr agent that took its prompt does:
+   * the pane produces output (pane revision moves) while the agent row is
+   * left alone — the watch loop keys wake-ups off agent status and revision,
+   * so a prompt must never rewrite them behind its back.
+   */
+  private consumePrompt(agent: FakeAgent): void {
+    this.paneRevision[agent.paneId] = (this.paneRevision[agent.paneId] ?? 0) + 1;
   }
 
   /** Raw keys sent to a pane, in order. Tests assert the answer key landed. */
