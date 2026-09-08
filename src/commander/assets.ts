@@ -18,6 +18,8 @@ export interface CommanderAssetPaths {
   rules: string;
   /** Absolute path of the bundled Commander defaults. */
   config: string;
+  /** Absolute path of the bundled Global Commander instructions. */
+  global: string;
   /** Absolute bundled stage prompt path per stage. */
   prompts: Record<CommanderStage, string>;
 }
@@ -33,6 +35,7 @@ export function commanderAssetPaths(dir: string = commanderAssetDir()): Commande
     dir,
     rules: join(dir, "rules.md"),
     config: join(dir, "config.yaml"),
+    global: join(dir, "global.md"),
     prompts: {
       build: join(dir, "stages", "build.md"),
       review: join(dir, "stages", "review.md"),
@@ -54,7 +57,7 @@ export async function assertCommanderAssets(
   dir: string = commanderAssetDir(),
 ): Promise<CommanderAssetPaths> {
   const paths = commanderAssetPaths(dir);
-  const candidates = [paths.rules, paths.config, ...Object.values(paths.prompts)];
+  const candidates = [paths.rules, paths.config, paths.global, ...Object.values(paths.prompts)];
   for (const path of candidates) {
     const file = Bun.file(path);
     let text: string | null = null;

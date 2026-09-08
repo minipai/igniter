@@ -202,16 +202,16 @@ describe("buildBoardSnapshot", () => {
 });
 
 describe("answer command", () => {
-  test("maps y/n to the commander's dialog and logs what was sent", async () => {
+  test("maps y/n to the stage worker dialog and logs what was sent", async () => {
     const h = await harness();
     try {
       // The default Commander profile is Codex: the literal key goes through.
       const out = await runCommand(["answer", "STA-1", "y"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("answered y for STA-1");
-      const commander = h.workspaces.agents.find((a) => a.name === "commander-sta-1");
-      if (!commander) throw new Error("commander agent is missing");
-      expect(h.workspaces.sentKeys).toEqual([{ paneId: commander.paneId, keys: ["y"] }]);
+      const worker = h.workspaces.agents.find((a) => a.name === "builder-sta-1");
+      if (!worker) throw new Error("stage worker agent is missing");
+      expect(h.workspaces.sentKeys).toEqual([{ paneId: worker.paneId, keys: ["y"] }]);
       expect(h.lines.join("\n")).toContain("STA-1 answered y (allowed once, sent y)");
 
       const denied = await runCommand(["answer", "STA-3", "n"], h.ctx);
@@ -232,6 +232,8 @@ describe("answer command", () => {
       workspace.tokens["commander"] = "claude";
       const out = await runCommand(["answer", "STA-2", "y"], h.ctx);
       expect(out.ok).toBe(true);
+      // STA-2 is a legacy commander-only workspace: the answer falls back
+      // to its commander pane.
       const commander = h.workspaces.agents.find((a) => a.name === "commander-sta-2");
       if (!commander) throw new Error("commander agent is missing");
       expect(h.workspaces.sentKeys).toEqual([{ paneId: commander.paneId, keys: ["y"] }]);

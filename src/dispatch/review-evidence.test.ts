@@ -102,7 +102,7 @@ function buildPayload() {
 /** Reach Review+In progress, ready for a review submit. */
 async function toReview(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-  expect((await runCommand(["start", identifier], h.ctx)).ok).toBe(true);
+  expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
 }

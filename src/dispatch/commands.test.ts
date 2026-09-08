@@ -84,12 +84,18 @@ describe("argv parsing", () => {
       expect(await runCommand(["frobnicate"], h.ctx)).toMatchObject({ ok: false });
       expect((await runCommand(["frobnicate"], h.ctx)).text).toContain("usage: igniter");
       for (const argv of [
-        ["start"], ["reconcile"], ["pause"], ["resume"], ["fail"], ["restart"],
-        ["fail", "STA-1"], ["restart", "STA-1"], ["start", "--builder", "x"],
-        ["start", "STA-1", "--agent", "hal"],
+        ["reconcile"], ["pause"], ["resume"], ["fail"], ["restart"],
+        ["fail", "STA-1"], ["restart", "STA-1"], ["begin", "--builder", "x"],
+        ["begin", "STA-1", "--agent", "hal"],
+        ["begin", "STA-1", "build"],
+        ["begin", "STA-1", "--builder", "m"],
+        ["start", "STA-1", "--bogus"],
+        ["start", "STA-1", "STA-2"],
         ["pause", "STA-1", "--bogus"], ["state"], ["state", "x"],
-        ["begin", "STA-1"], ["submit"], ["submit", "--input", "file"],
-        ["block"], ["block", "--reason", ""], ["unblock", "x"],
+        ["begin"], ["submit"], ["submit", "--input", "file"],
+        ["submit", "--input", "-"],
+        ["block"], ["block", "--reason", ""], ["block", "--reason", "x"],
+        ["unblock"],
       ]) {
         const out = await runCommand(argv, h.ctx);
         expect(out.ok).toBe(false);
@@ -101,14 +107,20 @@ describe("argv parsing", () => {
     }
   });
 
-  test("workspace commands without a workspace id refuse", async () => {
+  test("legacy workspace commands without a workspace id refuse", async () => {
     const h = await harness();
     try {
-      for (const argv of [["state", "--json"], ["begin"], ["block", "--reason", "x"], ["unblock"]]) {
-        const out = await runCommand(argv, h.ctx);
-        expect(out.ok).toBe(false);
-        expect(out.text).toContain("Herdr workspace only");
-      }
+      const state = await runCommand(["state", "--json"], h.ctx);
+      expect(state.ok).toBe(false);
+      expect(state.text).toContain("Herdr workspace only");
+      const begin = await runCommand(["begin"], h.ctx);
+      expect(begin.ok).toBe(false);
+      expect(begin.text).toContain("usage: igniter begin");
+      // Ticket-targeted commands need no workspace id: they fail on Linear,
+      // never on a missing HERDR_WORKSPACE_ID.
+      const out = await runCommand(["block", "STA-1", "--reason", "x"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).not.toContain("Herdr workspace only");
     } finally {
       h.stop();
     }
@@ -133,7 +145,7 @@ describe("status", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["start", "STA-1"], h.ctx);
+      await runCommand(["begin", "STA-1"], h.ctx);
       addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Second", labelIds: [COMPLETE] });
       h.workspaces.seedWorkspace("STA-2", {
         ticket: "STA-2",
@@ -190,15 +202,16 @@ describe("status", () => {
   });
 });
 
-describe("start", () => {
-  test("a Todo ticket opens a workspace with no secrets, moves Linear", async () => {
+describe("begin", () => {
+  test("a Todo ticket opens a workspace and starts the Build worker, moves Linear", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-176", stateId: TODO, priority: 1, description: CRITERIA, title: "Dispatch commands", labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-176", "--builder", "custom/builder-x"], h.ctx);
+      const out = await runCommand(["begin", "STA-176"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("claimed STA-176 → Build+In progress (slot 0)");
-      expect(out.text).toContain("workspace ws-1 opened");
+      expect(out.text).toContain("build worker builder-sta-176");
+      expect(out.text).toContain("Todo → Build");
+      expect(out.text).toContain("result →");
       const issue = h.world.issues[0]!;
       expect(issue.stateId).toBe(BUILD);
       expect(issue.labelIds).toEqual([IN_PROGRESS]);
@@ -209,44 +222,55 @@ describe("start", () => {
         ["worktree", "list", "--porcelain"],
         ["rev-parse", "--verify", "refs/heads/feature/sta-176"],
         ["worktree", "add", "-b", "feature/sta-176", wt.path, "main"],
+        ["rev-parse", "HEAD"],
       ]);
-      expect(h.workspaces.tokensFor("STA-176")).toMatchObject({
-        ticket: "STA-176",
-        builder: "custom/builder-x",
-        status: "build",
-        progress: "in_progress",
-      });
-      // The run freeze compacts to three JSON profile tokens, so the claim
-      // report stays within Herdr's 16-token cap (six claim tokens + three).
+      expect(h.workspaces.tokensFor("STA-176")).toMatchObject({ ticket: "STA-176" });
+      // The run freeze compacts to three JSON profile tokens.
       const frozen = h.workspaces.tokensFor("STA-176");
       expect(JSON.parse(frozen["profile_builder"]!)).toMatchObject({ harness: "opencode" });
       expect(JSON.parse(frozen["profile_reviewer"]!)).toMatchObject({ harness: "claude", effort: "high" });
       expect(JSON.parse(frozen["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
-      const claimReport = h.workspaces.calls.find((c) => c.method === "workspace.report_metadata");
-      expect(Object.keys((claimReport?.params as { tokens: Record<string, string> }).tokens)).toHaveLength(9);
-      expect(h.workspaces.tokensFor("STA-176")).not.toHaveProperty("commander");
+      // The Build worker runs the unified builder profile (opencode), never
+      // a resident commander.
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({
-        kind: "codex",
-        name: "commander-sta-176",
-        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-      });
-      const inbox = h.workspaces.promptsFor("commander-sta-176");
+      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-176" });
+      expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
+      const inbox = h.workspaces.promptsFor("builder-sta-176");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("STA-176");
       expect(inbox[0]).toContain("Dispatch commands");
-      expect(inbox[0]).toContain("https://linear.app/starcoder/issue/STA-176");
-      expect(inbox[0]).toContain(
-        `Workspace: a git worktree at ${ticketWorktree(h.repoRoot, "STA-176").path} on branch feature/sta-176`,
-      );
-      expect(inbox[0]).toContain("custom/builder-x");
-      expect(inbox[0]).toContain("`igniter state --json`");
+      expect(inbox[0]).toContain(wt.path);
+      expect(inbox[0]).toContain("result.md");
+      expect(inbox[0]).toContain("Do not run any `igniter` command");
+      expect(inbox[0]).toContain("do not call Linear directly or through MCP");
+      expect(inbox[0]).toContain("do not publish Linear receipts");
       expect(inbox[0]).not.toContain("LINEAR_API_KEY");
       expect(inbox[0]).not.toContain("GraphQL");
+      expect(inbox[0]).not.toContain("`igniter state --json`");
+      expect(inbox[0]).not.toContain("`igniter submit");
       expect(h.lines).toEqual([
-        "STA-176 claimed: Todo → Build (slot 0)",
-        "STA-176 workspace opened (ws-1) commander=codex builder=custom/builder-x",
+        "STA-176 started build worker builder-sta-176 in ws-1 (Todo → Build)",
       ]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("begin takes no stage or builder flag: the stage derives from Linear", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-176", stateId: TODO, priority: 1, description: CRITERIA, title: "Dispatch commands", labelIds: [PENDING] });
+      for (const argv of [
+        ["begin", "STA-176", "--builder", "custom/builder-x"],
+        ["begin", "STA-176", "build"],
+        ["begin", "STA-176", "--stage", "build"],
+      ]) {
+        const out = await runCommand(argv, h.ctx);
+        expect(out.ok).toBe(false);
+        expect(out.text).toContain("usage: igniter begin");
+      }
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
     } finally {
       h.stop();
     }
@@ -257,14 +281,14 @@ describe("start", () => {
     try {
       addIssue(h.world, { identifier: "STA-9", stateId: DONE, priority: 1, description: CRITERIA });
       addIssue(h.world, { identifier: "STA-10", stateId: CANCELED, priority: 1, description: CRITERIA });
-      const done = await runCommand(["start", "STA-9"], h.ctx);
+      const done = await runCommand(["begin", "STA-9"], h.ctx);
       expect(done).toMatchObject({ ok: false });
       expect(done.text).toContain("ticket is Done");
-      const canceled = await runCommand(["start", "STA-10"], h.ctx);
+      const canceled = await runCommand(["begin", "STA-10"], h.ctx);
       expect(canceled.text).toContain("ticket is Canceled");
       expect(h.lines).toEqual([
-        "STA-9 start refused: ticket is Done",
-        "STA-10 start refused: ticket is Canceled",
+        "STA-9 begin refused: ticket is Done",
+        "STA-10 begin refused: ticket is Canceled",
       ]);
       expect(h.workspaces.workspaces).toHaveLength(0);
     } finally {
@@ -272,88 +296,82 @@ describe("start", () => {
     }
   });
 
-  test("the per-ticket --agent override is gone: start takes no agent flag", async () => {
+  test("the per-ticket --agent override is gone: begin takes no agent flag", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-1", "--agent", "hal"], h.ctx);
+      const out = await runCommand(["begin", "STA-1", "--agent", "hal"], h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("usage: igniter start");
+      expect(out.text).toContain("usage: igniter begin");
       expect(h.workspaces.workspaces).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("start defaults to the configured Commander profile, not claude", async () => {
+  test("begin runs the Build worker on the unified builder profile", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("commander=codex");
+      expect(out.text).toContain("builder-sta-1");
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({
-        kind: "codex",
-        name: "commander-sta-1",
-        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-      });
-      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("commander");
+      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-1" });
+      expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
     } finally {
       h.stop();
     }
   });
 
-  test("a claim refuses an unknown Commander harness with the known kinds", async () => {
+  test("a begin refuses an unknown stage harness with the known kinds", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { commander: { harness: "hal" } },
+        agents: { builder: { harness: "hal" } },
       });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain('unknown agent kind "hal"');
-      expect(out.text).toContain("codex");
-      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(out.text).toContain('"hal"');
+      expect(h.workspaces.agents).toHaveLength(0);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
     } finally {
       h.stop();
     }
   });
 
-  test("a claim refuses a stage effort its harness cannot express before opening anything", async () => {
+  test("a begin refuses a stage effort its harness cannot express before moving Linear", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { deliverer: { effort: "high" } },
+        agents: { builder: { effort: "high" } },
       });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain('agents."deliverer"');
       expect(out.text).toContain('unsupported effort "high" for harness "opencode"');
-      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.workspaces.agents).toHaveLength(0);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
       expect(h.world.issues[0]!.comments).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("a rebuild over a live workspace keeps the run's recorded profiles", async () => {
+  test("a retry over a live workspace keeps the run's recorded profiles", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       // The run recorded opencode profiles at claim time; the configuration
-      // drifted to gemini since, and the Commander is gone.
+      // drifted since. The retry must still launch the recorded profile.
       h.workspaces.seedWorkspace("STA-7", {
         ticket: "STA-7",
-        builder: "custom/builder-x",
         profile_builder: JSON.stringify({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
         profile_reviewer: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
       }, { commander: false });
@@ -365,13 +383,14 @@ describe("start", () => {
           reviewer: { harness: "opencode", model: "new/reviewer" },
         },
       });
-      const out = await runCommand(["start", "STA-7"], h.ctx);
+      const out = await runCommand(["begin", "STA-7"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("finished in existing workspace");
-      const tokens = h.workspaces.tokensFor("STA-7");
-      expect(JSON.parse(tokens["profile_builder"]!)).toMatchObject({ harness: "opencode" });
-      expect(JSON.parse(tokens["profile_reviewer"]!)).toMatchObject({ model: "claude-sonnet-5" });
-      expect(tokens["builder"]).toBe("custom/builder-x");
+      expect(out.text).toContain("builder-sta-7");
+      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
+      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-7" });
+      const inbox = h.workspaces.promptsFor("builder-sta-7");
+      expect(inbox[0]).toContain("harness `opencode`");
+      expect(inbox[0]).not.toContain("new/builder");
     } finally {
       h.stop();
     }
@@ -381,7 +400,7 @@ describe("start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-3", stateId: TODO, priority: 1, description: "nothing", labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-3"], h.ctx);
+      const out = await runCommand(["begin", "STA-3"], h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("acceptance-criteria");
       expect(h.world.issues[0]!.stateId).toBe(TODO);
@@ -391,45 +410,48 @@ describe("start", () => {
     }
   });
 
-  test("an already-running ticket is refused; a Build one without workspace is adopted", async () => {
+  test("an already-running ticket is refused; a Build+Pending one starts its worker", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-4", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-      h.workspaces.seedWorkspace("STA-4", { ticket: "STA-4", status: "build", progress: "in_progress" });
-      const refused = await runCommand(["start", "STA-4"], h.ctx);
+      h.workspaces.seedWorkspace("STA-4", { ticket: "STA-4" });
+      h.workspaces.seedAgent("STA-4", "builder-sta-4");
+      const refused = await runCommand(["begin", "STA-4"], h.ctx);
       expect(refused).toMatchObject({ ok: false });
       expect(refused.text).toContain("already running");
-      expect(h.lines).toEqual(["STA-4 start refused: already running"]);
+      expect(h.lines).toEqual(["STA-4 begin refused: already running"]);
 
       addIssue(h.world, { identifier: "STA-5", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const adopted = await runCommand(["start", "STA-5"], h.ctx);
-      expect(adopted.ok).toBe(true);
-      expect(adopted.text).toContain("adopted STA-5");
-      expect(h.workspaces.tokensFor("STA-5")).toMatchObject({ ticket: "STA-5", status: "build", progress: "pending" });
+      const started = await runCommand(["begin", "STA-5"], h.ctx);
+      expect(started.ok).toBe(true);
+      expect(started.text).toContain("builder-sta-5");
+      expect(h.world.issues[1]!.stateId).toBe(BUILD);
+      expect(h.world.issues[1]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }
   });
 
-  test("a Review orphan is adopted with Linear kept; a half-written Todo claim is finished", async () => {
+  test("a Review+Pending ticket starts the Acceptance worker; Linear moves to In progress", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-6", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-      const adopted = await runCommand(["start", "STA-6"], h.ctx);
-      expect(adopted.ok).toBe(true);
-      expect(adopted.text).toContain("at review+in_progress");
-      expect(adopted.text).toContain("Linear kept");
+      addIssue(h.world, { identifier: "STA-6", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["begin", "STA-6"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("reviewer-sta-6");
+      expect(out.text).toContain("review+pending → review+in_progress");
       expect(h.world.issues[0]!.stateId).toBe(REVIEW);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
-      expect(h.workspaces.tokensFor("STA-6")).toMatchObject({ status: "review", progress: "in_progress" });
+      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
+      expect(started?.params).toMatchObject({ kind: "claude", name: "reviewer-sta-6" });
 
       // Half-written claim: workspace open, Linear still Todo+Pending.
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.workspaces.seedWorkspace("STA-7", { ticket: "STA-7", commander: "claude", builder: "b" });
+      h.workspaces.seedWorkspace("STA-7", { ticket: "STA-7" }, { commander: false });
       const before = h.workspaces.workspaces.length;
-      const finished = await runCommand(["start", "STA-7"], h.ctx);
+      const finished = await runCommand(["begin", "STA-7"], h.ctx);
       expect(finished.ok).toBe(true);
-      expect(finished.text).toContain("finished in existing workspace");
+      expect(finished.text).toContain("builder-sta-7");
       expect(h.workspaces.workspaces.length).toBe(before);
       expect(h.world.issues[1]!.stateId).toBe(BUILD);
       expect(h.world.issues[1]!.labelIds).toEqual([IN_PROGRESS]);
@@ -438,20 +460,16 @@ describe("start", () => {
     }
   });
 
-  test("start rebuilds a missing Commander before finishing a half-written Todo claim", async () => {
+  test("begin reuses the existing workspace for a half-written Todo claim", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.workspaces.seedWorkspace(
-        "STA-7",
-        { ticket: "STA-7", commander: "claude", builder: "b" },
-        { commander: false },
-      );
+      h.workspaces.seedWorkspace("STA-7", { ticket: "STA-7" }, { commander: false });
       const before = h.workspaces.workspaces.length;
-      const out = await runCommand(["start", "STA-7"], h.ctx);
+      const out = await runCommand(["begin", "STA-7"], h.ctx);
       expect(out.ok).toBe(true);
       expect(h.workspaces.workspaces.length).toBe(before);
-      expect(h.workspaces.promptsFor("commander-sta-7")).toHaveLength(1);
+      expect(h.workspaces.promptsFor("builder-sta-7")).toHaveLength(1);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
@@ -459,36 +477,121 @@ describe("start", () => {
     }
   });
 
-  test("a mid-way sink failure reports the workspace id", async () => {
+  test("a mid-way worker failure reports the workspace id and keeps Pending", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.workspaces.failMethods.add("agent.start");
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("(workspace ws-1)");
-      expect(h.lines).toContain("STA-1 handoff failed: fake herdr exploded (workspace ws-1)");
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
     } finally {
       h.stop();
     }
   });
 
-  test("a Codex provider/model mismatch fails before any Herdr creation or start", async () => {
+  test("a stage profile mismatch fails before moving Linear", async () => {
     const h = await harness();
     try {
-      const config = parseDispatchConfig({
+      h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { commander: { model: "openai/gpt-5.6-sol" } },
+        agents: { builder: { harness: "codex", model: "openai/gpt-5.6-sol" } },
       });
-      const sink = createWorkspaceSink({ workspaces: h.workspaces, config, repoRoot: h.repoRoot, runGit: h.git });
-      await expect(
-        sink({ id: "id-1", identifier: "STA-1", title: "Mismatch", host: "h", slot: 0 }),
-      ).rejects.toThrow("provider/model ids belong to OpenCode");
-      expect(h.workspaces.calls.filter((c) => c.method === "workspace.create")).toHaveLength(0);
-      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
-      expect(h.workspaces.workspaces).toHaveLength(0);
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("provider/model ids belong to OpenCode");
       expect(h.workspaces.agents).toHaveLength(0);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+    } finally {
+      h.stop();
+    }
+  });
+});
+
+describe("start (singleton Commander)", () => {
+  test("start boots the one Commander with the patrol order", async () => {
+    const h = await harness();
+    try {
+      const out = await runCommand(["start"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("commander started in ws-1");
+      expect(out.text).toContain("patrolling");
+      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
+      expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
+      const inbox = h.workspaces.promptsFor("commander");
+      expect(inbox).toHaveLength(1);
+      expect(inbox[0]).toContain("src/commander/global.md");
+      expect(inbox[0]).toContain("igniter");
+      expect(inbox[0]).not.toContain("commander-sta-");
+      expect(h.workspaces.workspaces).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("start STA-X reuses the singleton and assigns the ticket", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
+      const first = await runCommand(["start", "STA-1"], h.ctx);
+      expect(first.ok).toBe(true);
+      expect(first.text).toContain("assigned STA-1");
+      const second = await runCommand(["start", "STA-2"], h.ctx);
+      expect(second.ok).toBe(true);
+      expect(second.text).toContain("assigned STA-2");
+      // One workspace, one agent, never commander-<ticket>.
+      expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a repeated identical start reuses without a second order", async () => {
+    const h = await harness();
+    try {
+      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
+      const again = await runCommand(["start"], h.ctx);
+      expect(again.ok).toBe(true);
+      expect(again.text).toContain("reused without a second order");
+      expect(h.workspaces.promptsFor("commander")).toHaveLength(1);
+      expect(h.workspaces.agents).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a lost Commander agent is rebuilt on takeover", async () => {
+    const h = await harness();
+    try {
+      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
+      h.workspaces.agents = [];
+      const out = await runCommand(["start"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("commander started in ws-1");
+      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
+      expect(h.workspaces.promptsFor("commander")).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("start refuses unknown tickets and finished ones", async () => {
+    const h = await harness();
+    try {
+      expect((await runCommand(["start", "STA-404"], h.ctx)).ok).toBe(false);
+      addIssue(h.world, { identifier: "STA-9", stateId: DONE, priority: 1, description: CRITERIA });
+      const done = await runCommand(["start", "STA-9"], h.ctx);
+      expect(done.ok).toBe(false);
+      expect(done.text).toContain("ticket is Done");
+      expect(h.workspaces.workspaces).toHaveLength(0);
     } finally {
       h.stop();
     }
@@ -496,17 +599,17 @@ describe("start", () => {
 });
 
 describe("pause and resume", () => {
-  test("pause blocks with a reason, records paused, and prompts the commander", async () => {
+  test("pause blocks with a reason, records paused, and prompts the stage worker", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["start", "STA-1"], h.ctx);
+      await runCommand(["begin", "STA-1"], h.ctx);
       const out = await runCommand(["pause", "STA-1"], h.ctx);
       expect(out).toMatchObject({ ok: true });
       expect(out.text).toContain("paused STA-1");
       expect(h.world.issues[0]!.labelIds).toEqual([BLOCKED]);
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ paused: "1" });
-      expect(h.workspaces.promptsFor("commander-sta-1").at(-1)).toContain("the owner paused this ticket");
+      expect(h.workspaces.promptsFor("builder-sta-1").at(-1)).toContain("the owner paused this ticket");
       expect(h.lines).toContain("STA-1 paused by command");
     } finally {
       h.stop();
@@ -525,19 +628,19 @@ describe("pause and resume", () => {
     }
   });
 
-  test("resume clears paused and prompts the commander to continue", async () => {
+  test("resume clears paused and points at begin for the worker", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["start", "STA-1"], h.ctx);
+      await runCommand(["begin", "STA-1"], h.ctx);
       await runCommand(["pause", "STA-1"], h.ctx);
       const out = await runCommand(["resume", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("resumed STA-1");
+      expect(out.text).toContain("igniter begin STA-1");
       expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
       const tokens = h.workspaces.tokensFor("STA-1");
       expect(tokens).not.toHaveProperty("paused");
-      expect(h.workspaces.promptsFor("commander-sta-1").at(-1)).toContain("igniter state --json");
       expect(h.lines).toContain("STA-1 resumed by command");
     } finally {
       h.stop();
@@ -560,179 +663,99 @@ describe("pause and resume", () => {
     }
   });
 
-  test("a resume with an untranslatable Commander effort fails before launch", async () => {
+  test("resume never launches agents, even with a bad commander profile", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
-      h.workspaces.seedWorkspace("STA-1", {
-        ticket: "STA-1",
-        status: "build",
-        progress: "in_progress",
-      }, { commander: false });
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost worker", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
         agents: { commander: { effort: "turbo" } },
       });
       const out = await runCommand(["resume", "STA-1"], h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain('unsupported effort "turbo" for harness "codex"');
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("igniter begin STA-1");
       expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("resume without a commander starts a new one that continues from metadata", async () => {
+  test("resume on a blocked ticket unblocks and points at begin", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Gone commander", labelIds: [BLOCKED] });
-      h.workspaces.seedWorkspace("STA-1", {
-        ticket: "STA-1",
-        status: "build",
-        progress: "blocked",
-        commander: "codex",
-        paused: "1",
-      }, { commander: false });
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Blocked", labelIds: [BLOCKED] });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", paused: "1" }, { commander: false });
       const out = await runCommand(["resume", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("new commander commander-sta-1 started");
-      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({
-        kind: "codex",
-        name: "commander-sta-1",
-        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-      });
-      const inbox = h.workspaces.promptsFor("commander-sta-1");
-      expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("This is a resumed run.");
-      expect(inbox[0]).toContain("do not restart");
+      expect(out.text).toContain("igniter begin STA-1");
+      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("a blocked resume unblocks, then opens a fresh tab when every pane is busy", async () => {
+  test("a blocked resume unblocks without opening tabs or agents", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Blocked orphan", labelIds: [BLOCKED] });
-      h.workspaces.seedWorkspace("STA-1", {
-        ticket: "STA-1",
-        status: "build",
-        progress: "blocked",
-        commander: "codex",
-        paused: "1",
-      }, { commander: false });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", paused: "1" }, { commander: false });
       h.workspaces.seedAgent("STA-1", "builder-sta-1");
       const out = await runCommand(["resume", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("new commander commander-sta-1 started");
       expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
-      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
-      const starts = h.workspaces.calls.filter((c) => c.method === "agent.start");
-      expect(starts).toHaveLength(1);
-      expect(starts[0]!.params).toMatchObject({
-        kind: "codex",
-        name: "commander-sta-1",
-        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-      });
-      expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
+      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(0);
+      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("an active build ticket with a lost commander resumes even when slots look full", async () => {
+  test("an active build ticket with a live worker is already running", async () => {
     const h = await harness(1);
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
-      h.workspaces.seedWorkspace("STA-1", {
-        ticket: "STA-1",
-        status: "build",
-        progress: "in_progress",
-        commander: "claude",
-        checkpoint: HEAD,
-      }, { commander: false });
-      // The live shape: the Commander tab is closed but the Builder tab still
-      // occupies the workspace's only pane.
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Live worker", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
       h.workspaces.seedAgent("STA-1", "builder-sta-1");
       const out = await runCommand(["resume", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("new commander commander-sta-1 started");
-      // The ticket's own slot never counts against its resume: max 1 with
-      // only this ticket holding a slot still succeeds.
+      expect(out.text).toContain("already running");
       const issue = h.world.issues[0]!;
       expect(issue.stateId).toBe(BUILD);
       expect(issue.labelIds).toEqual([IN_PROGRESS]);
       expect(issue.comments).toHaveLength(0);
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ checkpoint: HEAD });
-      expect(h.workspaces.calls.filter((c) => c.method === "workspace.report_metadata")).toHaveLength(0);
-      // The occupied pane is unusable, so resume opens a fresh tab and starts
-      // the Commander on its pane instead of failing like a duplicate claim.
-      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
-      const starts = h.workspaces.calls.filter((c) => c.method === "agent.start");
-      expect(starts).toHaveLength(1);
-      const builderPane = h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.paneId;
-      expect((starts[0]!.params as Record<string, unknown>)["paneId"]).not.toBe(builderPane);
-      const inbox = h.workspaces.promptsFor("commander-sta-1");
-      expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("This is a resumed run.");
-      expect(inbox[0]).toContain("`igniter state --json`");
-      expect(inbox[0]).toContain("do not restart");
     } finally {
       h.stop();
     }
   });
 
-  test("a review ticket with a lost commander resumes from its current state", async () => {
+  test("a review ticket with a live worker is already running", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Review orphan", labelIds: [IN_PROGRESS] });
-      h.workspaces.seedWorkspace("STA-2", {
-        ticket: "STA-2",
-        status: "review",
-        progress: "in_progress",
-        commander: "claude",
-        checkpoint: HEAD,
-        receipt_kind: "build",
-        receipt_id: "comment-1",
-        submission: "sub-1",
-      }, { commander: false });
-      // The Reviewer tab still occupies the only pane, as on a live ticket.
+      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Review live", labelIds: [IN_PROGRESS] });
+      h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2" }, { commander: false });
       h.workspaces.seedAgent("STA-2", "reviewer-sta-2", "reviewer");
       const out = await runCommand(["resume", "STA-2"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("new commander commander-sta-2 started");
-      expect(out.text).toContain("review+in_progress");
-      const issue = h.world.issues[0]!;
-      expect(issue.stateId).toBe(REVIEW);
-      expect(issue.labelIds).toEqual([IN_PROGRESS]);
-      expect(issue.comments).toHaveLength(0);
-      expect(h.workspaces.tokensFor("STA-2")).toMatchObject({ checkpoint: HEAD, receipt_kind: "build" });
-      expect(h.workspaces.calls.filter((c) => c.method === "workspace.report_metadata")).toHaveLength(0);
-      expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
-      const inbox = h.workspaces.promptsFor("commander-sta-2");
-      expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("continue from status review progress in_progress");
+      expect(out.text).toContain("already running");
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.world.issues[0]!.comments).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("a deliver ticket with a lost commander resumes from its current state", async () => {
+  test("a deliver ticket with no worker points at begin", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-3", stateId: "st-deliver", priority: 1, description: CRITERIA, title: "Deliver orphan", labelIds: [PENDING] });
-      h.workspaces.seedWorkspace("STA-3", {
-        ticket: "STA-3",
-        status: "deliver",
-        progress: "pending",
-        commander: "codex",
-      }, { commander: false });
+      h.workspaces.seedWorkspace("STA-3", { ticket: "STA-3" }, { commander: false });
       const out = await runCommand(["resume", "STA-3"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("new commander commander-sta-3 started");
-      expect(out.text).toContain("deliver+pending");
+      expect(out.text).toContain("igniter begin STA-3");
       const issue = h.world.issues[0]!;
       expect(issue.stateId).toBe("st-deliver");
       expect(issue.labelIds).toEqual([PENDING]);
@@ -776,13 +799,13 @@ describe("pause and resume", () => {
     }
   });
 
-  test("resume without a workspace points at start", async () => {
+  test("resume without a workspace points at begin", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       const out = await runCommand(["resume", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("no workspace for STA-1; use `igniter start STA-1`");
+      expect(out.text).toContain("no workspace for STA-1; use `igniter begin STA-1`");
     } finally {
       h.stop();
     }
@@ -807,7 +830,7 @@ describe("fail", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["start", "STA-1"], h.ctx);
+      await runCommand(["begin", "STA-1"], h.ctx);
       const out = await runCommand(["fail", "STA-1", "--reason", "builder wedged"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("failed STA-1: builder wedged");
@@ -822,8 +845,7 @@ describe("fail", () => {
       expect(comment.body).toContain("builder wedged");
       expect(h.workspaces.workspaces[0]!.closed).toBe(true);
       expect(h.lines).toEqual([
-        "STA-1 claimed: Todo → Build (slot 0)",
-        "STA-1 workspace opened (ws-1) commander=codex builder=opencode/muse-spark-1.3-contributor-free",
+        "STA-1 started build worker builder-sta-1 in ws-1 (Todo → Build)",
         "STA-1 failed: builder wedged",
         "STA-1 workspace closed (ws-1)",
       ]);
@@ -877,16 +899,16 @@ describe("fail", () => {
 });
 
 describe("restart", () => {
-  test("writes the new builder and prompts the commander", async () => {
+  test("writes the new builder and prompts the stage worker", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["start", "STA-1"], h.ctx);
+      await runCommand(["begin", "STA-1"], h.ctx);
       const out = await runCommand(["restart", "STA-1", "--builder", "new/model"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("restarted STA-1 with builder new/model");
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ builder: "new/model" });
-      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox.at(-1)).toContain("restart the Builder with model new/model");
       expect(inbox.at(-1)).toContain("read `git diff` first");
       expect(h.lines).toContain("STA-1 restarted with builder new/model by command");
@@ -895,14 +917,14 @@ describe("restart", () => {
     }
   });
 
-  test("without a live commander says to resume first", async () => {
+  test("without a live stage worker says to begin first", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
       const out = await runCommand(["restart", "STA-1", "--builder", "new/model"], h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("use `igniter resume STA-1` first");
+      expect(out.text).toContain("use `igniter begin STA-1` first");
     } finally {
       h.stop();
     }
@@ -1046,59 +1068,48 @@ describe("work order", () => {
     expect(bundled).toContain("Builder fallback: harness `codex`; model `gpt-5.6-sol`; effort `high`");
   });
 
-  test("a resume reuses the recorded stage profiles when the configuration drifts", async () => {
+  test("a begin reuses the recorded stage profiles when the configuration drifts", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Lost commander", labelIds: [IN_PROGRESS] });
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Drifted config", labelIds: [PENDING] });
       // The run recorded the bundled profiles at claim time.
       const recorded = recordStageProfiles(h.ctx.resolved.config);
-      h.workspaces.seedWorkspace("STA-1", {
-        ticket: "STA-1",
-        status: "build",
-        progress: "in_progress",
-        checkpoint: HEAD,
-        ...recorded,
-      }, { commander: false });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", ...recorded }, { commander: false });
       // The configuration drifts mid-run: new harnesses, models, efforts.
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
         agents: {
-          commander: { harness: "claude", model: "new/commander", effort: "max" },
           builder: { harness: "gemini", model: "new/builder", effort: "low" },
           reviewer: { harness: "opencode", model: "new/reviewer" },
           deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
         },
       });
-      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      // The rebuilt Commander itself follows the live configuration…
+      // The worker still launches the run's recorded stage profile.
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "claude", name: "commander-sta-1", args: ["--model", "new/commander", "--effort", "max"] });
-      // …but its work order still carries the run's recorded stage profiles.
-      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-1" });
+      const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("harness `opencode`; model `opencode/muse-spark-1.3-contributor-free`");
-      expect(inbox[0]).toContain("harness `claude`; model `claude-sonnet-5`; effort `high`");
       expect(inbox[0]).not.toContain("new/builder");
-      expect(inbox[0]).not.toContain("new/reviewer");
-      expect(inbox[0]).not.toContain("new/deliverer");
     } finally {
       h.stop();
     }
   });
 
-  test("a worktree failure aborts the start before any workspace opens", async () => {
+  test("a worktree failure aborts the begin before any workspace opens", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.git.failOn = ["worktree"];
       h.git.failMessage = "fatal: not a git repository";
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("not a git repository");
       expect(h.workspaces.workspaces).toHaveLength(0);
-      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 refused:"));
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 begin failed:"));
     } finally {
       h.stop();
     }
@@ -1147,11 +1158,11 @@ describe("worker scratch", () => {
     expect(order).toContain("escalate to the owner");
   });
 
-  test("claim creates every worker scratch and records it in workspace metadata", async () => {
+  test("begin creates every worker scratch and records it in workspace metadata", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-8", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-8"], h.ctx);
+      const out = await runCommand(["begin", "STA-8"], h.ctx);
       expect(out.ok).toBe(true);
       const scratch = scratchPathsFor(h.repoRoot, "STA-8");
       const { existsSync } = await import("node:fs");
@@ -1163,8 +1174,9 @@ describe("worker scratch", () => {
         scratch_reviewer: scratch.reviewer,
         scratch_deliverer: scratch.deliverer,
       });
-      const inbox = h.workspaces.promptsFor("commander-sta-8");
+      const inbox = h.workspaces.promptsFor("builder-sta-8");
       expect(inbox[0]).toContain(scratch.builder);
+      expect(inbox[0]).toContain("result.md");
     } finally {
       h.stop();
     }

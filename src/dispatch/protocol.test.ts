@@ -174,7 +174,7 @@ function deliverPayload(head = HEAD) {
 /** Claim a ticket through `start` and return its workspace id. */
 async function claim(h: Harness, identifier: string): Promise<string> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-  const out = await runCommand(["start", identifier], h.ctx);
+  const out = await runCommand(["begin", identifier], h.ctx);
   expect(out.ok).toBe(true);
   return workspaceIdOf(h, identifier);
 }
@@ -268,21 +268,21 @@ describe("claim", () => {
       expect(issue.stateId).toBe(BUILD);
       expect(issue.labelIds).toEqual([IN_PROGRESS]);
       const workspace = h.workspaces.workspaces.find((w) => w.workspaceId === wsId)!;
-      expect(workspace.tokens).toMatchObject({
-        ticket: "STA-1",
-        status: "build",
-        progress: "in_progress",
-      });
+      // Linear is the authority; workspace metadata carries identity plus
+      // the run's frozen profiles, never the protocol transition.
+      expect(workspace.tokens).toMatchObject({ ticket: "STA-1" });
       expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ harness: "opencode" });
       expect(JSON.parse(workspace.tokens["profile_reviewer"]!)).toMatchObject({ effort: "high" });
       expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
       expect(workspace.tokens).not.toHaveProperty("commander");
+      expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
+      expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();
       // No secrets ride into the workspace.
       const created = h.workspaces.calls.find((c) => c.method === "workspace.create");
       expect(created?.params).toMatchObject({ label: "STA-1", env: {} });
       expect(JSON.stringify(created?.params)).not.toContain("test-key");
       expect(JSON.stringify(created?.params)).not.toContain("IGNITER_TICKET");
-      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 claimed: Todo → Build (slot 0)"));
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 started build worker builder-sta-1 in ws-1 (Todo → Build)"));
     } finally {
       h.stop();
     }
@@ -292,7 +292,7 @@ describe("claim", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: "plans only", labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       expect(issueOf(h, "STA-1").stateId).toBe(TODO);
       expect(issueOf(h, "STA-1").comments.some((c) => c.body.includes("<!-- igniter:missing-criteria -->"))).toBe(true);
@@ -302,14 +302,18 @@ describe("claim", () => {
     }
   });
 
-  test("claim refuses without Pending and outside Todo", async () => {
+  test("claim refuses without Pending; an In progress orphan recovers its worker with Linear kept", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(false);
-      expect((await runCommand(["start", "STA-2"], h.ctx)).ok).toBe(true); // adoption, not claim
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      const recovered = await runCommand(["begin", "STA-2"], h.ctx);
+      expect(recovered.ok).toBe(true); // recovery, not claim
+      expect(recovered.text).toContain("Linear kept");
       expect(issueOf(h, "STA-1").stateId).toBe(TODO);
+      expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
+      expect(issueOf(h, "STA-2").labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }
@@ -320,13 +324,13 @@ describe("claim", () => {
     try {
       await claim(h, "STA-1");
       addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const full = await runCommand(["start", "STA-2"], h.ctx);
+      const full = await runCommand(["begin", "STA-2"], h.ctx);
       expect(full.ok).toBe(false);
       expect(full.text).toContain("max_running");
       // Blocking the holder frees its slot for the waiter.
       expect((await wsCmd(h, "STA-1", ["block", "--reason", "waiting on vendor"])).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
-      expect((await runCommand(["start", "STA-2"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["begin", "STA-2"], h.ctx)).ok).toBe(true);
       expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
     } finally {
       h.stop();
@@ -872,7 +876,7 @@ describe("dispatch commands", () => {
       expect((await runCommand(["pause", "STA-1"], h.ctx)).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ paused: "1", block_reason: "owner pause" });
-      const inbox = h.workspaces.promptsFor("commander-sta-1");
+      const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox.at(-1)).toContain("the owner paused this ticket");
       expect((await runCommand(["resume", "STA-1"], h.ctx)).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
@@ -882,7 +886,7 @@ describe("dispatch commands", () => {
     }
   });
 
-  test("resume on an active ticket with a live commander reports already running", async () => {
+  test("resume on an active ticket with a live worker reports already running", async () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");

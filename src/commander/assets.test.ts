@@ -22,7 +22,7 @@ describe("commanderAssetPaths", () => {
     const { fileURLToPath } = await import("node:url");
     expect(selfDir).toBe(fileURLToPath(new URL(".", import.meta.url)));
     expect(paths.dir).toBe(selfDir);
-    for (const path of [paths.rules, paths.config, ...Object.values(paths.prompts)]) {
+    for (const path of [paths.rules, paths.config, paths.global, ...Object.values(paths.prompts)]) {
       expect(isAbsolute(path)).toBe(true);
       expect(path.startsWith(repoRoot)).toBe(false);
       expect(await Bun.file(path).exists()).toBe(true);
@@ -30,14 +30,16 @@ describe("commanderAssetPaths", () => {
     }
   });
 
-  test("names rules, defaults, and one prompt per stage", async () => {
+  test("names rules, defaults, global instructions, and one prompt per stage", async () => {
     const paths = commanderAssetPaths();
     expect(paths.rules.endsWith("rules.md")).toBe(true);
     expect(paths.config.endsWith("config.yaml")).toBe(true);
+    expect(paths.global.endsWith("global.md")).toBe(true);
     expect(paths.prompts.build.endsWith(join("stages", "build.md"))).toBe(true);
     expect(paths.prompts.review.endsWith(join("stages", "review.md"))).toBe(true);
     expect(paths.prompts.deliver.endsWith(join("stages", "deliver.md"))).toBe(true);
     expect(await Bun.file(paths.rules).text()).toStartWith("# Commander rules");
+    expect(await Bun.file(paths.global).text()).toStartWith("# Global Commander instructions");
     expect(await Bun.file(paths.prompts.build).text()).toStartWith("# Build agent");
     expect(await Bun.file(paths.prompts.review).text()).toStartWith("# Acceptance agent");
     expect(await Bun.file(paths.prompts.deliver).text()).toStartWith("# Deliver agent");
@@ -73,6 +75,7 @@ describe("assertCommanderAssets", () => {
     const dir = fixture({
       "rules.md": "# Commander rules\n",
       "config.yaml": "agents: {}\n",
+      "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
       "stages/review.md": "# Acceptance agent\n",
       "stages/deliver.md": "# Deliver agent\n",
@@ -81,10 +84,22 @@ describe("assertCommanderAssets", () => {
     expect(paths.rules).toBe(join(dir, "rules.md"));
   });
 
+  test("a missing global instructions file fails fast naming the absent asset", async () => {
+    const dir = fixture({
+      "rules.md": "# Commander rules\n",
+      "config.yaml": "agents: {}\n",
+      "stages/build.md": "# Build agent\n",
+      "stages/review.md": "# Acceptance agent\n",
+      "stages/deliver.md": "# Deliver agent\n",
+    });
+    await expect(assertCommanderAssets(dir)).rejects.toThrow(join(dir, "global.md"));
+  });
+
   test("a missing stage prompt fails fast naming the absent asset", async () => {
     const dir = fixture({
       "rules.md": "# Commander rules\n",
       "config.yaml": "agents: {}\n",
+      "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
       "stages/review.md": "# Acceptance agent\n",
     });
@@ -101,6 +116,7 @@ describe("assertCommanderAssets", () => {
     const dir = fixture({
       "rules.md": "# Commander rules\n",
       "config.yaml": "agents: {}\n",
+      "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
       "stages/review.md": "# Acceptance agent\n",
       "stages/deliver.md": "",

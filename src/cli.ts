@@ -83,9 +83,10 @@ async function serveCommand(): Promise<void> {
 
 /**
  * Dispatch commands run inside the serve process: forward argv over HTTP.
- * Workspace commands additionally forward the Herdr workspace id (never a
- * ticket: the server resolves it from igniter metadata) and the stdin
- * payload for `submit --input -`.
+ * Ticket-targeted commands (`begin <ticket>`, `submit <ticket> --input -`,
+ * `block`, `unblock`) run from the project workspace and carry no Herdr
+ * workspace id; only the legacy `state` and bare `begin` workspace commands
+ * forward it, plus the stdin payload for `submit <ticket> --input -`.
  */
 async function forwardCommand(argv: string[], options: CommandCallOptions = {}): Promise<void> {
   const config = await loadDispatchConfig(repoRoot());
@@ -143,8 +144,8 @@ function devCommand(): void {
   });
 }
 
-const DISPATCH_COMMANDS = ["status", "start", "reconcile", "pause", "resume", "fail", "restart", "answer"];
-const WORKSPACE_COMMANDS = ["state", "begin", "submit", "block", "unblock"];
+const DISPATCH_COMMANDS = ["status", "start", "begin", "reconcile", "pause", "resume", "fail", "restart", "answer", "submit", "block", "unblock"];
+const WORKSPACE_COMMANDS = ["state"];
 
 async function versionCommand(): Promise<void> {
   const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
@@ -163,35 +164,39 @@ try {
     devCommand();
   } else if (command !== undefined && DISPATCH_COMMANDS.includes(command)) {
     // Dispatch commands never run locally: they go through the one HTTP
-    // door to the serve process.
-    await forwardCommand(process.argv.slice(2));
+    // door to the serve process. `submit` carries its JSON on stdin. The
+    // legacy bare `begin` still forwards the workspace id when one is set.
+    const options: CommandCallOptions = {};
+    if (command === "submit") {
+      options.input = await readStdin();
+    }
+    if (command === "begin" && process.argv.length <= 3 && process.env["HERDR_WORKSPACE_ID"]) {
+      options.workspaceId = process.env["HERDR_WORKSPACE_ID"];
+    }
+    await forwardCommand(process.argv.slice(2), options);
   } else if (command !== undefined && WORKSPACE_COMMANDS.includes(command)) {
-    // Workspace commands are thin clients: the Herdr workspace id (never
-    // a ticket, never a key) rides along, and `submit --input -` carries
-    // its JSON on stdin.
+    // Legacy workspace commands are thin clients: the Herdr workspace id
+    // (never a ticket, never a key) rides along.
     if (process.env["HERDR_ENV"] !== "1" || !process.env["HERDR_WORKSPACE_ID"]) {
       console.error(`igniter ${command} runs inside a Herdr workspace only (HERDR_ENV=1, HERDR_WORKSPACE_ID set)`);
       process.exit(1);
     }
     const options: CommandCallOptions = { workspaceId: process.env["HERDR_WORKSPACE_ID"] };
-    if (command === "submit") {
-      options.input = await readStdin();
-    }
     await forwardCommand(process.argv.slice(2), options);
   } else {
-    console.error("usage: igniter <serve|dev|status|start|reconcile|pause|resume|fail|restart|answer|state|begin|submit|block|unblock> [--port N]");
+    console.error("usage: igniter <serve|dev|status|start|begin|reconcile|pause|resume|fail|restart|answer|submit|block|unblock|state> [--port N]");
     console.error("  serve [--port N]");
-    console.error("  status");
-    console.error("  start <ticket> [--builder <model>]");
+    console.error("  status [--json|<ticket> --json]");
+    console.error("  start [<ticket>]");
+    console.error("  begin <ticket>");
     console.error("  reconcile <ticket>");
     console.error("  pause <ticket> | resume <ticket>");
     console.error("  fail <ticket> --reason TEXT");
     console.error("  restart <ticket> --builder <model>");
     console.error("  answer <ticket> y|n");
+    console.error("  submit <ticket> --input -");
+    console.error("  block <ticket> --reason TEXT | unblock <ticket>");
     console.error("  state --json");
-    console.error("  begin");
-    console.error("  submit --input -");
-    console.error("  block --reason TEXT | unblock");
     console.error("  --version, -v");
     process.exit(1);
   }

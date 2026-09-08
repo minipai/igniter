@@ -682,7 +682,13 @@ export class Watcher {
         }
         await this.workspaces.reportMetadata(workspace.workspaceId, due.tokens);
         const commander = snapshot.agents.find((a) => a.name === commanderName(ticket));
-        if (!commander) continue; // Keep the wake-up; the next poll retries.
+        if (!commander) {
+          // No resident commander (STA-225): the mirror above is the whole
+          // convergence, and the external Global Commander observes it.
+          this.followUps.delete(ticket);
+          await this.decisions.record(ticket, `workspace mirror caught up after ${due.tokens["status"]}+${due.tokens["progress"]}; no commander to wake`);
+          continue;
+        }
         await this.workspaces.prompt(commander.name, due.wakeText);
         this.followUps.delete(ticket);
         await this.decisions.record(ticket, `workspace mirror caught up after ${due.tokens["status"]}+${due.tokens["progress"]}`);

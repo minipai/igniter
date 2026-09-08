@@ -133,14 +133,14 @@ describe("command-driven dispatch serve", () => {
     }
   });
 
-  test("start names and changes one ticket only", async () => {
+  test("begin names and changes one ticket only", async () => {
     const assembly = await assemble((world) => {
       for (const identifier of ["STA-1", "STA-2"]) {
         addIssue(world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       }
     });
     try {
-      const result = await post(assembly.handle.base, ["start", "STA-1"]);
+      const result = await post(assembly.handle.base, ["begin", "STA-1"]);
       expect(result).toMatchObject({ status: 200, ok: true });
       expect(assembly.fake.world.issues.find((issue) => issue.identifier === "STA-1")).toMatchObject({
         stateId: "st-build",

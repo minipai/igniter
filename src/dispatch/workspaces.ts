@@ -106,7 +106,7 @@ export interface WorkspaceListing {
   workspaces?: { tokens?: Record<string, string | null> }[];
 }
 
-const AGENT_NAME = /^(?:commander|builder|reviewer)-([a-z]{2,}-\d+)$/i;
+const AGENT_NAME = /^(?:commander|builder|reviewer|deliverer)-([a-z]{2,}-\d+)$/i;
 const TICKET_TOKEN = /^[A-Z]{2,}-\d+$/;
 
 /** Agent names are lowercase in Herdr; the ticket half reads uppercased. */
@@ -114,9 +114,58 @@ export function commanderName(identifier: string): string {
   return `commander-${identifier.toLowerCase()}`;
 }
 
-/** The Acceptance worker beside a ticket's Commander. */
+/**
+ * The one project-level Global Commander agent. Bare on purpose: it never
+ * matches the ticketed agent pattern, so it never pollutes the running set
+ * and `start` calls for any ticket always reuse this same agent. Never
+ * create `commander-<ticket>`.
+ */
+export function globalCommanderName(): string {
+  return "commander";
+}
+
+/** Label of the project-level Commander workspace. */
+export function commanderWorkspaceLabel(): string {
+  return "igniter-commander";
+}
+
+/** Metadata role stamped on the Commander workspace. */
+export const COMMANDER_WORKSPACE_ROLE = "global-commander";
+
+/** The Commander workspace for a project, by role token (label as fallback). */
+export function commanderWorkspaceFor(
+  snapshot: WorkspaceSnapshot,
+  project: string,
+): SnapshotWorkspace | undefined {
+  return snapshot.workspaces.find(
+    (w) =>
+      (w.tokens["role"] === COMMANDER_WORKSPACE_ROLE && w.tokens["project"] === project) ||
+      (w.label === commanderWorkspaceLabel() && (w.tokens["project"] ?? project) === project),
+  );
+}
+
+/** The Build worker for a ticket's current stage. */
+export function builderName(identifier: string): string {
+  return `builder-${identifier.toLowerCase()}`;
+}
+
+/** The Acceptance worker beside a ticket's stage. */
 export function reviewerName(identifier: string): string {
   return `reviewer-${identifier.toLowerCase()}`;
+}
+
+/** The Deliver worker for a ticket's current stage. */
+export function delivererName(identifier: string): string {
+  return `deliverer-${identifier.toLowerCase()}`;
+}
+
+export type StageWorkerStage = "build" | "review" | "deliver";
+
+/** The stage worker name for one stage: builder/reviewer/deliverer-<ticket>. */
+export function stageWorkerName(stage: StageWorkerStage, identifier: string): string {
+  if (stage === "build") return builderName(identifier);
+  if (stage === "review") return reviewerName(identifier);
+  return delivererName(identifier);
 }
 
 export function ticketFromAgentName(name: string): string | null {

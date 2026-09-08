@@ -50,14 +50,17 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).not.toContain("--opencode-allow");
   });
 
-  test("keeps every workspace command with the Commander", () => {
-    expect(commonRules).toContain("Only the Commander runs workspace commands.");
+  test("keeps every ticket command with the Global Commander", () => {
+    expect(commonRules).toContain("Only the Global Commander runs ticket commands");
+    expect(commonRules).toContain("There is no resident commander-ticket agent");
+    expect(commonRules).toContain("`igniter start [<ticket>]`");
     for (const command of [
-      "`igniter state --json`",
-      "`igniter begin`",
-      "`igniter submit --input -`",
-      "`igniter block --reason",
-      "`igniter unblock`",
+      "`igniter status <ticket> --json`",
+      "`igniter begin <ticket>`",
+      "`igniter submit <ticket> --input -`",
+      "`igniter block <ticket> --reason",
+      "`igniter unblock <ticket>`",
+      "`igniter reconcile <ticket>`",
     ]) {
       expect(commonRules).toContain(command);
     }
@@ -127,9 +130,9 @@ describe("Commander delivery protocol", () => {
 
   test("asks the owner only from Blocked", () => {
     expect(commonRules).toContain("Ask the owner only from Blocked");
-    expect(commonRules).toContain('`igniter block --reason "<what you need>"`');
+    expect(commonRules).toContain('`igniter block <ticket> --reason "<what you need>"`');
     expect(commonRules).toContain("Review + Blocked");
-    expect(commonRules).toContain("`igniter unblock`");
-    expect(commonRules).toContain("`igniter begin`");
+    expect(commonRules).toContain("`igniter unblock <ticket>`");
+    expect(commonRules).toContain("`igniter begin <ticket>`");
   });
 });

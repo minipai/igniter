@@ -395,28 +395,19 @@ describe("pollOnce", () => {
     }
   });
 
-  test("a half-written Todo claim rebuilds a missing Commander before moving Linear", async () => {
+  test("a half-written Todo claim finishes in its workspace without starting agents", async () => {
     const { fake, client, resolved } = await setup();
     try {
       addIssue(fake.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const workspaces = new FakeWorkspaces();
-      workspaces.seedWorkspace(
-        "STA-1",
-        { ticket: "STA-1", commander: "claude", builder: "b" },
-        { commander: false },
-      );
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
       const { watcher } = watch(client, resolved, { workspaces });
       await watcher.pollOnce();
       expect(workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-      expect(workspaces.promptsFor("commander-sta-1")).toHaveLength(1);
-      const start = workspaces.calls.find((call) => call.method === "agent.start");
-      // The rebuild follows the resolved Commander profile, not the stale
-      // per-ticket token: Codex with high effort by default.
-      expect(start?.params).toMatchObject({
-        kind: "codex",
-        name: "commander-sta-1",
-        args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-      });
+      // Igniter starts no agents: the singleton Commander launches stage
+      // workers itself with ticket-targeted `igniter begin`.
+      expect(workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+      expect(workspaces.agents).toHaveLength(0);
       expect(fake.world.issues[0]!.stateId).toBe(BUILD);
       expect(fake.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
@@ -424,17 +415,13 @@ describe("pollOnce", () => {
     }
   });
 
-  test("a failed Commander rebuild leaves a half-written claim at Todo+Pending", async () => {
+  test("a failed workspace write leaves a half-written claim at Todo+Pending", async () => {
     const { fake, client, resolved } = await setup();
     try {
       addIssue(fake.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const workspaces = new FakeWorkspaces();
-      workspaces.seedWorkspace(
-        "STA-1",
-        { ticket: "STA-1", commander: "claude", builder: "b" },
-        { commander: false },
-      );
-      workspaces.failMethods.add("agent.start");
+      workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
+      workspaces.failMethods.add("workspace.report_metadata");
       const { watcher, lines } = watch(client, resolved, { workspaces });
       await watcher.pollOnce();
       expect(fake.world.issues[0]!.stateId).toBe(TODO);

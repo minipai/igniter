@@ -217,32 +217,33 @@ describe("cli workspace commands", () => {
     }
   });
 
-  test("submit carries stdin to the server verbatim", async () => {
+  test("submit carries stdin to the server verbatim without a workspace id", async () => {
     const payload = JSON.stringify({ version: 1, summary: "done" });
     const fake = startFakeDispatch((seen) => {
       expect(seen.input).toBe(payload);
+      expect(seen.workspaceId).toBeUndefined();
       return { ok: true, text: "submitted STA-1" };
     });
     try {
-      const result = await runCliFull(["submit", "--input", "-"], {
+      const result = await runCliFull(["submit", "STA-1", "--input", "-"], {
         cwd: repoPointingAt(fake.port),
-        env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
+        env: outsideWorkspaceEnv(),
         stdin: payload,
       });
       expect(result.code).toBe(0);
       expect(result.stdout).toContain("submitted STA-1");
-      expect(fake.seen).toEqual([{ argv: ["submit", "--input", "-"], workspaceId: "ws-7", input: payload }]);
+      expect(fake.seen).toEqual([{ argv: ["submit", "STA-1", "--input", "-"], input: payload }]);
     } finally {
       fake.stop();
     }
   });
 
-  test("a refused workspace command exits 1 with the server text on stderr", async () => {
+  test("a refused ticket-targeted command exits 1 with the server text on stderr", async () => {
     const fake = startFakeDispatch(() => ({ ok: false, text: "nothing to submit" }));
     try {
-      const result = await runCliFull(["submit", "--input", "-"], {
+      const result = await runCliFull(["submit", "STA-1", "--input", "-"], {
         cwd: repoPointingAt(fake.port),
-        env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
+        env: outsideWorkspaceEnv(),
         stdin: JSON.stringify({ version: 1 }),
       });
       expect(result.code).toBe(1);
@@ -259,6 +260,14 @@ describe("cli command coverage", () => {
     try {
       const dir = repoPointingAt(fake.port);
       const cases: string[][] = [
+        ["status", "--json"],
+        ["status", "STA-1", "--json"],
+        ["start"],
+        ["start", "STA-1"],
+        ["begin", "STA-1"],
+        ["submit", "STA-1", "--input", "-"],
+        ["block", "STA-1", "--reason", "waiting"],
+        ["unblock", "STA-1"],
         ["reconcile", "STA-1"],
         ["pause", "STA-1"],
         ["resume", "STA-1"],
@@ -266,25 +275,29 @@ describe("cli command coverage", () => {
         ["restart", "STA-1", "--builder", "m"],
       ];
       for (const argv of cases) {
-        const result = await runCliFull(argv, { cwd: dir, env: outsideWorkspaceEnv() });
+        const result = await runCliFull(argv, {
+          cwd: dir,
+          env: outsideWorkspaceEnv(),
+          ...(argv[0] === "submit" ? { stdin: "{}" } : {}),
+        });
         expect(result.code).toBe(0);
         expect(result.stdout).toContain(argv.join(" "));
       }
       expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
+      expect(fake.seen.every((entry) => entry.workspaceId === undefined)).toBe(true);
     } finally {
       fake.stop();
     }
   });
 
-  test("every workspace command forwards the workspace id", async () => {
+  test("every legacy workspace command forwards the workspace id", async () => {
     const fake = startFakeDispatch((seen) => ({ ok: true, text: seen.argv.join(" ") }));
     try {
       const dir = repoPointingAt(fake.port);
       const env = { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" };
       const cases: string[][] = [
+        ["state", "--json"],
         ["begin"],
-        ["block", "--reason", "waiting"],
-        ["unblock"],
       ];
       for (const argv of cases) {
         const result = await runCliFull(argv, { cwd: dir, env });

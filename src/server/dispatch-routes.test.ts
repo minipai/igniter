@@ -94,7 +94,7 @@ async function postCommand(
 }
 
 describe("POST /api/command", () => {
-  test("status, start, pause, and resume round-trip through HTTP", async () => {
+  test("status, start, begin, pause, and resume round-trip through HTTP", async () => {
     const served = await serve();
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
@@ -102,7 +102,11 @@ describe("POST /api/command", () => {
       const started = await postCommand(served.base, ["start", "STA-1"]);
       expect(started.status).toBe(200);
       expect(started.payload.ok).toBe(true);
-      expect(started.payload.text).toContain("claimed STA-1");
+      expect(started.payload.text).toContain("assigned STA-1");
+
+      const begun = await postCommand(served.base, ["begin", "STA-1"]);
+      expect(begun.payload.ok).toBe(true);
+      expect(begun.payload.text).toContain("builder-sta-1");
 
       const status = await postCommand(served.base, ["status"]);
       expect(status.payload.ok).toBe(true);
@@ -124,27 +128,33 @@ describe("POST /api/command", () => {
     }
   });
 
-  test("workspace commands round-trip with a workspace id and stdin input", async () => {
+  test("ticket-targeted and workspace commands round-trip through HTTP", async () => {
     const served = await serve();
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await postCommand(served.base, ["start", "STA-1"]);
-      const wsId = served.workspaces.workspaces[0]!.workspaceId;
+      await postCommand(served.base, ["begin", "STA-1"]);
+      const ticketWs = served.workspaces.workspaces.find((w) => w.label === "STA-1")!;
+      const wsId = ticketWs.workspaceId;
 
       const state = await postCommand(served.base, ["state", "--json"], { workspaceId: wsId });
       expect(state.payload.ok).toBe(true);
       expect(state.payload.text).toContain('"status": "build"');
 
-      // No workspace id: refused, never a dispatch command.
+      // Ticket status needs no workspace context.
+      const ticket = await postCommand(served.base, ["status", "STA-1", "--json"]);
+      expect(ticket.payload.ok).toBe(true);
+      expect(ticket.payload.text).toContain('"status": "build"');
+
+      // No ticket and no workspace id: usage, never a dispatch command.
       const naked = await postCommand(served.base, ["begin"]);
       expect(naked.payload.ok).toBe(false);
-      expect(naked.payload.text).toContain("Herdr workspace only");
+      expect(naked.payload.text).toContain("usage: igniter begin");
 
-      const blocked = await postCommand(served.base, ["block", "--reason", "waiting"], { workspaceId: wsId });
+      const blocked = await postCommand(served.base, ["block", "STA-1", "--reason", "waiting"]);
       expect(blocked.payload.ok).toBe(true);
       expect(served.world.issues[0]!.labelIds).toEqual(["label-blocked"]);
 
-      const unblocked = await postCommand(served.base, ["unblock"], { workspaceId: wsId });
+      const unblocked = await postCommand(served.base, ["unblock", "STA-1"]);
       expect(unblocked.payload.ok).toBe(true);
 
       const begun = await postCommand(served.base, ["begin"], { workspaceId: wsId });
@@ -175,7 +185,7 @@ describe("POST /api/command", () => {
       addIssue(served.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       addIssue(served.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       addIssue(served.world, { identifier: "STA-3", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const full = await postCommand(served.base, ["start", "STA-3"]);
+      const full = await postCommand(served.base, ["begin", "STA-3"]);
       expect(full.payload.ok).toBe(false);
       expect(full.payload.text).toContain("max_running");
     } finally {
@@ -193,9 +203,9 @@ describe("POST /api/command", () => {
       };
       expect(before).toEqual({ lastRefreshAt: null, order: [] });
 
-      await postCommand(served.base, ["start", "STA-1"]);
+      await postCommand(served.base, ["begin", "STA-1"]);
       const activity = (await (await fetch(`${served.base}/api/activity?limit=10`)).json()) as { lines: string[] };
-      expect(activity.lines[0]).toMatch(/STA-1 claimed: Todo → Build \(slot 0\)/);
+      expect(activity.lines[0]).toMatch(/STA-1 started build worker builder-sta-1/);
     } finally {
       served.stop();
     }

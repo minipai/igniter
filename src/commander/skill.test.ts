@@ -13,18 +13,22 @@ describe("igniter bootstrap skill", () => {
     expect(skill).toContain("description:");
   });
 
-  test("names the Igniter entry: marker file, serve, status, start, owner gates", () => {
+  test("names the Global Commander entry: marker file, serve, ticket commands, owner gates", () => {
     for (const needle of [
       ".igniter/config.yaml",
+      "Global Commander",
       "igniter serve",
       "igniter status",
       "igniter start",
+      "igniter submit",
+      "igniter reconcile",
       "Review + Complete",
       "Deliver + Complete",
       "Done",
     ]) {
       expect(skill).toContain(needle);
     }
+    expect(skill).toContain("never inside a ticket workspace");
   });
 
   test("excludes the legacy feature-delivery workflow", () => {
@@ -32,15 +36,13 @@ describe("igniter bootstrap skill", () => {
     expect(skill).toMatch(/do not use.*feature-delivery/i);
   });
 
-  test("copies no Commander or stage protocol", () => {
+  test("copies no stage report or profile protocol", () => {
     for (const needle of [
       "BUILD_HANDOFF_COMPLETE",
       "ACCEPTANCE_COMPLETE",
       "DELIVERY_COMPLETE",
-      "igniter submit",
-      "igniter begin",
       "builder.fallback",
-      "Progress",
+      "model_reasoning_effort",
     ]) {
       expect(skill).not.toContain(needle);
     }

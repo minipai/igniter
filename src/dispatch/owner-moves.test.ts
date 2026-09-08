@@ -186,7 +186,7 @@ function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
 /** Claim through `start` and drive the ticket to Review+Complete. */
 async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-  expect((await runCommand(["start", identifier], h.ctx)).ok).toBe(true);
+  expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
@@ -510,24 +510,25 @@ describe("mirror failures never block convergence", () => {
     }
   });
 
-  test("a failed wake-up retries until the commander is prompted", async () => {
+  test("an owner move converges the mirror with no commander to wake", async () => {
     const h = await harness();
     try {
       await toReviewComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       h.workspaces.failMethods.add("agent.prompt");
       const watcher = watcherOf(h);
-      const before = h.workspaces.promptsFor("commander-sta-1").length;
       await watcher.pollOnce();
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(h.lines).toContainEqual(expect.stringContaining("commander wake-up failed"));
-      expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(before);
+      // Igniter starts no agents: the mirror converges and notes that no
+      // commander exists for a wake-up. The external Global Commander
+      // observes the converged state through status/reconcile.
+      expect(h.lines).toContainEqual(expect.stringContaining("workspace mirror caught up"));
+      expect(h.lines).toContainEqual(expect.stringContaining("no commander to wake"));
+      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ status: "deliver", progress: "pending" });
       h.workspaces.failMethods.clear();
       const at = h.lines.length;
       await watcher.pollOnce();
-      expect(h.workspaces.promptsFor("commander-sta-1")).toHaveLength(before + 1);
-      expect(h.workspaces.promptsFor("commander-sta-1").at(-1)).toContain("STA-1");
-      expect(h.lines.slice(at)).toContainEqual(expect.stringContaining("workspace mirror caught up"));
+      expect(h.lines.slice(at)).not.toContainEqual(expect.stringContaining("wake-up"));
     } finally {
       h.stop();
     }
@@ -583,7 +584,7 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       const realAdd = h.client.addComment.bind(h.client);
       let calls = 0;
       h.client.addComment = (async (issueId: string, body: string) => {
@@ -610,7 +611,7 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       // The comment lands, then the write result is lost: the retry must
       // read it back and adopt it instead of publishing a second receipt.
       const realAdd = h.client.addComment.bind(h.client);
@@ -641,7 +642,7 @@ describe("multi-receipt tickets read newest-first", () => {
   /** Build, fail the review, rebuild at a new checkpoint, pass the review. */
   async function toSecondPass(h: Harness, identifier: string): Promise<void> {
     addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-    expect((await runCommand(["start", identifier], h.ctx)).ok).toBe(true);
+    expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
@@ -831,7 +832,7 @@ describe("owner-move guards", () => {  async function outcomeOf(h: Harness, iden
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
       await wsCmd(h, "STA-1", ["begin"]);
       // A planted newer receipt for another checkpoint moves history on.

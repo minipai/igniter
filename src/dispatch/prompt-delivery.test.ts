@@ -249,17 +249,17 @@ async function harness(): Promise<Harness> {
   return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
 }
 
-describe("commander start", () => {
+describe("stage start", () => {
   test("an input-buffer prompt fails the start and keeps Todo+Pending", async () => {
     const h = await harness();
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       // The stall diagnosis is written out through the activity channel
       // with project, ticket, role, stage, agent, and failure reason.
-      const diagnosis = ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"];
+      const diagnosis = ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"];
       for (const part of diagnosis) {
         expect(out.text).toContain(part);
         expect(h.lines.join("\n")).toContain(part);
@@ -273,32 +273,23 @@ describe("commander start", () => {
     }
   });
 
-  test("a stalled retry creates nothing twice; a nudged commander finishes the claim", async () => {
+  test("a stalled retry creates nothing twice; a nudged worker finishes the start", async () => {
     const h = await harness();
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
       // The STA-197 observation: the agent sits idle with an empty context.
-      h.workspaces.agents.find((a) => a.name === "commander-sta-1")!.agentStatus = "idle";
-      const retry = await runCommand(["start", "STA-1"], h.ctx);
-      expect(retry.ok).toBe(false);
-      // The idle retry writes out the same full diagnosis, not a bare error.
-      for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
-        expect(retry.text).toContain(part);
-      }
+      h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.agentStatus = "idle";
+      const retry = await runCommand(["begin", "STA-1"], h.ctx);
+      expect(retry.ok).toBe(true);
+      // The retry reuses the same worker and converges Linear without a
+      // second work order.
+      expect(retry.text).toContain("reused without a second work order");
       expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-      expect(h.workspaces.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
-      // The owner nudges the input box; the agent takes the work order and
-      // the retry finishes the half-written claim without a second run.
-      const agent = h.workspaces.agents.find((a) => a.name === "commander-sta-1")!;
-      agent.agentStatus = "working";
-      agent.revision = (agent.revision ?? 0) + 1;
-      const done = await runCommand(["start", "STA-1"], h.ctx);
-      expect(done.ok).toBe(true);
+      expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
-      expect(h.workspaces.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
     } finally {
       h.stop();
     }
@@ -308,12 +299,12 @@ describe("commander start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["start", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       // The pane moved past the pre-send baseline: the prompt landed.
-      const agent = h.workspaces.agents.find((a) => a.name === "commander-sta-1")!;
+      const agent = h.workspaces.agents.find((a) => a.name === "builder-sta-1")!;
       expect(h.workspaces.paneRevision[agent.paneId]).toBe(1);
     } finally {
       h.stop();
@@ -321,37 +312,39 @@ describe("commander start", () => {
   });
 });
 
-describe("commander resume", () => {
+describe("in-progress recovery", () => {
   function seedActive(h: Harness): void {
     addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-    h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", commander: "claude" }, { commander: false });
+    h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
   }
 
-  test("an input-buffer resume prompt fails without touching Linear", async () => {
+  test("an input-buffer recovery prompt fails without touching Linear", async () => {
     const h = await harness();
     try {
       seedActive(h);
       h.workspaces.promptMode = "input-buffer";
-      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
-      for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
+      for (const part of ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"]) {
         expect(out.text).toContain(part);
       }
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
-      expect(h.lines.join("\n")).toContain("resume failed: prompt delivery stalled");
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }
   });
 
-  test("a consumed resume rebuilds the commander and reports success", async () => {
+  test("a consumed recovery rebuilds the worker with Linear kept", async () => {
     const h = await harness();
     try {
       seedActive(h);
-      const out = await runCommand(["resume", "STA-1"], h.ctx);
+      const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("resumed STA-1");
-      expect(h.workspaces.agents.find((a) => a.name === "commander-sta-1")).toBeDefined();
+      expect(out.text).toContain("Linear kept");
+      expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }

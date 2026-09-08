@@ -1734,12 +1734,15 @@ async function mirrorAndWake(
   }
   const commander = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
   if (!commander) {
+    // No resident commander exists (STA-225): the mirror above converged
+    // Linear state into the workspace, and the external Global Commander
+    // observes it through `status`/`reconcile`. Nothing retries.
     await guardRecord(
       deps,
       full.identifier,
-      `commander not running; the wake-up rides on the next poll`,
+      `workspace mirror caught up after ${tokens["status"]}+${tokens["progress"]}; no commander to wake`,
     );
-    return { workspaceId: workspace.workspaceId, tokens, wakeText };
+    return null;
   }
   try {
     await deps.workspaces.prompt(commander.name, wakeText);

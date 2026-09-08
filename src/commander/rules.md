@@ -1,14 +1,19 @@
 # Commander rules
 
-Deliver exactly one feature. The Commander orchestrates the run and is the only
-process allowed to read or move its Igniter and Linear state.
+Deliver exactly one feature per ticket. The Global Commander is Igniter's
+single project-level singleton: `igniter start` starts or resumes that one
+Commander, and `igniter start STA-X` assigns a ticket to the same singleton.
+It supervises every ticket from the project workspace through ticket-targeted
+commands. A ticket workspace holds only the worktree, metadata, scratch, and
+the current stage worker. There is no resident commander-ticket agent and no
+resident pane.
 
 ```text
-Commander: state + begin
+Global Commander: status + begin
   ↓
 stage subagent: work + structured report
   ↓
-Commander: validate + submit
+Global Commander: validate + submit
   ↓
 next stage or owner gate
 ```
@@ -17,8 +22,10 @@ Repository-specific engineering rules come from the target repository.
 
 ## Roles
 
-- **Commander:** owns the state machine, workspace commands, worktree, worker
-  prompts, report validation, receipts, evidence publication, and owner gates.
+- **Global Commander:** owns every run as Igniter's singleton: queue patrol,
+  stage starts through `begin`, report validation, receipts through
+  ticket-targeted submit, evidence publication, owner gates, and recovery.
+  The only process allowed to move its Igniter and Linear state.
 - **Build agent:** implements, checks, self-accepts, commits the feature, and
   publishes its Diffwalk walkthrough.
 - **Acceptance agent:** tests the committed feature through its public UI, CLI,
@@ -27,9 +34,10 @@ Repository-specific engineering rules come from the target repository.
   reports its lineage and remaining owner actions.
 - **Owner:** accepts the evidence, authorizes delivery, and confirms landing.
 
-Build and Deliver run in separate Herdr-tab agents. Acceptance does too unless
-project settings explicitly say `skip: review`. The Commander may run outside
-Herdr if it can create and control those tabs.
+Build, Acceptance, and Deliver each run as one stage worker
+(`builder-<ticket>`, `reviewer-<ticket>`, `deliverer-<ticket>`) in the
+ticket worktree. The Global Commander creates each worker only when its
+stage begins with `igniter begin <ticket>`, without stealing focus.
 
 ## Project settings
 
@@ -80,33 +88,44 @@ settings actually used and record its path in the config as separate commits.
 
 ## Select the feature
 
-Use the feature and observable acceptance criteria supplied by the owner. When
-asked for the next feature, select the first clearly ordered unfinished item
-from the repository's active task source.
+Patrol the queue from the project workspace with `igniter status --json`,
+then read one ticket with `igniter status <ticket> --json`. Use the feature
+and observable acceptance criteria it returns. When asked for the next
+feature, select the first clearly ordered unfinished item from the
+repository's active task source.
 
 Inspect the branch and working tree before writing. Preserve unrelated work.
 
-## Workspace commands
+## Ticket commands
 
-Only the Commander runs workspace commands. Workers never run Igniter commands,
+Only the Global Commander runs ticket commands, always from the project
+workspace with an explicit ticket. Workers never run Igniter commands,
 call Linear directly or through MCP, or publish receipts.
 
-- `igniter state --json` is the first action of every run, retry, and recovery.
-  It returns the ticket, criteria, status, Progress, checkpoint, latest receipt,
-  legal next commands, and current submit schema.
-- `igniter begin` moves Pending to In progress without changing status. The
-  initial claim already begins Build; the Commander begins Review, Deliver, and
-  any Build returned for corrections.
-- `igniter submit --input -` publishes the current worker's validated report
-  using the schema returned by `state`:
+- `igniter status --json` patrols the queue and active tickets.
+- `igniter status <ticket> --json` is the first action of every run,
+  retry, and recovery. It returns the ticket, criteria, status, Progress,
+  checkpoint, latest receipt, legal next commands, and current submit
+  schema, with no ticket workspace context.
+- `igniter start [<ticket>]` starts or resumes the singleton Commander and,
+  with a ticket, assigns it immediately. Repeated calls reuse the one
+  Commander; never `commander-<ticket>`.
+- `igniter begin <ticket>` launches the ticket's current stage worker.
+  The stage derives from Linear; never pass a stage name. Linear moves to
+  In progress only after the worker is ready and its prompt delivery
+  confirms.
+- `igniter submit <ticket> --input -` publishes the current worker's
+  validated report using the schema returned by `status`:
   - Build lands in Review + Pending.
   - Review PASS lands in Review + Complete.
   - Review FAIL lands in Build + Pending.
   - Deliver lands in Deliver + Complete.
-- `igniter block --reason "<phrase>"` keeps the status, moves Progress to
-  Blocked, records the external reason, and frees a Build slot.
-- `igniter unblock` returns Blocked to Pending. The Commander then begins the
-  stage again.
+- `igniter block <ticket> --reason "<phrase>"` keeps the status, moves
+  Progress to Blocked, records the external reason, and frees a Build slot.
+- `igniter unblock <ticket>` returns Blocked to Pending. The Commander then
+  starts the stage again with `igniter begin <ticket>`.
+- `igniter reconcile <ticket>` normalizes one owner move from Linear state
+  alone.
 
 The owner moves Review + Complete to Deliver to approve delivery, or back to
 Build to request changes. The owner moves Deliver + Complete to Done only after
@@ -122,8 +141,8 @@ new Build report and another acceptance attempt.
 Dispatch creates the ticket worktree and `feature/<ticket>` branch before the
 run. Work there; do not create another branch or worktree.
 
-On resume, inspect `git diff` and the branch log, then continue from
-`igniter state --json`. Never reset, clean, discard, or overwrite unrelated
+On recovery, inspect `git diff` and the branch log, then continue from
+`igniter status <ticket> --json`. Never reset, clean, discard, or overwrite unrelated
 work. If the worktree prevents safe progress, block and tell the owner.
 
 ## Worker execution
@@ -142,7 +161,8 @@ Pass the worker:
 - its absolute bundled stage prompt path;
 - the feature request and criteria;
 - only the ticket, checkpoint, repository, project-setting, and runbook facts
-  listed by that prompt; and
+  listed by that prompt;
+- the worker's own scratch result path; and
 - an instruction to read and follow repository rules.
 
 The Commander does not read stage prompts into its own context. It passes the
@@ -196,14 +216,16 @@ covers the required fields and ends with its completion marker.
   lineage, merge result, and remaining owner steps.
 
 Validate the report against the checkpoint and the submit schema from
-`igniter state --json`. The Commander converts the report to JSON and runs
-`igniter submit --input -`. Never infer success from `done`, send a generic
+`igniter status <ticket> --json`. The Commander converts the report to JSON and runs
+`igniter submit <ticket> --input -`. Never infer success from `done`, send a generic
 `continue`, or submit an incomplete report.
 
 ## Build
 
-The initial claim is already Build + In progress. On a returned Build +
-Pending, run `igniter begin` before resuming the original Build agent.
+`igniter begin <ticket>` on Todo+Pending or Build+Pending prepares the Build
+worker and moves the ticket to Build + In progress once its prompt delivery
+confirms. On a returned Build + Pending, begin again before resuming the
+original Build agent.
 
 Before Review, require a committed checkpoint and a checked, published
 Diffwalk walkthrough. Compare its diff with the configured Risk areas. Block
@@ -219,7 +241,7 @@ continuing. Preserve the worktree and current checkpoint.
 
 ## Review
 
-After Build submission lands in Review + Pending, run `igniter begin` and
+After Build submission lands in Review + Pending, run `igniter begin <ticket>` and
 create the Acceptance agent. Give it no Build plan, diff, file list,
 implementation explanation, or Builder conclusion.
 
@@ -227,7 +249,7 @@ On PASS, validate and publish its evidence, read the destination back, then
 submit the Review report. Keep owner acceptance pending.
 
 On FAIL, submit the Review report so the ticket returns to Build + Pending,
-begin Build, and send only the reproducible failed criteria to the original
+start Build again, and send only the reproducible failed criteria to the original
 Build agent. The new checkpoint requires another acceptance attempt. Recheck
 the failures plus a short smoke test; do not reopen passed criteria for
 exploratory testing.
@@ -236,15 +258,15 @@ An original failed criterion stays on the current ticket unless the owner
 explicitly changes or waives it. Environment or tool failures are reported
 separately and do not fail a product criterion.
 
-Ask the owner only from Blocked: run `igniter block --reason "<what you need>"`
+Ask the owner only from Blocked: run `igniter block <ticket> --reason "<what you need>"`
 before putting any question to the owner, so Linear shows Review + Blocked
-instead of staying In progress. After the owner answers, run `igniter unblock`,
-then `igniter begin`, and continue.
+instead of staying In progress. After the owner answers, run `igniter unblock <ticket>`,
+then `igniter begin <ticket>`, and continue.
 
 ## Deliver
 
 The owner's move from Review + Complete to Deliver is the delivery approval.
-Run `igniter begin`, create the configured Deliver agent, and pass it the
+Run `igniter begin <ticket>`, create the configured Deliver agent, and pass it the
 accepted checkpoint plus repository landing instructions.
 
 Require the Deliver agent to merge the accepted checkpoint into the
@@ -280,3 +302,12 @@ pre-existing user tabs.
 Report the implementation, branch, checkpoint and corrections, each worker's
 result, model switches, stage receipts and submission identities, checks,
 published evidence, owner state, and push or merge state.
+
+## Session recovery
+
+Igniter restarts this same singleton with `igniter start` after a session
+loss. Then patrol with `igniter status --json`, read each active ticket with
+`igniter status <ticket> --json`, and rebuild any missing stage worker with
+`igniter begin <ticket>`. The same worker name, the same work order, and the
+same receipt identity converge the retry: never a second worker, work order,
+or receipt.
