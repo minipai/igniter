@@ -33,7 +33,7 @@ import type { CommanderStage, DispatchConfig } from "./config.ts";
 import { STAGE_AGENTS } from "./config.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { launchFor } from "./agents.ts";
-import type { LinearClient } from "./linear.ts";
+import type { LinearClientLike } from "./linear.ts";
 import {
   deriveState,
   latestValidReceipt,
@@ -189,7 +189,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
 }
 
 export interface StageStartDeps {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
   decisions: DecisionLog;
@@ -222,6 +222,10 @@ function stageAgentProfile(config: DispatchConfig, stage: CommanderStage) {
 function freePane(snapshot: WorkspaceSnapshot, workspaceId: string): string | null {
   const busy = new Set(snapshot.agents.map((a) => a.paneId));
   return snapshot.panes.find((p) => p.workspaceId === workspaceId && !busy.has(p.paneId))?.paneId ?? null;
+}
+
+function workerEnded(status: string): boolean {
+  return /^(done|ended|exited|failed|gone|stopped)$/i.test(status.trim());
 }
 
 /**
@@ -271,7 +275,10 @@ export async function ensureStageWorkspace(
 
 /**
  * Ensure the stage worker exists in the ticket workspace. A same-named live
- * worker is reused as is: no second worker, no second work order. Otherwise
+ * worker is reused as is: no second worker is ever created. The caller
+ * always (re)delivers the current work order to the returned worker with
+ * confirmation, so a reused worker from an earlier round still receives the
+ * new checkpoint. Otherwise
  * a free pane (or a fresh tab) starts the configured harness/model/effort.
  * Returns the worker name and whether it was newly created.
  */
@@ -287,12 +294,14 @@ export async function ensureStageWorker(
   const profile = profileOverride ?? stageAgentProfile(config, stage);
   const { kind, args } = launchFor(profile);
   const snapshot = await deps.workspaces.snapshot();
-  const live = snapshot.agents.find((a) => a.name === worker);
+  const existing = snapshot.agents.find((a) => a.name === worker);
   const workspaceOf = (name: string): string | null =>
     snapshot.agents.find((a) => a.name === name)?.workspaceId ?? null;
-  if (live && workspaceOf(worker) === workspaceId) return { worker, created: false };
-  if (live) {
-    throw new WorkspaceSinkError(`${worker} is running in workspace ${live.workspaceId}, not ${workspaceId}`);
+  if (existing && !workerEnded(existing.agentStatus) && workspaceOf(worker) === workspaceId) {
+    return { worker, created: false };
+  }
+  if (existing && !workerEnded(existing.agentStatus)) {
+    throw new WorkspaceSinkError(`${worker} is running in workspace ${existing.workspaceId}, not ${workspaceId}`);
   }
   let paneId = freePane(snapshot, workspaceId);
   if (!paneId) {
@@ -354,7 +363,7 @@ export async function startStageTicket(
       const snapshot = await deps.workspaces.snapshot().catch(() => null);
       const worker = workerAgentName(stage, full.identifier);
       const live = snapshot?.agents.find((a) => a.name === worker);
-      if (live && live.workspaceId === workspaceId) {
+      if (live && !workerEnded(live.agentStatus) && live.workspaceId === workspaceId) {
         return { ok: false, text: `${full.identifier} is already running (${stage} worker ${worker})` };
       }
     }
@@ -394,8 +403,11 @@ export async function startStageTicket(
   const profile = stageAgentProfile(effectiveConfig, stage);
   const promptPath = promptPathForStage(assets, stage);
 
-  // Idempotent worker: a same-named live worker is reused and its Linear
-  // transition still converges below without resending the work order.
+  // Idempotent worker: a same-named live worker is reused, never
+  // duplicated. The current work order is always (re)delivered with
+  // confirmation below — a reused worker from an earlier round (a builder
+  // that already ended, a stalled first attempt) must still receive the new
+  // checkpoint before Linear converges.
   let worker: string;
   let created: boolean;
   try {
@@ -403,16 +415,6 @@ export async function startStageTicket(
   } catch (error) {
     await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
     return { ok: false, text: `begin failed: ${(error as Error).message} (workspace ${workspaceId})` };
-  }
-
-  if (!created) {
-    try {
-      await convergePending(deps, full, state);
-    } catch (error) {
-      return { ok: false, text: (error as Error).message };
-    }
-    await deps.decisions.record(full.identifier, `begin reused ${worker} in ${workspaceId}; Linear converged without a second work order`);
-    return { ok: true, text: `${full.identifier} already has ${stage} worker ${worker} in ${workspaceId}; reused without a second work order`, workspaceId, worker, stage };
   }
 
   const order = buildStageWorkOrder({
@@ -449,6 +451,16 @@ export async function startStageTicket(
   } catch (error) {
     await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
     return { ok: false, text: `start failed: ${(error as Error).message} (workspace ${workspaceId}); ticket stays ${state.status}+pending` };
+  }
+
+  if (!created) {
+    try {
+      await convergePending(deps, full, state);
+    } catch (error) {
+      return { ok: false, text: (error as Error).message };
+    }
+    await deps.decisions.record(full.identifier, `begin reused ${worker} in ${workspaceId} with a redelivered work order; Linear converged without a second worker`);
+    return { ok: true, text: `${full.identifier} already has ${stage} worker ${worker} in ${workspaceId}; work order redelivered`, workspaceId, worker, stage };
   }
 
   try {

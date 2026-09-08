@@ -13,15 +13,16 @@ import {
 } from "../dispatch/claims.ts";
 import { createWorkspaceSink, runCommand } from "../dispatch/commands.ts";
 import type { DispatchConfig } from "../dispatch/config.ts";
-import type { LinearClient } from "../dispatch/linear.ts";
+import type { LinearClientLike } from "../dispatch/linear.ts";
 import type { GitRunner } from "../dispatch/worktrees.ts";
 import type { CommandWorkspaces } from "../dispatch/workspaces.ts";
+import type { PromptDeliveryPolicy } from "../dispatch/prompt-delivery.ts";
 import { startServer } from "./serve.ts";
 
 export interface DispatchServeOptions {
   repoRoot: string;
   config: DispatchConfig;
-  client: LinearClient;
+  client: LinearClientLike;
   workspaces: CommandWorkspaces;
   git?: GitRunner;
   host?: string;
@@ -29,6 +30,8 @@ export interface DispatchServeOptions {
   logPath?: string;
   print?: (line: string) => void;
   onServer?: (server: ReturnType<typeof startServer>) => void;
+  /** Prompt-delivery confirmation budget; tests inject a fast clock. */
+  promptDelivery?: PromptDeliveryPolicy;
 }
 
 export interface DispatchServeHandle {
@@ -58,6 +61,10 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     runGit: options.git,
   });
   let lastRefreshAt: string | null = null;
+  const reconcilePending = new Map<string, {
+    followUp: import("../dispatch/protocol.ts").OwnerMoveFollowUp | null;
+    closeDue: { workspaceId: string | null; checkpoint: string } | null;
+  }>();
 
   const commandContext = () => ({
     client: options.client,
@@ -69,6 +76,8 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     repoRoot: root,
     git: options.git,
     lastPollAt: () => lastRefreshAt,
+    promptDelivery: options.promptDelivery,
+    reconcilePending,
   });
   const markRefresh = (): void => {
     lastRefreshAt = new Date().toISOString();

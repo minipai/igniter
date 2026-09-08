@@ -17,7 +17,7 @@
 // says how far that stage has come.
 
 import { createHash } from "node:crypto";
-import type { LinearClient, LinearComment, LinearIssue, LinearLabel } from "./linear.ts";
+import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "./linear.ts";
 import type { ResolvedDispatch, DecisionLog, CommandResult, ClaimSink, ClaimedTicket } from "./claims.ts";
 import { WorkspaceSinkError } from "./claims.ts";
 import { launchProblems } from "./agents.ts";
@@ -38,7 +38,7 @@ export function statusNeedsProgress(status: ProtocolStatus): boolean {
 }
 
 export interface ProtocolDeps {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
   decisions: DecisionLog;
@@ -798,8 +798,17 @@ export async function moveStatus(
   status: ProtocolStatus,
   progress: ProtocolProgress | null,
 ): Promise<FullIssue> {
-  await deps.client.setIssueState(full.id, deps.resolved.stateIds[status]);
-  const moved = await readback(deps, full.id);
+  const targetState = deps.resolved.stateIds[status];
+  let moved: FullIssue;
+  try {
+    await deps.client.setIssueState(full.id, targetState);
+    moved = await readback(deps, full.id);
+  } catch (error) {
+    if (!isTransientLinearError(error)) throw error;
+    const current = await readback(deps, full.id);
+    if (current.state.id !== targetState) throw error;
+    moved = current;
+  }
   await setProgress(deps, moved as FullIssue, progress);
   const verified = await readback(deps, full.id);
   const state = deriveState(deps.resolved, verified as FullIssue);
@@ -994,7 +1003,7 @@ export function claimable(state: AuthoritativeState): string | null {
  * Tickets with an unreadable Progress pair still hold one: never claim
  * over a ticket dispatch cannot see.
  */
-export async function countBuildSlots(client: LinearClient, resolved: ResolvedDispatch): Promise<number> {
+export async function countBuildSlots(client: LinearClientLike, resolved: ResolvedDispatch): Promise<number> {
   const issues = await client.listIssuesByState(resolved.projectId, resolved.stateIds.build);
   let used = 0;
   for (const issue of issues) {
@@ -1233,6 +1242,10 @@ export async function submitMutation(
   state: AuthoritativeState,
   raw: unknown,
 ): Promise<string> {
+  const resumed = await resumeWrittenTransition(deps, workspaceId, full, state, raw);
+  if (resumed) return resumed;
+  const repeated = completedSubmission(full, state, raw);
+  if (repeated) return repeated;
   if (state.progress !== "in_progress") {
     throw new ProtocolError(
       `refused: submit needs an In progress stage; ` +
@@ -1288,6 +1301,120 @@ export async function submitMutation(
   throw new ProtocolError(
     `refused: submit applies to Build, Review, or Deliver; ${full.identifier} is ${state.status}`,
   );
+}
+
+/** Finish the only cross-status partial writes a lost readback can expose. */
+async function resumeWrittenTransition(
+  deps: ProtocolDeps,
+  workspaceId: string,
+  full: FullIssue,
+  state: AuthoritativeState,
+  raw: unknown,
+): Promise<string | null> {
+  if (!isRecord(raw)) return null;
+  if (raw["kind"] === "build" && state.status === "review" && state.progress === "in_progress") {
+    if (!latestReceiptOf(full.comments, "build")) return null;
+    const payload = parseBuildSubmit(raw, state.criteria);
+    const submission = submissionId({ ticket: full.identifier, ...payload });
+    const receipt = findReceipt(full.comments, "build", submission);
+    if (!receipt?.id) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    await moveStatus(deps, full, "review", "pending");
+    await mirror(deps, workspaceId, {
+      status: "review",
+      progress: "pending",
+      checkpoint: payload.checkpoint,
+      receipt_id: receipt.id,
+      receipt_kind: "build",
+      submission,
+    });
+    return `resumed build ${payload.checkpoint} → Review+Pending (receipt ${receipt.id})`;
+  }
+  if (raw["kind"] === "review" && state.status === "build" && state.progress === "in_progress") {
+    if (!latestReceiptOf(full.comments, "review-fail")) return null;
+    const payload = parseReviewSubmit(raw, state.criteria);
+    if (payload.verdict !== "fail") return null;
+    const submission = submissionId({ ticket: full.identifier, ...payload });
+    const receipt = findReceipt(full.comments, "review-fail", submission);
+    if (!receipt?.id) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, "review", submission))) return null;
+    await moveStatus(deps, full, "build", "pending");
+    await mirror(deps, workspaceId, {
+      status: "build",
+      progress: "pending",
+      checkpoint: payload.checkpoint,
+      receipt_id: null,
+      receipt_kind: null,
+      submission: null,
+    });
+    return `resumed review FAIL ${payload.checkpoint} → Build+Pending (receipt ${receipt.id})`;
+  }
+  return null;
+}
+
+/**
+ * Before a cross-status write, submit mirrors its source stage and exact
+ * receipt identity. A retry may finish that write only while this marker is
+ * still present; a later begin replaces it, so an old payload cannot rewind a
+ * new round to Pending.
+ */
+async function partialSubmissionMarked(
+  deps: ProtocolDeps,
+  workspaceId: string,
+  source: "build" | "review",
+  submission: string,
+): Promise<boolean> {
+  const snapshot = await deps.workspaces.snapshot();
+  const workspace = snapshot.workspaces.find((candidate) => candidate.workspaceId === workspaceId);
+  return workspace?.tokens["status"] === source
+    && workspace.tokens["progress"] === "in_progress"
+    && workspace.tokens["submission"] === submission;
+}
+
+/**
+ * A CLI may lose its HTTP response after the service completed the Linear
+ * transition. The safe retry then arrives in the next stage, where normal
+ * schema dispatch would otherwise misread the old payload. Recognize only an
+ * exact, fully validated submission identity already present in Linear; this
+ * acknowledges the completed write without replaying any transition.
+ */
+function completedSubmission(
+  full: FullIssue,
+  state: AuthoritativeState,
+  raw: unknown,
+): string | null {
+  if (!isRecord(raw) || typeof raw["kind"] !== "string") return null;
+  try {
+    if (raw["kind"] === "build" && !(state.status === "build" && state.progress === "in_progress")) {
+      const payload = parseBuildSubmit(raw, state.criteria);
+      const submission = submissionId({ ticket: full.identifier, ...payload });
+      const receipt = findReceipt(full.comments, "build", submission);
+      if (receipt?.id) {
+        return `already submitted build ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
+      }
+    }
+    if (raw["kind"] === "review" && !(state.status === "review" && state.progress === "in_progress")) {
+      const payload = parseReviewSubmit(raw, state.criteria);
+      const kind: ReceiptKind = payload.verdict === "pass" ? "review-pass" : "review-fail";
+      const submission = submissionId({ ticket: full.identifier, ...payload });
+      const receipt = findReceipt(full.comments, kind, submission);
+      if (receipt?.id) {
+        return `already submitted review ${payload.verdict.toUpperCase()} ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
+      }
+    }
+    if (raw["kind"] === "deliver" && !(state.status === "deliver" && state.progress === "in_progress")) {
+      const payload = parseDeliverSubmit(raw);
+      const submission = submissionId({ ticket: full.identifier, ...payload });
+      const receipt = findReceipt(full.comments, "deliver", submission);
+      if (receipt?.id) {
+        return `already submitted deliver ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
+      }
+    }
+  } catch {
+    // Invalid retries go through the normal stage-specific parser below so
+    // callers receive its precise contract error and no false acknowledgement.
+  }
+  return null;
 }
 
 /**

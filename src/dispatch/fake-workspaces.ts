@@ -43,6 +43,8 @@ export class FakeWorkspaces implements CommandWorkspaces {
   snapshotCalls = 0;
   /** Throw from every method whose name appears here. */
   failMethods = new Set<string>();
+  /** Throw from only the next N calls, for retry protocol tests. */
+  failNextMethods = new Map<string, number>();
   failMessage = "fake herdr exploded";
   /**
    * Deterministic prompt-consumption simulation for prompt-delivery tests:
@@ -124,6 +126,10 @@ export class FakeWorkspaces implements CommandWorkspaces {
     if (this.agents.some((a) => a.paneId === input.paneId)) {
       throw new Error(`fake herdr: agent target pane ${input.paneId} is not an available shell`);
     }
+    const ended = this.agents.findIndex((agent) =>
+      agent.name === input.name && /^(done|ended|exited|failed|gone|stopped)$/i.test(agent.agentStatus.trim())
+    );
+    if (ended >= 0) this.agents.splice(ended, 1);
     this.agents.push({
       name: input.name,
       kind: input.kind,
@@ -255,11 +261,21 @@ export class FakeWorkspaces implements CommandWorkspaces {
     return this.workspaces.find((w) => w.label === label && !w.closed)?.tokens ?? {};
   }
 
+  failNext(method: string, count = 1): void {
+    this.failNextMethods.set(method, (this.failNextMethods.get(method) ?? 0) + count);
+  }
+
   private liveWorkspaces(): FakeWorkspace[] {
     return this.workspaces.filter((w) => !w.closed);
   }
 
   private failWhen(method: string): void {
+    const remaining = this.failNextMethods.get(method) ?? 0;
+    if (remaining > 0) {
+      if (remaining === 1) this.failNextMethods.delete(method);
+      else this.failNextMethods.set(method, remaining - 1);
+      throw new Error(this.failMessage);
+    }
     if (this.failMethods.has(method)) throw new Error(this.failMessage);
   }
 }

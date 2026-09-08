@@ -21,7 +21,8 @@
   "files": [
     "src/",
     "!src/**/*.test.ts",
-    "!src/dispatch/fake-*.ts",
+    "!src/e2e/",
+    "!src/**/fake-*.ts",
     "!src/herdr/generate-types.ts"
   ],
   "publishConfig": {
@@ -32,7 +33,8 @@
     "typecheck": "tsc --noEmit",
     "generate:herdr": "bun src/herdr/generate-types.ts",
     "test": "bun test src/package.test.ts src/cli.test.ts src/server src/herdr src/dispatch src/commander",
-    "check": "bun run typecheck && bun run test"
+    "test:e2e": "bun src/e2e/run.ts",
+    "check": "bun run typecheck && bun run test && bun run test:e2e"
   },
   "dependencies": {
     "typebox": "1.3.25"

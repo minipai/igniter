@@ -22,7 +22,7 @@
 import { hostname } from "node:os";
 import { appendFile } from "node:fs/promises";
 import type { DispatchConfig } from "./config.ts";
-import { LinearClient, LinearError, type LinearIssue } from "./linear.ts";
+import { LinearError, type LinearClientLike, type LinearIssue } from "./linear.ts";
 import {
   adoptTicket,
   claimTicket,
@@ -129,7 +129,7 @@ export function sortCandidates(issues: LinearIssue[]): LinearIssue[] {
 
 /** Read the Todo queue once without normalizing, claiming, or opening workspaces. */
 export async function readQueue(
-  client: LinearClient,
+  client: LinearClientLike,
   resolved: ResolvedDispatch,
 ): Promise<QueueEntry[]> {
   const candidates = sortCandidates(
@@ -166,7 +166,7 @@ export async function readQueue(
  * its four labels missing or mis-grouped. An old config (queued, building,
  * review, failed, merge) fails here at parse time with unknown roles.
  */
-export async function validateStartup(client: LinearClient, config: DispatchConfig): Promise<ResolvedDispatch> {
+export async function validateStartup(client: LinearClientLike, config: DispatchConfig): Promise<ResolvedDispatch> {
   const projects = await client.listProjects();
   const project = projects.find((p) => p.name === config.project || p.slugId === config.project);
   if (!project) {
@@ -314,7 +314,7 @@ export interface PollResult {
 }
 
 export interface WatcherOptions {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   host?: string;
   sink?: ClaimSink;
@@ -343,7 +343,7 @@ export class Watcher {
   lastQueue: QueueEntry[] = [];
   lastPollAt: string | null = null;
 
-  private readonly client: LinearClient;
+  private readonly client: LinearClientLike;
   /** Validated dispatch, shared with commands running beside the watch loop. */
   readonly resolved: ResolvedDispatch;
   private readonly host: string;
@@ -746,7 +746,7 @@ export class Watcher {
  * the watch loop and `igniter start`.
  */
 export async function ensureAcceptanceCriteria(
-  client: LinearClient,
+  client: LinearClientLike,
   resolved: ResolvedDispatch,
   full: { id: string; identifier: string; description: string | null; comments: { body: string }[] },
   decisions: DecisionLog,

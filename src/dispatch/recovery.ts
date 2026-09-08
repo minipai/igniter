@@ -11,7 +11,7 @@
 // arguments, so commands.ts can use it without a cycle.
 
 import type { CommandResult, DecisionLog, ResolvedDispatch } from "./claims.ts";
-import type { LinearClient } from "./linear.ts";
+import type { LinearClientLike } from "./linear.ts";
 import {
   commanderName,
   workspaceForTicket,
@@ -44,7 +44,7 @@ export function buildFailedComment(reason: string, paneTail: string): string {
 }
 
 export interface FailureDeps {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
   decisions: DecisionLog;

@@ -155,7 +155,37 @@ bun run check
 ```
 
 `bun run check` runs typechecking and Bun tests, including an isolated package
-smoke test.
+smoke test and the CLI end-to-end suite. Run the black-box suite alone with:
+
+```bash
+bun run test:e2e
+```
+
+### CLI end-to-end boundaries
+
+The end-to-end suite starts the production dispatch HTTP service and drives it
+through real CLI subprocesses. Each scenario owns a temporary Git repository,
+ticket worktrees, an ephemeral port, and a whitelisted child environment. A
+stateful in-memory Linear client and fake Herdr/agent processes are injected at
+the service boundary. The suite never reads real credentials, contacts Linear,
+starts Herdr or an LLM, changes the source checkout, or uses a fake Linear HTTP
+or GraphQL endpoint. Owner status moves are direct fixture mutations only;
+`submit` never pretends to merge Git.
+
+The named scenario groups cover:
+
+| Group | Coverage |
+| --- | --- |
+| Status and begin | Human and JSON status, Todo claim, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
+| Lifecycle and owner gates | Build, Review PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
+| Begin and concurrency | Prompt consumption, Pending start recovery, live/missing/ended workers, slot limits, duplicate claim prevention, concurrent submit dedupe, and ticket isolation. |
+| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, CLI timeout with background completion, and deferred reconcile mirror/close recovery. |
+| Control commands | Existing `state`, pause/resume, block/unblock, fail, builder restart override, mixed-harness `answer y/n`, stdin, workspace context, and `start` with a fake foreground Commander. |
+| Refusal and Git safety | Malformed payloads, wrong stage, stale/HEAD/rebased checkpoints, owner-gate refusal, dirty/untracked/unmerged checkout retention, scratch symlink escape, and packed failure diagnostics. |
+
+All condition polling has a deadline. On failure, the harness reports recent CLI
+stdout/stderr/exit codes, in-memory Linear and Herdr calls, plus Git status,
+worktrees, and branches before removing its own resources.
 
 ## License
 
