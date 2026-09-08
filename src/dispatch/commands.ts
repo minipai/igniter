@@ -80,6 +80,13 @@ import {
   scratchRootFor,
   type WorkerName,
 } from "./worker-scope.ts";
+import {
+  createBuildPublicationGate,
+  grantPublicationConsent,
+  stampPublicationTokens,
+  type PublicationConsentStore,
+  type ReviewPublisher,
+} from "./review-publication.ts";
 
 export type { CommandResult };
 
@@ -100,6 +107,16 @@ export interface CommandContext {
   now?: () => number;
   /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
   promptDelivery?: PromptDeliveryPolicy;
+  /**
+   * Host-side review publication state: the owner consent ledger plus the
+   * publisher that uploads to the fixed destination. Present only in the
+   * command service; stage workers never receive credentials, the ledger,
+   * or host network access.
+   */
+  publication?: {
+    consents: PublicationConsentStore;
+    publisher: ReviewPublisher;
+  };
   /** Deferred Herdr work from an explicit reconcile, retained by the service. */
   reconcilePending?: Map<string, {
     followUp: OwnerMoveFollowUp | null;
@@ -108,14 +125,14 @@ export interface CommandContext {
 }
 
 const TOP_USAGE =
-  "usage: igniter <status [--json|<ticket> --json]|start [<ticket>]|begin <ticket>|reconcile <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|submit <ticket> --input -|block <ticket> --reason TEXT|unblock <ticket>|state --json>";
+  "usage: igniter <status [--json|<ticket> --json]|start [<ticket> [--publish-review]]|begin <ticket>|reconcile <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|submit <ticket> --input -|block <ticket> --reason TEXT|unblock <ticket>|state --json>";
 
 function usage(command: string): string {
   switch (command) {
     case "status":
       return "usage: igniter status [--json|<ticket> --json]";
     case "start":
-      return "usage: igniter start [<ticket>]";
+      return "usage: igniter start [<ticket> [--publish-review]]";
     case "reconcile":
       return "usage: igniter reconcile <ticket>";
     case "pause":
@@ -227,6 +244,15 @@ function depsOf(ctx: CommandContext): ProtocolDeps & { sink: ClaimSink; host: st
     repoRoot: ctx.repoRoot,
     sink: ctx.sink,
     host: ctx.host,
+    ...(ctx.publication
+      ? {
+        publication: createBuildPublicationGate({
+          consents: ctx.publication.consents,
+          publisher: ctx.publication.publisher,
+          repoRoot: ctx.repoRoot,
+        }),
+      }
+      : {}),
   };
 }
 
@@ -694,10 +720,18 @@ async function startCommand(
   directStart: boolean,
 ): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
-  if (args.length > 1 || (args.length === 1 && (!args[0] || args[0].startsWith("-")))) {
+  // `--publish-review` is an explicit owner act on the CLI, never a
+  // repository setting: it grants this ticket's current lifecycle a
+  // one-time review publication to the fixed destination.
+  const publishReview = args.includes("--publish-review");
+  const rest = args.filter((a) => a !== "--publish-review");
+  if (rest.length > 1 || (rest.length === 1 && (!rest[0] || rest[0].startsWith("-")))) {
     return fail(usage("start"));
   }
-  const raw = args.length === 1 ? (args[0] as string) : undefined;
+  if (publishReview && rest.length === 0) {
+    return fail("`--publish-review` needs a ticket: `igniter start <ticket> --publish-review`");
+  }
+  const raw = rest.length === 1 ? (rest[0] as string) : undefined;
   let assignment: FullIssue | undefined;
   if (raw) {
     const identifier = raw.toUpperCase();
@@ -716,6 +750,34 @@ async function startCommand(
     }
     assignment = full;
   }
+  if (publishReview && assignment) {
+    if (!ctx.publication) {
+      await decisions.record(assignment.identifier, `start failed: publication consent store is not configured in this dispatch`);
+      return fail(`start failed: publication consent store is not configured in this dispatch`);
+    }
+    const consent = grantPublicationConsent(ctx.publication.consents, {
+      ticket: assignment.identifier,
+      repository: ctx.repoRoot,
+      ...(ctx.now ? { now: ctx.now } : {}),
+    });
+    // Stamp a live workspace at once; `begin` stamps the workspace it
+    // ensures, so a grant before any workspace still lands on submit.
+    try {
+      const snapshot = await ctx.workspaces.snapshot();
+      const open = snapshot.workspaces.find((w) => w.tokens["ticket"] === assignment.identifier);
+      if (open) await ctx.workspaces.reportMetadata(open.workspaceId, stampPublicationTokens(consent));
+    } catch {
+      // Stamping is best-effort here: `begin` stamps before submit.
+    }
+    await decisions.record(
+      assignment.identifier,
+      `recorded review publication consent for ${assignment.identifier} → ${consent.destination} (lifecycle ${consent.lifecycle})`,
+    );
+  }
+  const consentNote =
+    publishReview && assignment
+      ? `; review publication consented for ${assignment.identifier} → review.diffwalk.dev (this lifecycle only)`
+      : "";
   const { prepareCommanderForeground, startCommanderFlow } = await import("./commander-start.ts");
   if (directStart) {
     let launch;
@@ -738,7 +800,7 @@ async function startCommand(
     await decisions.record("commander", `prepared foreground ${launch.command[0]} Commander (${what})`);
     return {
       ok: true,
-      text: `starting Commander with ${launch.command[0]} in the current terminal; ${what}`,
+      text: `starting Commander with ${launch.command[0]} in the current terminal; ${what}${consentNote}`,
       data: launch,
     };
   }
@@ -754,7 +816,7 @@ async function startCommand(
     assignment,
   );
   if (!out.ok) return fail(out.text);
-  return { ok: true, text: out.text };
+  return { ok: true, text: `${out.text}${consentNote}` };
 }
 
 /**
@@ -852,6 +914,7 @@ async function beginTicket(ctx: CommandContext, identifier: string): Promise<Com
       git: ctx.git,
       repoRoot: ctx.repoRoot,
       promptDelivery: ctx.promptDelivery,
+      ...(ctx.publication ? { publication: { consents: ctx.publication.consents } } : {}),
     },
     full,
     state,

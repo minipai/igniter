@@ -194,7 +194,7 @@ try {
     console.error("usage: igniter <serve|status|start|begin|reconcile|pause|resume|fail|restart|answer|submit|block|unblock|state> [--port N]");
     console.error("  serve [--port N]");
     console.error("  status [--json|<ticket> --json]");
-    console.error("  start [<ticket>]");
+    console.error("  start [<ticket> [--publish-review]]");
     console.error("  begin <ticket>");
     console.error("  reconcile <ticket>");
     console.error("  pause <ticket> | resume <ticket>");

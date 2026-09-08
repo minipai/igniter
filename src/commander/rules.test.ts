@@ -106,15 +106,20 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Never infer success from `done`");
   });
 
-  test("Build publishes Diffwalk and Deliver merges local main", () => {
+  test("Build stays local while the host publishes after one-time consent", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
     expect(commanderConfig.stages.build.agent).toBe("builder");
     expect(commanderConfig.stages.review.agent).toBe("reviewer");
     expect(commanderConfig.stages.deliver.agent).toBe("deliverer");
     expect(stageRules[0]).toContain("`diffwalk inspect`");
     expect(stageRules[0]).toContain("`diffwalk check`");
-    expect(stageRules[0]).toContain("`diffwalk publish`");
-    expect(stageRules[0]).toContain("the published Diffwalk link");
+    expect(stageRules[0]).toContain("artifact identity");
+    expect(stageRules[0]).toContain("Do not run\n`diffwalk publish`");
+    expect(stageRules[0]).toContain("never from this worker");
+    expect(stageRules[0]).not.toContain("then run `diffwalk publish` and retain the printed link");
+    expect(commonRules).toContain("It never publishes");
+    expect(commonRules).toContain("one-time consent");
+    expect(commonRules).toContain("`igniter start <ticket> --publish-review`");
     expect(stageRules[2]).not.toContain("diffwalk");
     expect(stageRules[2]).toContain("Merge the rebased branch into the repository's local `main` branch");
     expect(stageRules[2]).toContain("Do not stop after preparing the merge");

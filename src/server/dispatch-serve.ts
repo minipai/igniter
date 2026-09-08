@@ -14,6 +14,10 @@ import {
 import { createWorkspaceSink, runCommand } from "../dispatch/commands.ts";
 import type { DispatchConfig } from "../dispatch/config.ts";
 import type { LinearClientLike } from "../dispatch/linear.ts";
+import {
+  DiffwalkReviewPublisher,
+  MemoryPublicationConsents,
+} from "../dispatch/review-publication.ts";
 import type { GitRunner } from "../dispatch/worktrees.ts";
 import type { CommandWorkspaces } from "../dispatch/workspaces.ts";
 import type { PromptDeliveryPolicy } from "../dispatch/prompt-delivery.ts";
@@ -60,6 +64,13 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     repoRoot: root,
     runGit: options.git,
   });
+  // Review publication lives only here on the host: the owner consent
+  // ledger plus the publisher that uploads to the fixed destination.
+  // Stage workers never receive either — they stay local and offline.
+  const publication = {
+    consents: new MemoryPublicationConsents(),
+    publisher: new DiffwalkReviewPublisher(root),
+  };
   let lastRefreshAt: string | null = null;
   const reconcilePending = new Map<string, {
     followUp: import("../dispatch/protocol.ts").OwnerMoveFollowUp | null;
@@ -78,6 +89,7 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     lastPollAt: () => lastRefreshAt,
     promptDelivery: options.promptDelivery,
     reconcilePending,
+    publication,
   });
   const markRefresh = (): void => {
     lastRefreshAt = new Date().toISOString();

@@ -73,6 +73,7 @@ import {
   type GitRunner,
 } from "./worktrees.ts";
 import { WorkspaceSinkError, type DecisionLog, type ResolvedDispatch } from "./claims.ts";
+import { stampPublicationTokens, type PublicationConsentStore } from "./review-publication.ts";
 
 export type { StageWorkerStage };
 
@@ -178,6 +179,8 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `Boundaries (hard): report only to the Global Commander. ` +
     `Do not run any \`igniter\` command, do not call Linear directly or through MCP, ` +
     `do not publish Linear receipts or comments, and do not operate ticket state. ` +
+    `Do not run \`diffwalk publish\` and do not contact the host dispatch server, localhost, or any credential: ` +
+    `publication happens on the host after the owner's one-time consent, never from this worker. ` +
     `Your only output is the result file at \`${input.resultPath}\` plus your final report.\n` +
     `\n` +
     `Write the stage result as structured Markdown covering exactly what the bundled prompt asks for, ` +
@@ -199,6 +202,12 @@ export interface StageStartDeps {
   config?: DispatchConfig;
   promptDelivery?: PromptDeliveryPolicy;
   assets?: CommanderAssetPaths;
+  /**
+   * Owner publication consents. `begin` stamps the current consent's
+   * lifecycle into the ticket workspace so the build submit can verify
+   * it; without a grant nothing is stamped and the worker stays local.
+   */
+  publication?: { consents: PublicationConsentStore };
 }
 
 export interface StageStartResult {
@@ -246,12 +255,15 @@ export async function ensureStageWorkspace(
   }
   const snapshot = await deps.workspaces.snapshot();
   const existing = workspaceForTicket(snapshot, identifier);
-  if (existing && existing.tokens["ticket"] === identifier) return {
-    workspaceId: existing.workspaceId,
-    workspace: existing,
-    worktreePath: worktree.path,
-    branch: worktree.branch,
-  };
+  if (existing && existing.tokens["ticket"] === identifier) {
+    await stampPublicationConsent(deps, identifier, existing.workspaceId);
+    return {
+      workspaceId: existing.workspaceId,
+      workspace: existing,
+      worktreePath: worktree.path,
+      branch: worktree.branch,
+    };
+  }
   const created = await deps.workspaces.create({
     label: identifier,
     cwd: worktree.path,
@@ -270,8 +282,23 @@ export async function ensureStageWorkspace(
     ticket: identifier,
     ...scratch,
     ...recordStageProfiles(config),
+    ...stampFor(deps, identifier),
   });
   return { workspaceId: created.workspaceId, workspace: null, worktreePath: worktree.path, branch: worktree.branch };
+}
+
+/** Lifecycle stamp for the current publication consent, if the owner granted one. */
+function stampFor(deps: StageStartDeps, identifier: string): Record<string, string> {
+  const consent = deps.publication?.consents.consentFor(identifier, deps.repoRoot);
+  return consent ? stampPublicationTokens(consent) : {};
+}
+
+/** Stamp a reused workspace with the current consent before the worker starts. */
+async function stampPublicationConsent(deps: StageStartDeps, identifier: string, workspaceId: string): Promise<void> {
+  const stamp = stampFor(deps, identifier);
+  if (Object.keys(stamp).length > 0) {
+    await deps.workspaces.reportMetadata(workspaceId, stamp);
+  }
 }
 
 /**

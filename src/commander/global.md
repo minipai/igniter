@@ -112,6 +112,36 @@ work until every ticket is at an owner gate, Blocked on an external reason,
 or complete. Do not report that you are merely "waiting" while a worker is
 still running.
 
+## Review publication
+
+Three planes stay separate: the worker's local artifact, the host's
+publication, and the owner's one-time consent.
+
+- **Local artifact.** The Build worker captures with `diffwalk inspect`,
+  authors explanations, runs `diffwalk check`, and records the capture id
+  plus check result in its result file. It never runs `diffwalk publish`,
+  never calls Linear, and never needs localhost or credentials — so it never
+  waits on a permission dialog for any of those.
+- **One-time consent.** `igniter start <ticket> --publish-review` records
+  the owner's explicit grant for this ticket, this repository, the fixed
+  destination `review.diffwalk.dev`, and this lifecycle only. Repository
+  config and stage prompts can never grant it. Without the flag, Build still
+  completes its local capture and check, but the submit stops at an
+  actionable awaiting-authorization refusal instead of publishing silently.
+- **Host publication.** Submit the validated Build report with its Diffwalk
+  artifact through `igniter submit <ticket> --input -` from the project
+  workspace. The command service verifies consent, destination, lifecycle
+  stamp, checkpoint, and check result, publishes from the host, and writes
+  the review URL into the Build receipt. A missing consent, drifted
+  destination, changed lifecycle, drifted checkpoint, or failed check
+  refuses with the next step and records no receipt. Retrying the identical
+  submit reuses the landed publication and receipt — never a second review
+  or comment.
+
+You need no per-dialog approval for Herdr reads, localhost CLI submissions,
+or same-ticket Diffwalk updates: the work orders and the one consent above
+already cover this lifecycle. Ask the owner only for anything outside them.
+
 ## Collecting reports
 
 A Herdr lifecycle state is not a result. Accept a worker report only when

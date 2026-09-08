@@ -27,7 +27,8 @@ Repository-specific engineering rules come from the target repository.
   ticket-targeted submit, evidence publication, owner gates, and recovery.
   The only process allowed to move its Igniter and Linear state.
 - **Build agent:** implements, checks, self-accepts, commits the feature, and
-  publishes its Diffwalk walkthrough.
+  records its local Diffwalk capture/check artifact. It never publishes:
+  review publication happens on the host after the owner's one-time consent.
 - **Acceptance agent:** tests the committed feature through its public UI, CLI,
   or API without inspecting source code or diffs.
 - **Deliver agent:** merges the accepted checkpoint into local `main` and
@@ -206,6 +207,13 @@ Ask the owner before approving home configs, credentials, system locations,
 remote hosts, broader filesystem access, external writes, destructive actions,
 or any network access. Never start OpenCode with `--auto`.
 
+Stage workers never need those approvals to finish: they stay inside the
+ticket worktree and their own scratch, run only local checks, and never
+touch localhost, credentials, or publication. The Commander likewise needs
+no per-dialog approval for Herdr reads, localhost CLI submissions, or
+same-ticket Diffwalk updates — the ticket's `begin` work orders and the one
+`start <ticket> --publish-review` consent already cover this lifecycle.
+
 ## Worker reports
 
 A Herdr lifecycle state is not a result. Accept a worker report only when it
@@ -213,7 +221,8 @@ covers the required fields and ends with its completion marker.
 
 - **Build — `BUILD_HANDOFF_COMPLETE`:** checkpoint, required checks,
   per-criterion self-acceptance, one-pass code-review result, reproduction
-  steps, published Diffwalk link, and unresolved concerns.
+  steps, local Diffwalk artifact identity (capture id plus check result),
+  and unresolved concerns.
 - **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
   with expected, actual, evidence, and environment details.
 - **Deliver — `DELIVERY_COMPLETE`:** checkpoint, local `main` commit, commit
@@ -231,9 +240,17 @@ worker and moves the ticket to Build + In progress once its prompt delivery
 confirms. On a returned Build + Pending, begin again before resuming the
 original Build agent.
 
-Before Review, require a committed checkpoint and a checked, published
-Diffwalk walkthrough. Compare its diff with the configured Risk areas. Block
-on a listed risk and wait for the owner.
+Before Review, require a committed checkpoint and a checked local Diffwalk
+walkthrough with its artifact identity. Compare its diff with the configured
+Risk areas. Block on a listed risk and wait for the owner.
+
+Publication to the fixed review destination happens on the host, not in the
+worker: the Commander submits the validated Build report with its Diffwalk
+artifact through `igniter submit <ticket> --input -`, and the command service
+publishes the checked capture and records the review URL in the Build receipt.
+That publication needs the owner's one-time consent for this ticket lifecycle
+(`igniter start <ticket> --publish-review`); without it the submit refuses
+with the next step instead of publishing silently.
 
 Build evidence is self-acceptance, never approval. There is no code audit by
 default. Only the owner may request a bounded read-only audit, and it never

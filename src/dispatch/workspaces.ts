@@ -258,7 +258,7 @@ export interface HerdrWorkspacesOptions {
 }
 
 /** Igniter agents never inherit these real provider credentials. */
-const AGENT_SECRET_NAMES = ["LINEAR_API_KEY", "RESEND_API_KEY", "FAL_API_KEY"] as const;
+export const AGENT_SECRET_NAMES = ["LINEAR_API_KEY", "RESEND_API_KEY", "FAL_API_KEY"] as const;
 
 /** The socket path resolves once and is cached; only a failure retries. */
 export function createSocketPathCache(options: {

@@ -331,6 +331,13 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (raw["stages"] !== undefined) {
     fail(`"stages" is bundled with Igniter and cannot be overridden; bundled prompt paths always win`);
   }
+  // Review publication consent is an explicit owner act on the CLI, never a
+  // repository setting: a repository-controlled file must not grant it.
+  for (const key of ["publish_review", "publish-review", "publishReview", "publication", "publications"]) {
+    if (raw[key] !== undefined) {
+      fail(`"${key}" is not a repository setting: review publication consent comes only from \`igniter start <ticket> --publish-review\`, never from repository config`);
+    }
+  }
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
   const { host, port } = parseListen(raw["listen"]);
