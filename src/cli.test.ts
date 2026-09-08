@@ -68,6 +68,13 @@ describe("cli --version", () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("--version");
   });
+
+  test("the removed Web UI dev command is rejected", async () => {
+    const result = await runCli(["dev"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("usage: igniter");
+    expect(result.stderr).not.toContain("serve|dev|");
+  });
 });
 
 // Black-box forwarding: the CLI is a thin client over POST /api/command.

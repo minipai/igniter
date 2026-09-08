@@ -1,6 +1,0 @@
-@import "tailwindcss";
-@import "basecoat-css";
-@import "./theme.css";
-@import "./igniter.css";
-
-@custom-variant dark (&:where(.dark, .dark *));

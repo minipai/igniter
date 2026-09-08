@@ -299,14 +299,6 @@ export function createDispatchLog(logPath: string, print: (line: string) => void
   };
 }
 
-/** The web page reads the tail so Activity survives a restart. */
-export async function readActivityTail(logPath: string, limit: number): Promise<string[]> {
-  const file = Bun.file(logPath);
-  if (!(await file.exists())) return [];
-  const lines = (await file.text()).split("\n").map((line) => line.trim()).filter(Boolean);
-  return lines.slice(-Math.max(1, Math.min(limit, 1000)));
-}
-
 export type QueueReason = "next" | "waiting, slots full" | "skipped: no acceptance criteria" | "parked: blocked";
 
 export interface QueueEntry {
@@ -800,8 +792,6 @@ export interface CommandCallOptions {
 }
 
 export interface DispatchApi {
-  queue(): Promise<{ lastRefreshAt: string | null; order: QueueEntry[] }>;
-  activity(limit: number): Promise<string[]>;
   command(argv: string[], options?: CommandCallOptions): Promise<CommandResult>;
 }
 

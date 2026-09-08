@@ -6,7 +6,6 @@ import {
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { bunGitRunner } from "./dispatch/worktrees.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
-import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
 import { startDispatchServe } from "./server/dispatch-serve.ts";
 import { autoStartServe } from "./server/auto-start.ts";
@@ -175,27 +174,6 @@ async function readStdin(): Promise<string> {
   return new Response(Bun.stdin.stream()).text();
 }
 
-function devCommand(): void {
-  const port = resolvePort(API_PORT);
-  // UI work must never read or mutate real tickets.
-  const api = startServer({ port, hostname: "127.0.0.1" });
-  const web = Bun.spawn(["bun", "vite", "--port", String(WEB_PORT), "--strictPort"], {
-    stdio: ["inherit", "inherit", "inherit"],
-  });
-  const stop = () => {
-    api.stop();
-    web.kill();
-  };
-  process.on("SIGINT", () => {
-    stop();
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    stop();
-    process.exit(0);
-  });
-}
-
 const DISPATCH_COMMANDS = ["status", "start", "begin", "reconcile", "pause", "resume", "fail", "restart", "answer", "submit", "block", "unblock"];
 const WORKSPACE_COMMANDS = ["state"];
 
@@ -212,8 +190,6 @@ try {
     await versionCommand();
   } else if (command === "serve") {
     await serveCommand();
-  } else if (command === "dev") {
-    devCommand();
   } else if (command !== undefined && DISPATCH_COMMANDS.includes(command)) {
     // Dispatch commands never run locally: they go through the one HTTP
     // door to the serve process. `submit` carries its JSON on stdin. The
@@ -237,7 +213,7 @@ try {
     const options: CommandCallOptions = { workspaceId: process.env["HERDR_WORKSPACE_ID"] };
     await forwardCommand(process.argv.slice(2), options);
   } else {
-    console.error("usage: igniter <serve|dev|status|start|begin|reconcile|pause|resume|fail|restart|answer|submit|block|unblock|state> [--port N]");
+    console.error("usage: igniter <serve|status|start|begin|reconcile|pause|resume|fail|restart|answer|submit|block|unblock|state> [--port N]");
     console.error("  serve [--port N]");
     console.error("  status [--json|<ticket> --json]");
     console.error("  start [<ticket>]");

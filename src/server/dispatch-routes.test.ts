@@ -1,16 +1,13 @@
 // The one HTTP door against a fake Linear endpoint: /api/command forwards
-// argv to the dispatch commands and answers { ok, text, data? }. Queue and
-// activity stay as they were.
+// argv to the dispatch commands and answers { ok, text, data? }.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  Watcher,
   createDispatchLog,
   defaultHost,
-  readActivityTail,
   validateStartup,
   type CommandCallOptions,
   type CommandResult,
@@ -51,10 +48,7 @@ async function serve(): Promise<Served> {
   const workspaces = new FakeWorkspaces();
   const git = new FakeGit();
   const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot: dir, runGit: git });
-  const watcher = new Watcher({ client, resolved, host: "h", decisions, workspaces, sink, git, repoRoot: dir });
   const api: DispatchApi = {
-    queue: async () => ({ lastRefreshAt: watcher.lastPollAt, order: watcher.lastQueue }),
-    activity: (limit) => readActivityTail(logPath, limit),
     command: (argv: string[], options: CommandCallOptions = {}): Promise<CommandResult> =>
       runCommand(argv, {
         client,
@@ -65,7 +59,7 @@ async function serve(): Promise<Served> {
         sink,
         repoRoot: dir,
         git,
-        lastPollAt: () => watcher.lastPollAt,
+        lastPollAt: () => null,
       }, options),
   };
   const server = startServer({ port: 0, dispatch: api });
@@ -137,9 +131,6 @@ describe("POST /api/command", () => {
 
       const resumed = await postCommand(served.base, ["resume", "STA-1"]);
       expect(resumed.payload).toMatchObject({ ok: true });
-
-      const activity = (await (await fetch(`${served.base}/api/activity?limit=10`)).json()) as { lines: string[] };
-      expect(activity.lines.join("\n")).toContain("STA-1 paused by command");
     } finally {
       served.stop();
     }
@@ -210,30 +201,10 @@ describe("POST /api/command", () => {
     }
   });
 
-  test("GET /api/queue and /api/activity still work", async () => {
-    const served = await serve();
-    try {
-      addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const before = (await (await fetch(`${served.base}/api/queue`)).json()) as {
-        lastRefreshAt: null;
-        order: unknown[];
-      };
-      expect(before).toEqual({ lastRefreshAt: null, order: [] });
-
-      await postCommand(served.base, ["begin", "STA-1"]);
-      const activity = (await (await fetch(`${served.base}/api/activity?limit=10`)).json()) as { lines: string[] };
-      expect(activity.lines[0]).toMatch(/STA-1 started build worker builder-sta-1/);
-    } finally {
-      served.stop();
-    }
-  });
-
-  test("routes without dispatch answer 503", async () => {
+  test("the command route without dispatch answers 503", async () => {
     const server = startServer({ port: 0 });
     try {
       const base = `http://localhost:${server.port}`;
-      expect((await fetch(`${base}/api/queue`)).status).toBe(503);
-      expect((await fetch(`${base}/api/activity`)).status).toBe(503);
       const res = await fetch(`${base}/api/command`, {
         method: "POST",
         headers: { "content-type": "application/json" },

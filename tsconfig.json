@@ -13,12 +13,10 @@
     "noUnusedParameters": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
-    "jsx": "preserve",
-    "jsxImportSource": "@solidjs/web",
-    "types": ["vite/client", "bun-types", "node"],
+    "types": ["bun-types", "node"],
     "paths": {
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src"]
 }

@@ -11,7 +11,6 @@ import {
   createClaimLock,
   createDispatchLog,
   hasAcceptanceCriteria,
-  readActivityTail,
   sortCandidates,
   startWatch,
   validateStartup,
@@ -548,8 +547,8 @@ describe("pollOnce", () => {
   });
 });
 
-describe("activity tail and dispatch log", () => {
-  test("decisions append and the tail reads back", async () => {
+describe("dispatch log", () => {
+  test("decisions print and append", async () => {
     const dir = mkdtempSync(join(tmpdir(), "igniter-log-"));
     const logPath = join(dir, "dispatch.log");
     const printed: string[] = [];
@@ -557,13 +556,7 @@ describe("activity tail and dispatch log", () => {
     await log.record("STA-1", "claimed: Todo → Build (slot 0)");
     await log.record("STA-2", "waiting: slots full (1 running)");
     expect(printed).toHaveLength(2);
-    expect(await readActivityTail(logPath, 10)).toHaveLength(2);
-    expect(await readActivityTail(logPath, 1)).toHaveLength(1);
-  });
-
-  test("a missing log reads empty", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "igniter-nolog-"));
-    expect(await readActivityTail(join(dir, "dispatch.log"), 10)).toEqual([]);
+    expect((await Bun.file(logPath).text()).trim().split("\n")).toHaveLength(2);
   });
 });
 

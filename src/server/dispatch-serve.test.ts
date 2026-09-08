@@ -41,13 +41,6 @@ async function assemble(seed?: (world: ReturnType<typeof standardWorld>) => void
     workspaces,
     git,
     port: 0,
-    feed: {
-      retryMs: 1,
-      sleep: () => Bun.sleep(1),
-      lookupPath: async () => {
-        throw new Error("no herdr daemon in tests");
-      },
-    },
     print: () => {},
   });
   return {
@@ -90,45 +83,6 @@ describe("command-driven dispatch serve", () => {
       expect(assembly.workspaces.calls).toEqual([]);
       expect(assembly.fake.world.issues[0]).toMatchObject({ stateId: TODO, labelIds: [PENDING] });
     } finally {
-      await assembly.stop();
-    }
-  });
-
-  test("queue is fetched only when explicitly requested and never claims", async () => {
-    const assembly = await assemble((world) => {
-      addIssue(world, {
-        identifier: "STA-1",
-        stateId: TODO,
-        priority: 1,
-        description: CRITERIA,
-        labelIds: [PENDING],
-      });
-    });
-    try {
-      const before = assembly.fake.requests;
-      const response = await fetch(`${assembly.handle.base}/api/queue`);
-      expect(response.status).toBe(200);
-      expect(((await response.json()) as { order: { identifier: string }[] }).order).toEqual([
-        expect.objectContaining({ identifier: "STA-1" }),
-      ]);
-      expect(assembly.fake.requests).toBeGreaterThan(before);
-      expect(assembly.fake.world.issues[0]).toMatchObject({ stateId: TODO, labelIds: [PENDING] });
-      expect(assembly.workspaces.calls).toEqual([]);
-    } finally {
-      await assembly.stop();
-    }
-  });
-
-  test("reading the board does not emit a refresh loop", async () => {
-    const assembly = await assemble();
-    const events: string[] = [];
-    const unsubscribe = assembly.handle.hub.subscribe((event) => events.push(event.type));
-    try {
-      const response = await fetch(`${assembly.handle.base}/api/board`);
-      expect(response.status).toBe(200);
-      expect(events).not.toContain("refresh");
-    } finally {
-      unsubscribe();
       await assembly.stop();
     }
   });
