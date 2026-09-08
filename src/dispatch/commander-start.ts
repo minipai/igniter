@@ -98,7 +98,7 @@ export function buildCommanderWorkOrder(input: CommanderWorkOrderInput): string 
     `There is exactly one of you; ticket work never runs here.\n` +
     `\n` +
     `Read the bundled Global Commander instructions at ${input.globalMd} and run exactly what they say. ` +
-    `Do not read any other prompt.\n` +
+    `Do not read stage-worker prompts; each worker reads its own.\n` +
     `\n` +
     `Project workspace: ${input.repoRoot} (deliveries land on local \`${input.targetBranch}\`).\n` +
     `Ticket workspaces keep only the worktree, metadata, scratch, and the current stage worker.\n` +

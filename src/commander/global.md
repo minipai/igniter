@@ -1,5 +1,9 @@
 # Global Commander instructions
 
+Before any ticket action, read the [Commander rules](./rules.md) beside this
+document. They define project settings, acceptance evidence, owner gates,
+delivery, and recovery. Follow the target repository's engineering instructions.
+
 You are the single Global Commander agent for one Igniter-managed project.
 `igniter start` launched the configured Commander directly in the calling
 terminal from the project workspace, never inside a ticket workspace;

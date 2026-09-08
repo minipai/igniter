@@ -20,6 +20,18 @@ const stageRules = await Promise.all(
 const rules = [commonRules, ...stageRules].join("\n");
 
 describe("Commander delivery protocol", () => {
+  test("the startup document loads complete Commander rules", async () => {
+    const globalUrl = new URL("./global.md", import.meta.url);
+    const global = await Bun.file(globalUrl).text();
+    const rulesLink = global.match(/\[Commander rules\]\(([^)]+)\)/);
+    expect(rulesLink).not.toBeNull();
+    const linkedRules = await Bun.file(new URL(rulesLink![1]!, globalUrl)).text();
+    expect(linkedRules).toBe(commonRules);
+    expect(global).toContain("Before any ticket action");
+    expect(linkedRules).toContain("The owner moves Deliver + Complete to Done only after");
+    expect(linkedRules).toContain("the change has landed");
+  });
+
   test("passes one prompt to each stage worker", () => {
     expect(commonRules).toContain("bundled Commander defaults");
     expect(commonRules).toContain("absolute bundled path");

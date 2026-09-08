@@ -1,16 +1,37 @@
 {
-  "name": "igniter",
-  "private": true,
-  "version": "0.0.0",
+  "name": "@minipai/igniter",
+  "version": "0.1.0",
+  "description": "Coordinate Linear tickets and coding agents through a local Bun service and Herdr.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minipai/igniter.git"
+  },
+  "homepage": "https://github.com/minipai/igniter#readme",
+  "bugs": {
+    "url": "https://github.com/minipai/igniter/issues"
+  },
   "type": "module",
+  "engines": {
+    "bun": ">=1.3.11"
+  },
   "bin": {
     "igniter": "./src/cli.ts"
+  },
+  "files": [
+    "src/",
+    "!src/**/*.test.ts",
+    "!src/dispatch/fake-*.ts",
+    "!src/herdr/generate-types.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "serve": "bun src/cli.ts serve",
     "typecheck": "tsc --noEmit",
     "generate:herdr": "bun src/herdr/generate-types.ts",
-    "test": "bun test src/cli.test.ts src/server src/herdr src/dispatch src/commander",
+    "test": "bun test src/package.test.ts src/cli.test.ts src/server src/herdr src/dispatch src/commander",
     "check": "bun run typecheck && bun run test"
   },
   "dependencies": {

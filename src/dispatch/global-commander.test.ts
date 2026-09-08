@@ -103,6 +103,7 @@ describe("singleton lifecycle", () => {
       const inbox = h.workspaces.promptsFor("commander");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain(assets.global);
+      expect(inbox[0]).not.toContain("Do not read any other prompt");
       expect(inbox[0]).toContain("igniter");
       expect(h.workspaces.tokensFor("igniter-commander")).toMatchObject({ role: "global-commander", project: "igniter" });
     } finally {
