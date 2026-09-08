@@ -16,10 +16,12 @@ import { validateStartup, Watcher, type ResolvedDispatch } from "./claims";
 import { parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import {
+  normalizeBareTodo,
   parseAcceptanceCriteria,
   parseReceiptBlock,
   receiptBlock,
   submissionId,
+  type FullIssue,
   type ParsedReceipt,
   type ReceiptKind,
 } from "./protocol";
@@ -501,6 +503,58 @@ describe("state --json", () => {
 });
 
 describe("begin", () => {
+  test("normalizeBareTodo adds Pending to a bare Todo and keeps non-Progress labels", async () => {
+    const h = await harness();
+    try {
+      h.world.labels.push({ id: "label-blue", name: "blue", teamId: "team-1", parentId: null });
+      addIssue(h.world, {
+        identifier: "STA-1",
+        stateId: TODO,
+        priority: 1,
+        description: CRITERIA,
+        labelIds: ["label-blue"],
+      });
+      const full = (await h.client.fetchIssue("STA-1")) as FullIssue;
+      const deps = {
+        client: h.client,
+        resolved: h.resolved,
+        workspaces: h.workspaces,
+        decisions: h.ctx.decisions,
+        git: h.git,
+        repoRoot: h.ctx.repoRoot,
+      };
+      const normalized = await normalizeBareTodo(deps, full);
+      expect(normalized.state.name).toBe("Todo");
+      expect((normalized.labels ?? []).map((l) => l.name)).toEqual(["blue", "Pending"]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("normalizeBareTodo refuses unknown or conflicting Progress combinations", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING, BLOCKED] });
+      const deps = {
+        client: h.client,
+        resolved: h.resolved,
+        workspaces: h.workspaces,
+        decisions: h.ctx.decisions,
+        git: h.git,
+        repoRoot: h.ctx.repoRoot,
+      };
+      const conflicted = (await h.client.fetchIssue("STA-1")) as FullIssue;
+      await expect(normalizeBareTodo(deps, conflicted)).rejects.toThrow("bare Todo");
+      addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
+      const active = (await h.client.fetchIssue("STA-2")) as FullIssue;
+      await expect(normalizeBareTodo(deps, active)).rejects.toThrow("bare Todo");
+      expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING, BLOCKED]);
+      expect(issueOf(h, "STA-2").labelIds).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("moves Pending to In progress with the status unchanged", async () => {
     const h = await harness();
     try {

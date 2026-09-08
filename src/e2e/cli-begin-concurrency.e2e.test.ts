@@ -119,6 +119,26 @@ describe("e2e serialized concurrent CLI", () => {
     });
   });
 
+  test("parallel begin of a bare Todo converges on one workspace, one worker, and one Progress label", async () => {
+    await withE2E({}, async (e2e) => {
+      memoryAddIssue(e2e.world, {
+        identifier: "STA-37",
+        stateId: "st-todo",
+        description: CRITERIA,
+        labelIds: [],
+      });
+      const calls = [e2e.spawnCli(["begin", "STA-37"]), e2e.spawnCli(["begin", "STA-37"])];
+      const results = await Promise.all(calls.map((call) => call.done));
+      expect(results.filter((result) => result.code === 0)).toHaveLength(1);
+      expect(results.filter((result) => result.code !== 0)[0]?.stderr).toContain("already running");
+      const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-37")!;
+      expect(issue.stateId).toBe("st-build");
+      expect(issue.labelIds).toEqual(["label-in-progress"]);
+      expect(e2e.workspaces.workspaces.filter((workspace) => !workspace.closed)).toHaveLength(1);
+      expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-37")).toHaveLength(1);
+    });
+  });
+
   test("parallel identical submits converge on one receipt", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-36");

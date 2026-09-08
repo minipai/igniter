@@ -146,7 +146,8 @@ export function deriveState(resolved: ResolvedDispatch, full: FullIssue): Author
   if (statusNeedsProgress(status) && !progress) {
     throw new ProtocolError(
       `refused: ${full.identifier} is ${resolved.config.states[status]} with no Progress label; ` +
-        `dispatch normalizes it to ${resolved.config.progress.pending} first`,
+        `begin normalizes a bare Todo to ${resolved.config.progress.pending} and ` +
+        `reconcile converges incomplete active stages`,
     );
   }
   if (!statusNeedsProgress(status) && progress) {
@@ -156,6 +157,21 @@ export function deriveState(resolved: ResolvedDispatch, full: FullIssue): Author
     );
   }
   return { status, progress, criteria: parseAcceptanceCriteria(full.description) };
+}
+
+/**
+ * Read-only recognition of a bare Todo: Todo status with no Progress label.
+ * Null for any other status or Progress combination, so unknown or
+ * conflicting sets never read as a bare Todo. Ticket-targeted `begin`
+ * normalizes this state itself; `status` reports it without writing.
+ */
+export function bareTodoState(resolved: ResolvedDispatch, full: FullIssue): AuthoritativeState | null {
+  const status = statusOf(resolved, full.state.id);
+  const progresses = (full.labels ?? [])
+    .map((l) => progressOf(resolved, l.id))
+    .filter((p): p is ProtocolProgress => p !== undefined);
+  if (status !== "todo" || progresses.length !== 0) return null;
+  return { status: "todo", progress: null, criteria: parseAcceptanceCriteria(full.description) };
 }
 
 // ---------------------------------------------------------------------------
@@ -900,6 +916,39 @@ export async function setProgress(
   }
 }
 
+/**
+ * Normalize a bare Todo (no Progress label) to Todo+Pending through the
+ * shared `setProgress` boundary: every non-Progress label is kept and
+ * exactly Pending is added. Unknown or conflicting Progress combinations
+ * never reach this path — `bareTodoState` must already have named the ticket
+ * a bare Todo. Linear is read back and verified before returning; the write
+ * itself carries the same owner-race behavior as every other `setProgress`
+ * call, and the claim lock serializes dispatch commands. The ticket stays
+ * Todo: the caller's normal claim path moves it to Build.
+ */
+export async function normalizeBareTodo(
+  deps: ProtocolDeps,
+  full: FullIssue,
+): Promise<FullIssue> {
+  const status = statusOf(deps.resolved, full.state.id);
+  const progresses = (full.labels ?? [])
+    .map((l) => progressOf(deps.resolved, l.id))
+    .filter((p): p is ProtocolProgress => p !== undefined);
+  if (status !== "todo" || progresses.length !== 0) {
+    throw new ProtocolError(
+      `refused: begin normalizes only a bare Todo (no Progress label); ` +
+        `${full.identifier} is ${status ?? full.state.name}+${progresses.join("+") || "no progress"}`,
+    );
+  }
+  await setProgress(deps, full, "pending");
+  const verified = await readback(deps, full.id);
+  const state = deriveState(deps.resolved, verified);
+  if (state.status !== "todo" || state.progress !== "pending") {
+    throw new ProtocolError(`Linear did not converge on Todo+Pending; retry the command`);
+  }
+  return verified;
+}
+
 /** Move status and Progress together, then read back and verify both. */
 export async function moveStatus(
   deps: ProtocolDeps,
@@ -1036,9 +1085,10 @@ function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { n
     return { next: [], note: `no workspace command applies in ${status}; dispatch owns this state` };
   }
   if (status === "todo") {
-    if (progress === "pending") return { next: ["block"], note: "waiting for dispatch claim (Todo+Pending)" };
+    if (progress === null) return { next: ["begin"], note: "bare Todo (no Progress label): begin normalizes it to Todo+Pending and launches Build" };
+    if (progress === "pending") return { next: ["begin"], note: null };
     if (progress === "blocked") return { next: ["unblock"], note: null };
-    return { next: [], note: `unexpected Todo+${progress}; dispatch normalizes it` };
+    return { next: [], note: `unexpected Todo+${progress}; begin refuses it` };
   }
   if (progress === "pending") return { next: ["begin", "block"], note: null };
   if (progress === "in_progress") return { next: ["submit", "block"], note: null };

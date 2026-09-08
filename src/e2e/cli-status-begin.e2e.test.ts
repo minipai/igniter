@@ -90,4 +90,67 @@ describe("e2e status/begin vertical slice", () => {
       expect(e2e.workspaces.workspaces).toEqual([]);
     });
   });
+
+  test("begin normalizes a bare Todo and enters Build+In progress in one operation", async () => {
+    await withE2E(async (e2e) => {
+      memoryAddIssue(e2e.world, {
+        identifier: "STA-2",
+        stateId: "st-todo",
+        description: CRITERIA,
+        labelIds: [],
+      });
+      const begun = expectOk(await e2e.cli(["begin", "STA-2"]));
+      expect(begun.stdout).toContain("builder-sta-2");
+      expect(begun.stdout).toContain("Todo → Build");
+      const issue = (await e2e.client.fetchIssue("STA-2"))!;
+      expect(issue.state.name).toBe("Build");
+      expect((issue.labels ?? []).map((l) => l.name)).toEqual(["In progress"]);
+      expect(e2e.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
+      expect(e2e.workspaces.agents.filter((a) => a.name === "builder-sta-2")).toHaveLength(1);
+    });
+  });
+
+  test("status <ticket> --json on a bare Todo reports an actionable next step with no writes", async () => {
+    await withE2E(async (e2e) => {
+      memoryAddIssue(e2e.world, {
+        identifier: "STA-3",
+        stateId: "st-todo",
+        description: CRITERIA,
+        labelIds: [],
+      });
+      const json = expectOk(await e2e.cli(["status", "STA-3", "--json"]));
+      const payload = JSON.parse(json.stdout) as {
+        status: string;
+        progress: string | null;
+        next: string[];
+        note: string | null;
+      };
+      expect(payload.status).toBe("todo");
+      expect(payload.progress).toBeNull();
+      expect(payload.next).toEqual(["begin"]);
+      expect(payload.note).toContain("bare Todo");
+      const issue = (await e2e.client.fetchIssue("STA-3"))!;
+      expect(issue.state.name).toBe("Todo");
+      expect(issue.labels ?? []).toEqual([]);
+      expect(e2e.workspaces.workspaces).toEqual([]);
+    });
+  });
+
+  test("begin refuses a conflicting Todo with several Progress labels and starts nothing", async () => {
+    await withE2E(async (e2e) => {
+      memoryAddIssue(e2e.world, {
+        identifier: "STA-4",
+        stateId: "st-todo",
+        description: CRITERIA,
+        labelIds: ["label-pending", "label-blocked"],
+      });
+      const result = await e2e.cli(["begin", "STA-4"]);
+      expectFail(result, "2 Progress labels");
+      const issue = (await e2e.client.fetchIssue("STA-4"))!;
+      expect(issue.state.name).toBe("Todo");
+      expect((issue.labels ?? []).map((l) => l.name)).toEqual(["Pending", "Blocked"]);
+      expect(e2e.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(0);
+      expect(e2e.workspaces.agents).toHaveLength(0);
+    });
+  });
 });

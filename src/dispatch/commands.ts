@@ -33,6 +33,7 @@ import { commanderConfigForRun, keptStageProfiles, launchFor, recordStageProfile
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import type { LinearClientLike } from "./linear.ts";
 import {
+  bareTodoState,
   beginMutation,
   blockMutation,
   countBuildSlots,
@@ -40,6 +41,7 @@ import {
   describeState,
   incompleteStatusText,
   latestValidReceipt,
+  normalizeBareTodo,
   normalizeOwnerMove,
   statusOf,
   submitMutation,
@@ -527,12 +529,20 @@ async function ticketStatusCommand(identifier: string, ctx: CommandContext): Pro
   try {
     state = deriveState(ctx.resolved, full);
   } catch (error) {
-    // Incomplete active states fail closed here without writes: the text
-    // names the pair and points at `reconcile`. Other tickets are
-    // unaffected — this command names exactly one ticket.
-    const incomplete = incompleteStatusText(ctx.resolved, full);
-    if (incomplete) return fail(incomplete);
-    return fail((error as Error).message);
+    // A bare Todo is the one incomplete state this read reports instead of
+    // refusing: the JSON names it and offers the actionable next step
+    // (`begin`), with no background dispatch reference. Incomplete active
+    // stages fail closed without writes: the text names the pair and points
+    // at `reconcile`. Other tickets are unaffected — this command names
+    // exactly one ticket.
+    const bare = bareTodoState(ctx.resolved, full);
+    if (bare) {
+      state = bare;
+    } else {
+      const incomplete = incompleteStatusText(ctx.resolved, full);
+      if (incomplete) return fail(incomplete);
+      return fail((error as Error).message);
+    }
   }
   const data = describeState(full, meta, state);
   return { ok: true, text: JSON.stringify(data, null, 2), data };
@@ -860,7 +870,7 @@ async function beginCommand(
 
 async function beginTicket(ctx: CommandContext, identifier: string): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
-  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
+  let full = (await client.fetchIssue(identifier)) as FullIssue | null;
   if (!full) {
     await decisions.record(identifier, `begin failed: ticket "${identifier}" was not found in Linear`);
     return fail(`ticket "${identifier}" was not found in Linear`);
@@ -883,11 +893,28 @@ async function beginTicket(ctx: CommandContext, identifier: string): Promise<Com
   try {
     state = deriveState(resolved, full);
   } catch (error) {
-    // Incomplete active states start no stage agent: fail closed and point
-    // at `reconcile`, before any workspace or worker exists.
-    const incomplete = incompleteStatusText(resolved, full);
-    if (incomplete) return refuse(ctx, full.identifier, new ProtocolError(incomplete));
-    return refuse(ctx, full.identifier, error);
+    // A bare Todo (no Progress label) is the one incomplete state
+    // ticket-targeted begin normalizes itself: criteria first, then Pending
+    // through the shared claim/serialization boundary, then the normal Todo
+    // claim below. Unknown or conflicting Progress combinations and
+    // incomplete active states keep failing closed before any workspace or
+    // worker exists.
+    const bare = bareTodoState(resolved, full);
+    if (!bare) {
+      const incomplete = incompleteStatusText(resolved, full);
+      if (incomplete) return refuse(ctx, full.identifier, new ProtocolError(incomplete));
+      return refuse(ctx, full.identifier, error);
+    }
+    if (!(await ensureAcceptanceCriteria(client, resolved, full, decisions))) {
+      return fail(`ticket "${full.identifier}" has no acceptance-criteria checklist and was not claimed; a comment was left on the issue`);
+    }
+    try {
+      full = await normalizeBareTodo(depsOf(ctx), full);
+    } catch (error2) {
+      return refuse(ctx, full.identifier, error2);
+    }
+    await decisions.record(full.identifier, `normalized: Todo → Todo+${resolved.config.progress.pending}`);
+    state = deriveState(resolved, full);
   }
   if (state.status === "todo") {
     if (!(await ensureAcceptanceCriteria(client, resolved, full, decisions))) {

@@ -200,6 +200,38 @@ describe("status", () => {
       h.stop();
     }
   });
+
+  test("status <ticket> --json on a bare Todo reports an actionable next step without writing", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [] });
+      const out = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      expect(out.ok).toBe(true);
+      const data = out.data as Record<string, unknown>;
+      expect(data).toMatchObject({ status: "todo", progress: null, next: ["begin"] });
+      expect(String(data["note"])).toContain("bare Todo");
+      // Read-only: no labels written, no workspace opened, no decision line.
+      expect(h.world.issues[0]!.labelIds).toEqual([]);
+      expect(h.world.issues[0]!.comments).toHaveLength(0);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.lines).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("status <ticket> --json on Todo+Pending offers begin as the next step", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const out = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      expect(out.ok).toBe(true);
+      const data = out.data as Record<string, unknown>;
+      expect(data).toMatchObject({ status: "todo", progress: "pending", next: ["begin"] });
+    } finally {
+      h.stop();
+    }
+  });
 });
 
 describe("begin", () => {
@@ -506,6 +538,96 @@ describe("begin", () => {
       expect(out.text).toContain("provider/model ids belong to OpenCode");
       expect(h.workspaces.agents).toHaveLength(0);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a bare Todo is normalized to Todo+Pending and enters Build+In progress in one begin", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-177", stateId: TODO, priority: 1, description: CRITERIA, title: "Bare", labelIds: [] });
+      const out = await runCommand(["begin", "STA-177"], h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("builder-sta-177");
+      expect(out.text).toContain("Todo → Build");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(BUILD);
+      expect(issue.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.workspaces.workspaces).toHaveLength(1);
+      expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-177")).toHaveLength(1);
+      expect(h.lines).toEqual([
+        "STA-177 normalized: Todo → Todo+Pending",
+        "STA-177 started build worker builder-sta-177 in ws-1 (Todo → Build)",
+      ]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a bare Todo without acceptance criteria stays bare and is refused with the nudge comment", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-178", stateId: TODO, priority: 1, description: "plans only", labelIds: [] });
+      const out = await runCommand(["begin", "STA-178"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("acceptance-criteria");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(TODO);
+      expect(issue.labelIds).toEqual([]);
+      expect(issue.comments.some((c) => c.body.includes("<!-- igniter:missing-criteria -->"))).toBe(true);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("begin refuses a Todo with several Progress labels without any rewrite or workspace", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-179", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING, BLOCKED] });
+      const out = await runCommand(["begin", "STA-179"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("2 Progress labels");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(TODO);
+      expect(issue.labelIds).toEqual([PENDING, BLOCKED]);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.workspaces.agents).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("begin refuses a non-pending Todo progress without rewriting labels", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-180", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      const out = await runCommand(["begin", "STA-180"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("begin needs Todo+Pending");
+      const issue = h.world.issues[0]!;
+      expect(issue.stateId).toBe(TODO);
+      expect(issue.labelIds).toEqual([COMPLETE]);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a bare Todo at max_running is normalized to Pending but starts no worker", async () => {
+    const h = await harness(1);
+    try {
+      addIssue(h.world, { identifier: "STA-0", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      addIssue(h.world, { identifier: "STA-181", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [] });
+      const out = await runCommand(["begin", "STA-181"], h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("at max_running (1)");
+      const issue = h.world.issues[1]!;
+      expect(issue.stateId).toBe(TODO);
+      expect(issue.labelIds).toEqual([PENDING]);
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.workspaces.agents).toHaveLength(0);
     } finally {
       h.stop();
     }
