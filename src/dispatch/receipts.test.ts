@@ -54,6 +54,7 @@ function deliverPayload() {
     v: 1 as const,
     kind: "deliver" as const,
     checkpoint: CHECKPOINT,
+    landed: CHECKPOINT,
     lineage: "abc123 deliver work",
     merge_ready: true as const,
     owner_actions: ["push the branch"],
@@ -77,12 +78,43 @@ describe("receipt publisher", () => {
 
   test("receiptBlock round-trips through the parser for every kind", () => {
     for (const kind of ["build", "review-pass", "review-fail", "deliver"] as const) {
-      expect(parseReceiptBlock(`report\n\n${receiptBlock(kind, CHECKPOINT, SUBMISSION)}\n`)).toEqual({
+      const landed = kind === "deliver" ? CHECKPOINT : undefined;
+      expect(parseReceiptBlock(`report\n\n${receiptBlock(kind, CHECKPOINT, SUBMISSION, landed)}\n`)).toEqual({
         kind,
         checkpoint: CHECKPOINT,
+        ...(landed ? { landed } : {}),
         submission: SUBMISSION,
       });
     }
+  });
+
+  test("deliver receipts round-trip the landed commit and legacy v1 receipts inherit their checkpoint", () => {
+    const landed = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    expect(parseReceiptBlock(`report\n\n${receiptBlock("deliver", CHECKPOINT, SUBMISSION, landed)}\n`)).toEqual({
+      kind: "deliver",
+      checkpoint: CHECKPOINT,
+      landed,
+      submission: SUBMISSION,
+    });
+    expect(parseReceiptBlock(deliverReceiptBody(deliverPayload(), SUBMISSION))).toMatchObject({
+      kind: "deliver",
+      checkpoint: CHECKPOINT,
+      landed: CHECKPOINT,
+      submission: SUBMISSION,
+    });
+    const misplaced = receiptBlock("build", CHECKPOINT, SUBMISSION).replace(
+      "  submission:",
+      `  landed: ${landed}\n  submission:`,
+    );
+    expect(() => parseReceiptBlock(`x\n\n${misplaced}\n`)).toThrow('only a deliver receipt carries "landed"');
+    const legacy = receiptBlock("deliver", CHECKPOINT, SUBMISSION);
+    expect(legacy).not.toContain("  landed:");
+    expect(parseReceiptBlock(`x\n\n${legacy}\n`)).toEqual({
+      kind: "deliver",
+      checkpoint: CHECKPOINT,
+      landed: CHECKPOINT,
+      submission: SUBMISSION,
+    });
   });
 });
 
@@ -157,6 +189,32 @@ describe("receipt lookup", () => {
       receipt: { kind: "review-pass" },
     });
     expect(latestValidReceipt([prose])).toBeNull();
+  });
+
+  test("a legacy v1 Deliver receipt stays newer than its Review PASS", () => {
+    const checkpoint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const comments = [
+      {
+        id: "review",
+        body: `review\n\n${receiptBlock("review-pass", checkpoint, "review-submission")}\n`,
+      },
+      {
+        id: "legacy-deliver",
+        body: `deliver\n\n${receiptBlock("deliver", checkpoint, "deliver-submission")}\n`,
+      },
+    ];
+
+    expect(latestValidReceipt(comments)).toEqual({
+      id: "legacy-deliver",
+      body: comments[1]!.body,
+      receipt: {
+        kind: "deliver",
+        checkpoint,
+        landed: checkpoint,
+        submission: "deliver-submission",
+      },
+    });
+    expect(comments[1]!.body).not.toContain("  landed:");
   });
 
   test("findReceipt dedupes on kind plus submission", () => {

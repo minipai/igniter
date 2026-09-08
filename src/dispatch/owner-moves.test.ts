@@ -139,11 +139,12 @@ function reviewPayload(verdict: "pass" | "fail", head = HEAD) {
   };
 }
 
-function deliverPayload(head = HEAD) {
+function deliverPayload(head = HEAD, landed = head) {
   return {
     v: 1,
     kind: "deliver",
     checkpoint: head,
+    landed,
     lineage: "abc123 deliver work",
     merge_ready: true,
     owner_actions: ["push the branch"],
@@ -163,7 +164,7 @@ function seedReceipt(
   const id = `comment-seed-${issueOf(h, identifier).comments.length + 1}`;
   issueOf(h, identifier).comments.push({
     id,
-    body: `prior report\n\n${receiptBlock(kind, checkpoint, submission)}\n`,
+    body: `prior report\n\n${receiptBlock(kind, checkpoint, submission, kind === "deliver" ? checkpoint : undefined)}\n`,
     createdAt: `2026-09-04T00:00:00.${String(seedClock).padStart(6, "0")}Z`,
   });
   return id;
@@ -171,6 +172,7 @@ function seedReceipt(
 
 function seedLineage(h: Harness, identifier: string, checkpoint = HEAD): void {
   h.git.ancestors.add(`${checkpoint} feature/${identifier.toLowerCase()}`);
+  h.git.ancestors.add(`${checkpoint} main`);
 }
 
 function wsIdOf(h: Harness, identifier: string): string {
@@ -356,6 +358,39 @@ describe("owner transitions from Linear state", () => {
     }
   });
 
+  test("a delivered ticket is not judged stale after the rebase rewrote its branch", async () => {
+    const h = await harness();
+    try {
+      await toReviewComplete(h, "STA-1");
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
+      await watcherOf(h).pollOnce();
+      await wsCmd(h, "STA-1", ["begin"]);
+      // Deliver rebased and landed the new tip: the approved SHA no longer
+      // binds the rewritten branch, but the landed SHA reads back from main.
+      const rebased = "bbbbbbbbbbbbbbbb";
+      h.git.ancestors.add(`${rebased} main`);
+      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload(HEAD, rebased)))).ok).toBe(true);
+      const at = h.lines.length;
+      await watcherOf(h).pollOnce();
+      // Deliver+Complete with a deliver receipt waits for the owner: no
+      // fresh approval, no stale refusal, no label rollback.
+      expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
+      expect(h.lines.slice(at).some((l) => l.includes("approved"))).toBe(false);
+      expect(h.lines.slice(at).some((l) => l.includes("stale"))).toBe(false);
+      // The owner confirms the landing: Done cleanup verifies the landed
+      // commit, not the approved checkpoint left behind by the rebase.
+      await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
+      await watcherOf(h).pollOnce();
+      expect(issueOf(h, "STA-1").stateId).toBe(DONE);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([]);
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 done: Deliver+Complete → Done"));
+      expect(h.lines).toContainEqual(expect.stringContaining(rebased));
+    } finally {
+      h.stop();
+    }
+  });
+
   test("kind mismatches and missing receipts refuse with a diagnosis", async () => {
     const h = await harness();
     try {
@@ -394,7 +429,7 @@ describe("owner transitions from Linear state", () => {
       seedReceipt(h, "STA-1", "review-pass");
       seedLineage(h, "STA-1");
       // A newer comment with two receipt blocks is invalid and skipped.
-      const block = receiptBlock("deliver", HEAD, "sub-broken-0000001");
+      const block = receiptBlock("deliver", HEAD, "sub-broken-0000001", HEAD);
       issueOf(h, "STA-1").comments.push({
         id: "comment-broken",
         body: `note\n\n${block}\n${block}\n`,
@@ -654,6 +689,7 @@ describe("multi-receipt tickets read newest-first", () => {
     expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass", HEAD2)))).ok).toBe(true);
     h.git.ancestors.add(`${HEAD2} feature/${identifier.toLowerCase()}`);
+    h.git.ancestors.add(`${HEAD2} main`);
   }
 
   function receiptComments(h: Harness, identifier: string) {
@@ -837,11 +873,13 @@ describe("owner-move guards", () => {  async function outcomeOf(h: Harness, iden
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
       await wsCmd(h, "STA-1", ["begin"]);
-      // A planted newer receipt for another checkpoint moves history on.
+      // A planted newer receipt for another checkpoint moves history on. The
+      // far-future stamp keeps it newest no matter how many comments earlier
+      // tests published through the shared fake clock.
       issueOf(h, "STA-1").comments.push({
         id: "comment-planted",
         body: `note\n\n${receiptBlock("review-fail", "other-checkpoint", "sub-plant-00000001")}\n`,
-        createdAt: "2026-09-04T00:00:00.000099Z",
+        createdAt: "2026-09-05T00:00:00.000000Z",
       });
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
       expect(out.ok).toBe(false);

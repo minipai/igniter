@@ -177,10 +177,10 @@ async function probeBranch(git: GitRunner, repoRoot: string, branch: string): Pr
  * - only the derived ticket path is ever removed, and only when it sits
  *   on the derived ticket branch;
  * - a dirty worktree (tracked or untracked changes) is kept as is;
- * - the delivered checkpoint must read back from the target branch
- *   (`merge-base --is-ancestor`) before the worktree goes;
- * - the branch goes only after the worktree, and only when its tip reads
- *   back from the target branch;
+ * - the delivered checkpoint and the ticket branch tip must both read back
+ *   from the target branch (`merge-base --is-ancestor`) before the worktree
+ *   goes;
+ * - the branch goes only after the worktree, with the tip checked again;
  * - removal uses plain `worktree remove` and `branch -d`: both refuse
  *   rather than drop content, and `--force`/`-D` never appear here.
  *
@@ -286,6 +286,15 @@ export async function cleanupTicketCheckout(
   } catch (error) {
     return kept(
       `${identifier}: checkpoint ${shortRef(checkpoint)} is not reachable from ${targetBranch} ` +
+        `(${gitError(error)}); keeping worktree and branch`,
+    );
+  }
+
+  try {
+    await git.run(["merge-base", "--is-ancestor", worktree.branch, targetBranch], repoRoot);
+  } catch (error) {
+    return kept(
+      `${identifier}: branch ${worktree.branch} holds commits not reachable from ${targetBranch} ` +
         `(${gitError(error)}); keeping worktree and branch`,
     );
   }

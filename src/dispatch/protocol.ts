@@ -182,15 +182,18 @@ const RECEIPT_KINDS: ReceiptKind[] = ["build", "review-pass", "review-fail", "de
  * The machine-readable receipt tail of every receipt comment: one fenced
  * YAML block after the human report. Owners and Herdr read the same block;
  * no hidden HTML marker is written anymore. Old HTML receipts stay in
- * history but are never parsed back into state.
+ * history but are never parsed back into state. Deliver receipts also carry
+ * the landed commit, which may differ from the approved checkpoint after a
+ * Deliver rebase; every other kind carries the checkpoint alone.
  */
-export function receiptBlock(kind: ReceiptKind, checkpoint: string, submission: string): string {
+export function receiptBlock(kind: ReceiptKind, checkpoint: string, submission: string, landed?: string): string {
   return (
     "```yaml\n" +
     "igniter_receipt:\n" +
     `  version: ${RECEIPT_VERSION}\n` +
     `  kind: ${kind}\n` +
     `  checkpoint: ${checkpoint}\n` +
+    (landed !== undefined ? `  landed: ${landed}\n` : "") +
     `  submission: ${submission}\n` +
     "```"
   );
@@ -199,6 +202,8 @@ export function receiptBlock(kind: ReceiptKind, checkpoint: string, submission: 
 export interface ParsedReceipt {
   kind: ReceiptKind;
   checkpoint: string;
+  /** The landed commit on a deliver receipt; absent on every other kind. */
+  landed?: string;
   submission: string;
 }
 
@@ -213,7 +218,8 @@ export class ReceiptParseError extends Error {
 const FENCE_RE = /^```(yaml|yml)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
 const RECEIPT_HEAD_RE = /^igniter_receipt[ \t]*:[ \t]*$/;
 const RECEIPT_FIELD_RE = /^  ([A-Za-z_]+)[ \t]*:[ \t]*(\S+)[ \t]*$/;
-const RECEIPT_FIELDS = ["version", "kind", "checkpoint", "submission"] as const;
+const RECEIPT_FIELDS = ["version", "kind", "checkpoint", "landed", "submission"] as const;
+const RECEIPT_REQUIRED_FIELDS = ["version", "kind", "checkpoint", "submission"] as const;
 
 /** A fenced block counts as a receipt block when it names the receipt head, even malformed. */
 function isReceiptBlock(content: string): boolean {
@@ -269,7 +275,7 @@ export function parseReceiptBlock(body: string): ParsedReceipt | null {
     }
     seen.set(key, value);
   }
-  for (const key of RECEIPT_FIELDS) {
+  for (const key of RECEIPT_REQUIRED_FIELDS) {
     if (!seen.has(key)) {
       throw new ReceiptParseError(`refused: receipt block misses "${key}"; one receipt needs version, kind, checkpoint, submission`);
     }
@@ -282,9 +288,19 @@ export function parseReceiptBlock(body: string): ParsedReceipt | null {
   if (!(RECEIPT_KINDS as readonly string[]).includes(kind)) {
     throw new ReceiptParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, review-pass, review-fail, or deliver`);
   }
+  const checkpoint = seen.get("checkpoint") as string;
+  const landed = seen.get("landed");
+  if (landed !== undefined && kind !== "deliver") {
+    throw new ReceiptParseError(`refused: only a deliver receipt carries "landed"; ${kind} needs version, kind, checkpoint, submission`);
+  }
   return {
     kind: kind as ReceiptKind,
-    checkpoint: seen.get("checkpoint") as string,
+    checkpoint,
+    // Deliver receipts written before landed identity was introduced used
+    // the approved checkpoint as the direct-merge landing. Preserve that
+    // v1 read contract in memory without rewriting the historical comment;
+    // new Deliver submits still require an explicit landed commit.
+    ...(kind === "deliver" ? { landed: landed ?? checkpoint } : {}),
     submission: seen.get("submission") as string,
   };
 }
@@ -387,7 +403,10 @@ export interface ReviewSubmit {
 export interface DeliverSubmit {
   v: 1;
   kind: "deliver";
+  /** The approved checkpoint: must match the review-pass receipt. */
   checkpoint: string;
+  /** The landed commit: must exist and read back from the local target branch. May equal the checkpoint. */
+  landed: string;
   lineage: string;
   merge_ready: boolean;
   owner_actions: string[];
@@ -584,7 +603,8 @@ export function parseDeliverSubmit(raw: unknown): DeliverSubmit {
   if (!isRecord(raw) || raw["v"] !== 1 || raw["kind"] !== "deliver") {
     throw new ProtocolError(`refused: deliver submit needs {"v":1,"kind":"deliver",...}; got ${JSON.stringify(raw)?.slice(0, 120)}`);
   }
-  if (!nonEmpty(raw["checkpoint"])) throw new ProtocolError(`refused: deliver submit needs a "checkpoint"`);
+  if (!nonEmpty(raw["checkpoint"])) throw new ProtocolError(`refused: deliver submit needs a "checkpoint" (the approved SHA)`);
+  if (!nonEmpty(raw["landed"])) throw new ProtocolError(`refused: deliver submit needs a "landed" commit (the SHA on local main)`);
   if (!nonEmpty(raw["lineage"])) throw new ProtocolError(`refused: deliver submit needs "lineage" (commit ancestry)`);
   if (raw["merge_ready"] !== true) throw new ProtocolError(`refused: deliver submit needs "merge_ready": true`);
   if (!Array.isArray(raw["owner_actions"]) || raw["owner_actions"].length === 0 || !raw["owner_actions"].every(nonEmpty)) {
@@ -594,6 +614,7 @@ export function parseDeliverSubmit(raw: unknown): DeliverSubmit {
     v: 1,
     kind: "deliver",
     checkpoint: (raw["checkpoint"] as string).trim(),
+    landed: (raw["landed"] as string).trim(),
     lineage: (raw["lineage"] as string).trim(),
     merge_ready: true,
     owner_actions: (raw["owner_actions"] as string[]).map((a) => a.trim()),
@@ -661,14 +682,15 @@ export function deliverReceiptBody(payload: DeliverSubmit, submission: string): 
   const lines = [
     `# Deliver receipt`,
     ``,
-    `Checkpoint: \`${payload.checkpoint}\``,
+    `Approved checkpoint: \`${payload.checkpoint}\``,
+    `Landed commit: \`${payload.landed}\``,
     `Lineage:`,
     payload.lineage,
     ``,
     `Merge preparation: complete. Still for the owner:`,
     ...payload.owner_actions.map((a) => `- ${a}`),
     ``,
-    receiptBlock("deliver", payload.checkpoint, submission),
+    receiptBlock("deliver", payload.checkpoint, submission, payload.landed),
   ];
   return lines.join("\n") + "\n";
 }
@@ -863,7 +885,9 @@ export interface StateJson {
   status: ProtocolStatus;
   progress: ProtocolProgress | null;
   checkpoint: string | null;
-  receipt: { kind: ReceiptKind | null; id: string | null; checkpoint: string | null; submission: string | null };
+  /** The landed commit from the newest deliver receipt; null until delivered. */
+  landed: string | null;
+  receipt: { kind: ReceiptKind | null; id: string | null; checkpoint: string | null; landed: string | null; submission: string | null };
   block_reason: string | null;
   next: string[];
   note: string | null;
@@ -906,6 +930,7 @@ function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unk
       v: 1,
       kind: "deliver",
       checkpoint: at,
+      landed: "<landed commit already on local main; equals the checkpoint when no rebase happened>",
       lineage: "<commit ancestry since approval>",
       merge_ready: true,
       owner_actions: ["<push/deploy step left for the owner>"],
@@ -944,8 +969,9 @@ export function describeState(
   // The Linear receipt is the protocol truth; workspace tokens only fill
   // the display cache when Linear holds no receipt yet.
   const linear = latestValidReceipt(full.comments);
-  const receiptKind = (linear?.receipt.kind ?? meta["receipt_kind"] ?? null) as ReceiptKind | null;
-  const checkpoint = linear?.receipt.checkpoint ?? meta["checkpoint"] ?? null;
+  const receiptKind = (linear ? linear.receipt.kind : (meta["receipt_kind"] ?? null)) as ReceiptKind | null;
+  const checkpoint = linear ? linear.receipt.checkpoint : (meta["checkpoint"] ?? null);
+  const landed = linear ? (linear.receipt.landed ?? null) : (meta["landed"] ?? null);
   return {
     ticket: {
       identifier: full.identifier,
@@ -956,11 +982,13 @@ export function describeState(
     status: state.status,
     progress: state.progress,
     checkpoint,
+    landed,
     receipt: {
       kind: receiptKind,
-      id: linear?.id ?? meta["receipt_id"] ?? null,
+      id: linear ? linear.id : (meta["receipt_id"] ?? null),
       checkpoint,
-      submission: linear?.receipt.submission ?? meta["submission"] ?? null,
+      landed,
+      submission: linear ? linear.receipt.submission : (meta["submission"] ?? null),
     },
     block_reason: meta["block_reason"] ?? null,
     next,
@@ -1135,6 +1163,7 @@ export async function adoptTicket(
       status: state.status,
       progress: state.progress,
       checkpoint: linear?.receipt.checkpoint ?? null,
+      landed: linear?.receipt.landed ?? null,
       receipt_id: linear?.id ?? null,
       receipt_kind: linear?.receipt.kind ?? null,
       submission: linear?.receipt.submission ?? null,
@@ -1407,7 +1436,7 @@ function completedSubmission(
       const submission = submissionId({ ticket: full.identifier, ...payload });
       const receipt = findReceipt(full.comments, "deliver", submission);
       if (receipt?.id) {
-        return `already submitted deliver ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
+        return `already submitted deliver approved ${payload.checkpoint} landed ${payload.landed}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
   } catch {
@@ -1549,10 +1578,25 @@ async function submitDeliver(
   full: FullIssue,
   payload: DeliverSubmit,
 ): Promise<string> {
-  const head = await worktreeHead(deps, full.identifier);
-  if (payload.checkpoint !== head) {
+  // The approved checkpoint binds the review-pass receipt; the worktree HEAD
+  // is intentionally not compared. Deliver owns the rebase, so a rebased
+  // branch legitimately heads a new SHA while the approval still binds the
+  // old one. Only a new code change — a new checkpoint needing a new build
+  // submit and acceptance — invalidates the approval, and that returns
+  // through the normal build/review path, never through an automatic
+  // content-equivalence proof here.
+  if (!/^[0-9a-f]{7,64}$/.test(payload.landed)) {
     throw new ProtocolError(
-      `refused: submit names checkpoint ${payload.checkpoint} but the worktree HEAD is ${head}`,
+      `refused: landed commit ${JSON.stringify(payload.landed)} is not a Git hash; submit the landed commit SHA, not a branch or revision expression`,
+    );
+  }
+  const target = deps.resolved.config.targetBranch;
+  try {
+    await deps.git.run(["merge-base", "--is-ancestor", payload.landed, target], deps.repoRoot);
+  } catch (error) {
+    throw new ProtocolError(
+      `refused: landed commit ${payload.landed} is not on local ${target} ` +
+        `(${(error as Error).message}); land the rebased branch first, then submit its SHA as "landed"`,
     );
   }
   const submission = submissionId({ ticket: full.identifier, ...payload });
@@ -1563,13 +1607,14 @@ async function submitDeliver(
     status: "deliver",
     progress: "in_progress",
     checkpoint: payload.checkpoint,
+    landed: payload.landed,
     receipt_id: commentId,
     receipt_kind: "deliver",
     submission,
   });
   await moveStatus(deps, full, "deliver", "complete");
   await mirror(deps, workspaceId, { status: "deliver", progress: "complete" });
-  const text = `submitted deliver ${payload.checkpoint} → Deliver+Complete (receipt ${commentId})`;
+  const text = `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Deliver+Complete (receipt ${commentId})`;
   await deps.decisions.record(full.identifier, text);
   return text;
 }
@@ -1743,7 +1788,11 @@ export async function normalizeOwnerMove(
 
   // An inherited Complete only converges when its receipt checkpoint still
   // binds the ticket branch lineage; a replaced branch refuses with a line.
-  if (!(await checkpointInLineage(deps, full.identifier, checkpoint))) {
+  // This gate guards the approval handoff only: once a deliver receipt names
+  // a landed commit, the rebased branch legitimately no longer contains the
+  // approved SHA, so deliver receipts skip the branch-lineage gate and the
+  // Done landing verifies the landed commit on the target branch instead.
+  if (latest.receipt.kind !== "deliver" && !(await checkpointInLineage(deps, full.identifier, checkpoint))) {
     return fail(
       `${full.identifier}: ${linearStatus}+complete names checkpoint ${checkpoint} but it is not in the ticket branch lineage; ` +
         `the receipt is stale, refusing`,
@@ -1893,6 +1942,10 @@ async function landDone(
   latest: FoundReceipt,
 ): Promise<OwnerMoveOutcome> {
   const { checkpoint, submission } = latest.receipt;
+  // Done cleanup verifies the landed commit, not the approved checkpoint: a
+  // rebased delivery rewrote the branch, so the approved SHA may no longer
+  // read back from the target branch while the landed SHA must.
+  const landed = latest.receipt.kind === "deliver" ? latest.receipt.landed! : checkpoint;
   await setProgress(deps, full, null);
   const verified = await readback(deps, full.id);
   const restate = deriveState(deps.resolved, verified);
@@ -1907,7 +1960,7 @@ async function landDone(
   } catch (error) {
     snapshot = null;
     // Herdr is unreachable, not gone: the close retries on a later poll.
-    closeDue = { workspaceId: null, checkpoint };
+    closeDue = { workspaceId: null, checkpoint: landed };
     closeNote = `workspace close deferred (herdr unreachable: ${(error as Error).message}); the next poll retries`;
   }
   if (closeDue === null) {
@@ -1919,7 +1972,7 @@ async function landDone(
         await deps.workspaces.close(workspace.workspaceId);
         closeNote = "workspace closed";
       } catch (error) {
-        closeDue = { workspaceId: workspace.workspaceId, checkpoint };
+        closeDue = { workspaceId: workspace.workspaceId, checkpoint: landed };
         closeNote = `workspace close failed (${(error as Error).message}); the next poll retries`;
       }
     }
@@ -1930,7 +1983,7 @@ async function landDone(
   let cleanupNote = "checkout cleanup skipped";
   try {
     const cleanup = await cleanupTicketCheckout(deps.git, deps.repoRoot, full.identifier, {
-      checkpoint,
+      checkpoint: landed,
       targetBranch: deps.resolved.config.targetBranch,
     });
     await guardRecord(deps, full.identifier, cleanup.detail);
@@ -1939,7 +1992,7 @@ async function landDone(
     await guardRecord(deps, full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
   }
   const text =
-    `done: Deliver+Complete → Done (delivery receipt ${submission} binds ${checkpoint}); ` +
+    `done: Deliver+Complete → Done (delivery receipt ${submission} binds approved ${checkpoint} landed ${landed}); ` +
     `${closeNote}; ${cleanupNote}`;
   return { result: { ok: true, text }, followUp: null, closeDue };
 }

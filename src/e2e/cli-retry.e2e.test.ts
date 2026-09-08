@@ -243,8 +243,8 @@ describe("e2e reconcile follow-up retries", () => {
       ownerSetProgress(e2e.world, "STA-29", "Complete");
       expectOk(await e2e.cli(["reconcile", "STA-29"]));
       expectOk(await e2e.cli(["begin", "STA-29"]));
-      expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head)) }));
       git(["merge", "feature/sta-29", "--no-ff", "-m", "land STA-29"], e2e.repoDir);
+      expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head)) }));
       ownerSetState(e2e.world, "STA-29", "Done");
       ownerSetProgress(e2e.world, "STA-29", "Complete");
       e2e.workspaces.failNext("workspace.close");

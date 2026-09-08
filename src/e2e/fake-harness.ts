@@ -347,12 +347,13 @@ export function commandEvidencePayload(head: string, verdict: "pass" | "fail") {
   };
 }
 
-export function deliverPayload(head: string) {
+export function deliverPayload(head: string, landed: string = head) {
   return {
     v: 1,
     kind: "deliver",
     checkpoint: head,
-    lineage: `ticket branch contains ${head}`,
+    landed,
+    lineage: `ticket branch contains ${head}, landed as ${landed}`,
     merge_ready: true,
     owner_actions: ["push the branch and confirm the deploy preview"],
   };

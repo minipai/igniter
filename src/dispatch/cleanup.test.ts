@@ -158,6 +158,27 @@ describe("cleanupTicketCheckout", () => {
     expect(git.cleanOfForce()).toBe(true);
   });
 
+  test("keeps a clean worktree when its delivered checkpoint landed but its branch tip did not", async () => {
+    const { root, git } = await initRepo();
+    const repo = await openTicket(root, git, "STA-14");
+    const checkpoint = await ticketCommit(repo);
+    await mergeTicket(git, root, repo.branch);
+    writeFileSync(join(repo.path, "after-delivery.txt"), "later branch work\n");
+    await git.run(["add", "after-delivery.txt"], repo.path);
+    await git.run(["commit", "-m", "later branch work"], repo.path);
+
+    const outcome = await cleanupTicketCheckout(git, root, "STA-14", {
+      checkpoint,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.detail).toContain("holds commits not reachable from main");
+    expect(await worktreeListed(git, root, repo.path)).toBe(true);
+    expect(await branchExists(git, root, repo.branch)).toBe(true);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
   test("keeps everything when the checkpoint never landed on the target", async () => {
     const { root, git } = await initRepo();
     const repo = await openTicket(root, git, "STA-5");

@@ -114,9 +114,10 @@ function expectYamlReceipt(body: string, kind: ReceiptKind, checkpoint: string):
   return (parsed as ParsedReceipt).submission;
 }
 
-/** Owner-move transitions verify the receipt checkpoint against this lineage. */
+/** Owner-move transitions verify the receipt checkpoint against this lineage; the landed check reads the same target. */
 function seedLineage(h: Harness, identifier: string, checkpoint = HEAD): void {
   h.git.ancestors.add(`${checkpoint} feature/${identifier.toLowerCase()}`);
+  h.git.ancestors.add(`${checkpoint} main`);
 }
 
 function buildPayload(head = HEAD) {
@@ -160,11 +161,12 @@ function reviewPayload(verdict: "pass" | "fail", head = HEAD) {
   };
 }
 
-function deliverPayload(head = HEAD) {
+function deliverPayload(head = HEAD, landed = head) {
   return {
     v: 1,
     kind: "deliver",
     checkpoint: head,
+    landed,
     lineage: "abc123 deliver work",
     merge_ready: true,
     owner_actions: ["push the branch"],
@@ -419,6 +421,41 @@ describe("state --json", () => {
     }
   });
 
+  test("a Linear receipt cannot inherit a stale landed commit from workspace metadata", async () => {
+    const h = await harness();
+    try {
+      const wsId = await claim(h, "STA-1");
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
+      await h.workspaces.reportMetadata(wsId, {
+        checkpoint: "cached-checkpoint",
+        landed: "stale-landed",
+        receipt_id: "cached-receipt",
+        receipt_kind: "deliver",
+        submission: "cached-submission",
+      });
+
+      const out = await runCommand(["state", "--json"], h.ctx, { workspaceId: wsId });
+      expect(out.ok).toBe(true);
+      expect(out.data).toMatchObject({
+        checkpoint: HEAD,
+        landed: null,
+        receipt: {
+          kind: "review-pass",
+          id: "comment-pass",
+          checkpoint: HEAD,
+          landed: null,
+          submission: "abc123abc123abc1",
+        },
+      });
+    } finally {
+      h.stop();
+    }
+  });
+
   test("multiple Progress labels refuse every workspace command without writes", async () => {
     const h = await harness();
     try {
@@ -459,6 +496,38 @@ describe("begin", () => {
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("Deliver recovery keeps the approved checkpoint after the worktree was rebased", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, {
+        identifier: "STA-1",
+        stateId: DELIVER,
+        priority: 1,
+        description: CRITERIA,
+        labelIds: [IN_PROGRESS],
+      });
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
+      const rebased = "bbbbbbbbbbbbbbbb";
+      h.git.head = rebased;
+
+      const recovered = await runCommand(["begin", "STA-1"], h.ctx);
+      expect(recovered.ok).toBe(true);
+      expect(recovered.text).toContain("Linear kept");
+      const order = h.workspaces.promptsFor("deliverer-sta-1").at(-1)!;
+      expect(order).toContain(`Checkpoint to work from: \`${HEAD}\``);
+      expect(order).not.toContain(`Checkpoint to work from: \`${rebased}\``);
+      expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
@@ -638,11 +707,96 @@ describe("submit", () => {
         body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
         createdAt: "2026-09-04T00:00:00.000001Z",
       });
+      seedLineage(h, "STA-1");
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
       expect(out.ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expectYamlReceipt(issueOf(h, "STA-1").comments.at(-1)!.body, "deliver", HEAD);
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ receipt_kind: "deliver" });
+      expect(parseReceiptBlock(issueOf(h, "STA-1").comments.at(-1)!.body)).toMatchObject({ landed: HEAD });
+      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ receipt_kind: "deliver", landed: HEAD });
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("deliver submit accepts a rebased HEAD when the approval still binds", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      issueOf(h, "STA-1").stateId = DELIVER;
+      issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
+      // Deliver rebased the branch: HEAD moved on, the approval still binds
+      // the old checkpoint, and the new tip already landed on main.
+      const rebased = "bbbbbbbbbbbbbbbb";
+      h.git.head = rebased;
+      h.git.ancestors.add(`${rebased} main`);
+      const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload(HEAD, rebased)));
+      expect(out.ok).toBe(true);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
+      expect(parseReceiptBlock(issueOf(h, "STA-1").comments.at(-1)!.body)).toMatchObject({
+        kind: "deliver",
+        checkpoint: HEAD,
+        landed: rebased,
+      });
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("deliver submit refuses a missing, unknown, or unlanded commit", async () => {
+    for (const landed of ["", "main", "f".repeat(40), "e".repeat(40)]) {
+      const h = await harness();
+      try {
+        await claim(h, "STA-1");
+        issueOf(h, "STA-1").stateId = DELIVER;
+        issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+        issueOf(h, "STA-1").comments.push({
+          id: "comment-pass",
+          body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+          createdAt: "2026-09-04T00:00:00.000001Z",
+        });
+        seedLineage(h, "STA-1");
+        const before = JSON.stringify(issueOf(h, "STA-1"));
+        const raw = deliverPayload() as Record<string, unknown>;
+        const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify({ ...raw, landed }));
+        expect(out.ok).toBe(false);
+        expect(out.text).toMatch(
+          landed === ""
+            ? /needs a "landed" commit/
+            : landed === "main"
+              ? /is not a Git hash/
+              : /is not on local main/,
+        );
+        expect(JSON.stringify(issueOf(h, "STA-1"))).toBe(before);
+      } finally {
+        h.stop();
+      }
+    }
+  });
+
+  test("deliver submit refuses a checkpoint the approval does not bind", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      issueOf(h, "STA-1").stateId = DELIVER;
+      issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
+      seedLineage(h, "STA-1");
+      const other = "other000000000005";
+      h.git.ancestors.add(`${other} main`);
+      const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload(other, other)));
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("approval binds");
+      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
     } finally {
       h.stop();
     }

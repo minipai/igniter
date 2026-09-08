@@ -95,16 +95,19 @@ describe("e2e full lifecycle to Done", () => {
 
       expectOk(await e2e.cli(["begin", "STA-10"]));
       expect(e2e.workspaces.promptsFor("deliverer-sta-10")).toHaveLength(1);
+      // Deliver lands the branch with real git first, then submits the
+      // approved checkpoint together with the landed commit.
+      git(["merge", "feature/sta-10", "--no-ff", "-m", "land STA-10"], e2e.repoDir);
+      expect(git(["merge-base", "--is-ancestor", head, "main"], e2e.repoDir).stdout).toBe("");
       const delivered = expectOk(
         await e2e.cli(["submit", "STA-10", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head)) }),
       );
-      expect(delivered.stdout).toContain(`submitted deliver ${head} → Deliver+Complete`);
-      // The submit never merges: main is untouched until the owner lands it.
-      expect(mainHead(e2e.repoDir)).toBe(mainBefore);
+      expect(delivered.stdout).toContain(`submitted deliver approved ${head} landed ${head} → Deliver+Complete`);
+      // The landing already happened: main holds the delivery.
+      expect(mainHead(e2e.repoDir)).not.toBe(mainBefore);
       expect(git(["rev-parse", "feature/sta-10"], e2e.repoDir).stdout.trim()).toBe(head);
 
-      // The owner lands the branch with real git, moves to Done, reconciles.
-      git(["merge", "feature/sta-10", "--no-ff", "-m", "land STA-10"], e2e.repoDir);
+      // The owner confirms the landing and moves to Done, then reconciles.
       ownerSetState(e2e.world, "STA-10", "Done");
       ownerSetProgress(e2e.world, "STA-10", "Complete");
       const done = expectOk(await e2e.cli(["reconcile", "STA-10"]));
@@ -231,6 +234,7 @@ describe("e2e owner gates", () => {
       ownerSetProgress(e2e.world, "STA-13", "Complete");
       expectOk(await e2e.cli(["reconcile", "STA-13"]));
       expectOk(await e2e.cli(["begin", "STA-13"]));
+      git(["merge", "feature/sta-13", "--no-ff", "-m", "land STA-13"], e2e.repoDir);
       expectOk(
         await e2e.cli(["submit", "STA-13", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head13)) }),
       );

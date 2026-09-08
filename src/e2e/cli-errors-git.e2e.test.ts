@@ -77,6 +77,7 @@ async function advanceToDeliverComplete(e2e: E2E, identifier: string): Promise<s
   ownerSetProgress(e2e.world, identifier, "Complete");
   expectOk(await e2e.cli(["reconcile", identifier]));
   expectOk(await e2e.cli(["begin", identifier]));
+  git(["merge", `feature/${identifier.toLowerCase()}`, "--no-ff", "-m", `land ${identifier}`], e2e.repoDir);
   expectOk(await e2e.cli(["submit", identifier, "--input", "-"], {
     stdin: JSON.stringify(deliverPayload(head)),
   }));
@@ -269,14 +270,19 @@ describe("e2e Done cleanup refuses to discard real Git state", () => {
     await withE2E(async (e2e) => {
       const trackedHead = await advanceToDeliverComplete(e2e, "STA-24");
       const untrackedHead = await advanceToDeliverComplete(e2e, "STA-25");
-      const unmergedHead = await advanceToDeliverComplete(e2e, "STA-26");
+      await advanceToDeliverComplete(e2e, "STA-26");
 
-      git(["merge", "feature/sta-24", "--no-ff", "-m", "land STA-24"], e2e.repoDir);
-      git(["merge", "feature/sta-25", "--no-ff", "-m", "land STA-25"], e2e.repoDir);
       const trackedWorktree = join(e2e.repoDir, ".igniter", "runtime", "worktrees", "sta-24");
       const untrackedWorktree = join(e2e.repoDir, ".igniter", "runtime", "worktrees", "sta-25");
       writeFileSync(join(trackedWorktree, "sta-24.txt"), "uncommitted tracked edit\n");
       writeFileSync(join(untrackedWorktree, "local-only.txt"), "untracked\n");
+      const unmergedHead = commitWorktreeFile(
+        e2e.repoDir,
+        "STA-26",
+        "unmerged.txt",
+        "post-delivery branch work\n",
+        "unmerged ticket work",
+      );
 
       for (const identifier of ["STA-24", "STA-25", "STA-26"]) {
         ownerSetState(e2e.world, identifier, "Done");

@@ -36,6 +36,7 @@ import { launchFor } from "./agents.ts";
 import type { LinearClientLike } from "./linear.ts";
 import {
   deriveState,
+  latestReceiptOf,
   latestValidReceipt,
   moveStatus,
   setProgress,
@@ -393,7 +394,8 @@ export async function startStageTicket(
     head = "";
   }
   const linear = latestValidReceipt(full.comments);
-  const checkpoint = head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn");
+  const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
+  const checkpoint = approved?.receipt.checkpoint ?? (head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn"));
 
   // The run's recorded profiles win over live config, so a mid-run config
   // edit never drifts a retry or recovery.
@@ -508,6 +510,7 @@ async function recoverStageWorker(
   }
   const worktree = ticketWorktree(deps.repoRoot, full.identifier);
   const linear = latestValidReceipt(full.comments);
+  const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
   const git = deps.git ?? bunGitRunner();
   let head = "";
   try {
@@ -522,7 +525,7 @@ async function recoverStageWorker(
     criteria: state.criteria,
     worktreePath: worktree.path,
     branch: worktree.branch,
-    checkpoint: head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn"),
+    checkpoint: approved?.receipt.checkpoint ?? (head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn")),
     resultPath: resultPathFor(deps.repoRoot, full.identifier, stage),
     stage,
     promptPath: promptPathForStage(assets, stage),

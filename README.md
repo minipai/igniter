@@ -142,8 +142,12 @@ for a ticket's current state. To supervise the service separately or inspect
 startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
 
 After acceptance passes, review the evidence and move the ticket from Review
-to Deliver to approve landing. Move Deliver to Done after confirming the final
-push or deployment. The Commander reconciles those owner decisions.
+to Deliver to approve landing. Delivery rebases the feature branch onto local
+`main`, runs the required checks, lands on local `main`, and records both the
+approved checkpoint and the landed commit; a rebase that only changes the SHA
+keeps the approval, while a landing that needs code changes returns to
+acceptance or to you for a new decision. Move Deliver to Done after confirming
+the final push or deployment. The Commander reconciles those owner decisions.
 
 ## Development
 

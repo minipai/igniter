@@ -375,6 +375,55 @@ describe("pollOnce", () => {
     }
   });
 
+  test("a legacy Deliver completion is adopted without reopening it as Pending", async () => {
+    const { fake, client, resolved } = await setup();
+    try {
+      const checkpoint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      addIssue(fake.world, {
+        identifier: "STA-1",
+        stateId: DELIVER,
+        priority: 1,
+        description: CRITERIA,
+        labelIds: [COMPLETE],
+      });
+      fake.world.issues[0]!.comments.push(
+        {
+          id: "review-pass",
+          body: `review\n\n${receiptBlock("review-pass", checkpoint, "review-submission")}\n`,
+          createdAt: "2026-09-04T00:00:00.000001Z",
+        },
+        {
+          id: "legacy-deliver",
+          body: `deliver\n\n${receiptBlock("deliver", checkpoint, "deliver-submission")}\n`,
+          createdAt: "2026-09-04T00:00:00.000002Z",
+        },
+      );
+      const comments = fake.world.issues[0]!.comments.map((comment) => ({ ...comment }));
+      const workspaces = new FakeWorkspaces();
+      const { watcher, seen, lines } = watch(client, resolved, { workspaces });
+
+      await watcher.pollOnce();
+
+      expect(seen).toEqual(["STA-1"]);
+      expect(fake.world.issues[0]!.stateId).toBe(DELIVER);
+      expect(fake.world.issues[0]!.labelIds).toEqual([COMPLETE]);
+      expect(fake.world.issues[0]!.comments).toEqual(comments);
+      expect(workspaces.tokensFor("STA-1")).toMatchObject({
+        status: "deliver",
+        progress: "complete",
+        checkpoint,
+        landed: checkpoint,
+        receipt_kind: "deliver",
+        receipt_id: "legacy-deliver",
+        submission: "deliver-submission",
+      });
+      expect(lines).toContainEqual(expect.stringContaining("STA-1 adopted: no workspace found, reopened"));
+      expect(lines.some((line) => line.includes("approved: Review+Complete"))).toBe(false);
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("a half-written Todo claim finishes in its workspace without a second one", async () => {
     const { fake, client, resolved } = await setup();
     try {
@@ -495,7 +544,7 @@ describe("pollOnce", () => {
       });
       fake.world.issues[0]!.comments.push({
         id: "comment-2",
-        body: `# Deliver receipt\n\n${receiptBlock("deliver", "head-1", "sub-2")}\n`,
+        body: `# Deliver receipt\n\n${receiptBlock("deliver", "head-1", "sub-2", "head-1")}\n`,
         createdAt: "2026-09-04T00:00:00.000001Z",
       });
       const { watcher, lines } = watch(client, resolved, { workspaces });

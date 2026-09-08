@@ -111,7 +111,7 @@ describe("Commander delivery protocol", () => {
     expect(stageRules[0]).toContain("`diffwalk publish`");
     expect(stageRules[0]).toContain("the published Diffwalk link");
     expect(stageRules[2]).not.toContain("diffwalk");
-    expect(stageRules[2]).toContain("Merge the accepted checkpoint into the repository's local `main` branch");
+    expect(stageRules[2]).toContain("Merge the rebased branch into the repository's local `main` branch");
     expect(stageRules[2]).toContain("Do not stop after preparing the merge");
     expect(stageRules[2]).not.toContain("required delivery artifact");
   });

@@ -135,7 +135,10 @@ the change has landed. After an owner move, the Global Commander runs
 ticket. Igniter never scans the project for owner moves in the background.
 
 A receipt covers only its named checkpoint. Any new feature commit requires a
-new Build report and another acceptance attempt.
+new Build report and another acceptance attempt. A Deliver rebase that only
+changes the SHA is not a new feature commit: the approval stays valid and the
+Deliver submit records the approved checkpoint together with the landed
+commit.
 
 ## Feature branch
 
@@ -270,12 +273,28 @@ The owner's move from Review + Complete to Deliver is the delivery approval.
 Run `igniter begin <ticket>`, create the configured Deliver agent, and pass it the
 accepted checkpoint plus repository landing instructions.
 
-Require the Deliver agent to merge the accepted checkpoint into the
+The Deliver agent owns the landing: it rebases the feature branch onto the
+current local `main`, runs the repository's required integration checks, merges
+the result into local `main`, and reports both the approved checkpoint and the
+landed commit. A rebase that only changes the SHA never invalidates the
+approval and never needs re-acceptance; the Deliver submit records the two
+identities side by side and only requires that the landed commit already read
+back from local `main`. When landing needs a code change beyond the rebase,
+the agent stops reusing the old approval and returns the ticket to acceptance
+or the owner for a new decision, starting from a new Build submit.
+
+Require the Deliver agent to merge the accepted change into the
 repository's local `main`; preparing a merge, rebasing only the feature branch,
 or returning commands for the owner is incomplete. Validate that local `main`
-contains the accepted change, its lineage, and remaining owner steps before
+contains the landed commit, its lineage, and remaining owner steps before
 submitting the Deliver report. Do not push or rewrite history unless the owner
 requested it or the repository instructions require it.
+
+This is a process trust boundary, not a proof: the program checks that a valid
+Review PASS receipt binds the approved checkpoint, that the owner moved the
+ticket to Deliver, and that the reported landed commit exists on local `main`.
+It performs no patch-id, replay, or content/tree-equivalence comparison and
+never claims it can detect unaccepted content on its own.
 
 After Deliver + Complete, wait for the owner to confirm the actual push or
 deployment by moving the ticket to Done. That move clears Progress and closes
