@@ -173,6 +173,44 @@ describe("cli dispatch forwarding", () => {
     }
   });
 
+  test("start returns the foreground Commander's exit code", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "igniter-cli-foreground-exit-"));
+    const fake = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: {
+        kind: "commander_foreground",
+        command: [process.execPath, "-e", "process.exit(7)"],
+        cwd: dir,
+      },
+    }));
+    try {
+      const result = await runCliFull(["start"], {
+        cwd: repoPointingAt(fake.port),
+        env: outsideWorkspaceEnv(),
+      });
+      expect(result.code).toBe(7);
+      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("start cold-boots serve and reports an owned child that exits early", async () => {
+    const probe = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = probe.port;
+    probe.stop();
+    if (port === undefined) throw new Error("probe has no port");
+
+    const result = await runCliFull(["start"], {
+      cwd: repoPointingAt(port),
+      env: { ...outsideWorkspaceEnv(), LINEAR_API_KEY: "", IGNITER_PORT: "" },
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("automatic `igniter serve` exited with code 1");
+  });
+
   test("a refused command prints to stderr and exits 1", async () => {
     const fake = startFakeDispatch(() => ({ ok: false, text: 'ticket "STA-9" was not found in Linear' }));
     try {

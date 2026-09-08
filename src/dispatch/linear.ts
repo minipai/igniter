@@ -199,6 +199,10 @@ export class LinearClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
+  private safeMessage(message: unknown): string {
+    return String(message).replaceAll(this.apiKey, "[redacted]");
+  }
+
   private async graphql<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
     const controller = new AbortController();
     // One timer drives both: the AbortSignal releases a hung real
@@ -226,22 +230,31 @@ export class LinearClient {
         timeoutRejection,
       ]);
     } catch (error) {
+      clearTimeout(timer);
       if (error instanceof LinearError && error.status === 0 && error.message.includes("timed out")) throw error;
       if (controller.signal.aborted) {
         throw new LinearError(0, `Linear request timed out after ${this.timeoutMs}ms`);
       }
-      throw new LinearError(0, `Linear is unreachable at ${this.endpoint}: ${(error as Error).message}`);
+      throw new LinearError(0, `Linear is unreachable at ${this.endpoint}: ${this.safeMessage((error as Error).message)}`);
     }
     try {
       if (!res.ok) {
         // The body may describe the failure; the API key is never part of it.
-        const hint = await res.text().catch(() => "");
-        const suffix = hint.trim() ? `: ${hint.trim().slice(0, 300)}` : "";
+        const hint = await Promise.race([
+          res.text().catch((error) => {
+            if (controller.signal.aborted) throw error;
+            return "";
+          }),
+          timeoutRejection,
+        ]);
+        const safeHint = this.safeMessage(hint.trim()).slice(0, 300);
+        const suffix = safeHint ? `: ${safeHint}` : "";
         throw new LinearError(res.status, `Linear request failed with HTTP ${res.status}${suffix}`);
       }
-      const payload = (await res.json()) as GraphQLResponse<T>;
+      const payload = (await Promise.race([res.json(), timeoutRejection])) as GraphQLResponse<T>;
       if (payload.errors?.length) {
-        throw new LinearError(200, `Linear GraphQL error: ${payload.errors.map((e) => e.message).join("; ").slice(0, 500)}`);
+        const messages = payload.errors.map((e) => this.safeMessage(e.message)).join("; ").slice(0, 500);
+        throw new LinearError(200, `Linear GraphQL error: ${messages}`);
       }
       if (!payload.data) {
         throw new LinearError(200, "Linear returned no data");
@@ -252,7 +265,7 @@ export class LinearClient {
       if (controller.signal.aborted) {
         throw new LinearError(0, `Linear request timed out after ${this.timeoutMs}ms`);
       }
-      throw new LinearError(0, `Linear response body failed: ${(error as Error).message}`);
+      throw new LinearError(0, `Linear response body failed: ${this.safeMessage((error as Error).message)}`);
     } finally {
       // The timeout covers the body read too: a connection that dies after
       // the headers must still settle, and abort cuts the stalled stream.

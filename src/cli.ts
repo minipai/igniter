@@ -6,8 +6,8 @@ import {
 import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
 import { bunGitRunner } from "./dispatch/worktrees.ts";
 import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
-import { startServer } from "./server/serve.ts";
 import { startDispatchServe } from "./server/dispatch-serve.ts";
+import { installServeShutdown, prepareServe, type ServeShutdownState } from "./server/serve-startup.ts";
 import { autoStartServe } from "./server/auto-start.ts";
 
 function flagValue(name: string): string | undefined {
@@ -18,16 +18,6 @@ function flagValue(name: string): string | undefined {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(name);
-}
-
-function resolvePort(configPort: number): number {
-  const fromFlag = flagValue("--port");
-  const fromEnv = process.env["IGNITER_PORT"];
-  const parsed = Number(fromFlag ?? fromEnv ?? configPort);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`invalid port: ${fromFlag ?? fromEnv}`);
-  }
-  return parsed;
 }
 
 function repoRoot(): string {
@@ -57,43 +47,31 @@ async function serveCommand(): Promise<void> {
   if (hasFlag("--no-watch")) {
     throw new Error("`igniter serve --no-watch` was removed; `igniter serve` never starts a Linear watch");
   }
-  const config = await loadDispatchConfig(repoRoot());
-  const client = new LinearClient({ apiKey: requireLinearApiKey() });
   const root = repoRoot();
-  const port = resolvePort(config.listenPort);
-  let handle: Awaited<ReturnType<typeof startDispatchServe>> | undefined;
-  let server: ReturnType<typeof startServer> | undefined;
-  let stopping = false;
-  const stop = () => {
-    if (stopping) {
-      server?.stop();
-      process.exit(1);
-    }
-    stopping = true;
-    void (async () => {
-      try {
-        if (handle) await handle.stop();
-        else server?.stop();
-      } finally {
-        process.exit(0);
-      }
-    })();
-  };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  const shutdown: ServeShutdownState = {};
+  installServeShutdown(shutdown);
   try {
-    handle = await startDispatchServe({
-      repoRoot: root,
-      config,
-      client,
-      workspaces: createHerdrWorkspaces(),
-      git: bunGitRunner(),
-      port,
-      onServer: (started) => {
-        server = started;
-        console.log(`igniter serving on http://${config.listenHost}:${started.port} (commands only; no Linear watch)`);
+    const started = await prepareServe(
+      { repoRoot: root, flagPort: flagValue("--port"), envPort: process.env["IGNITER_PORT"] },
+      {
+        loadConfig: loadDispatchConfig,
+        loadKey: () => requireLinearApiKey(),
+        makeClient: (apiKey) => new LinearClient({ apiKey }),
+        starter: ({ repoRoot, config, client, port }) => startDispatchServe({
+          repoRoot,
+          config,
+          client,
+          workspaces: createHerdrWorkspaces(),
+          git: bunGitRunner(),
+          port,
+          onServer: (startedServer) => {
+            shutdown.server = startedServer;
+            console.log(`igniter serving on http://${config.listenHost}:${startedServer.port} (commands only; no Linear watch)`);
+          },
+        }),
       },
-    });
+    );
+    shutdown.handle = started.handle;
   } catch (error) {
     console.error((error as Error).message);
     process.exit(1);
