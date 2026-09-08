@@ -9,6 +9,7 @@ import { createHerdrWorkspaces } from "./dispatch/workspaces.ts";
 import { API_PORT, WEB_PORT } from "./server/ports.ts";
 import { startServer } from "./server/serve.ts";
 import { startDispatchServe } from "./server/dispatch-serve.ts";
+import { autoStartServe } from "./server/auto-start.ts";
 
 function flagValue(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -32,6 +33,25 @@ function resolvePort(configPort: number): number {
 
 function repoRoot(): string {
   return process.cwd();
+}
+
+interface CommanderForegroundLaunch {
+  kind: "commander_foreground";
+  command: string[];
+  cwd: string;
+}
+
+function commanderForeground(data: unknown): CommanderForegroundLaunch | null {
+  if (typeof data !== "object" || data === null) return null;
+  const launch = data as Partial<CommanderForegroundLaunch>;
+  if (
+    launch.kind !== "commander_foreground" ||
+    !Array.isArray(launch.command) ||
+    launch.command.length === 0 ||
+    !launch.command.every((part) => typeof part === "string") ||
+    typeof launch.cwd !== "string"
+  ) return null;
+  return launch as CommanderForegroundLaunch;
 }
 
 async function serveCommand(): Promise<void> {
@@ -86,33 +106,65 @@ async function serveCommand(): Promise<void> {
  * Ticket-targeted commands (`begin <ticket>`, `submit <ticket> --input -`,
  * `block`, `unblock`) run from the project workspace and carry no Herdr
  * workspace id; only the legacy `state` and bare `begin` workspace commands
- * forward it, plus the stdin payload for `submit <ticket> --input -`.
+ * forward it. `start` requests a foreground launch, and `submit` forwards its
+ * stdin payload.
  */
 async function forwardCommand(argv: string[], options: CommandCallOptions = {}): Promise<void> {
   const config = await loadDispatchConfig(repoRoot());
   const base = `http://${config.listenHost}:${config.listenPort}`;
+  const post = () => fetch(`${base}/api/command`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ argv, ...options }),
+    signal: AbortSignal.timeout(30_000),
+  });
   let res: Response;
   try {
-    res = await fetch(`${base}/api/command`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ argv, ...options }),
-      signal: AbortSignal.timeout(30_000),
-    });
+    res = await post();
   } catch {
-    console.error(
-      `no dispatch server at ${config.listenHost}:${config.listenPort} — start it with \`igniter serve\` first`,
-    );
-    process.exit(1);
+    if (argv[0] !== "start") {
+      console.error(
+        `no dispatch server at ${config.listenHost}:${config.listenPort} — start it with \`igniter serve\` first`,
+      );
+      process.exit(1);
+    }
+    try {
+      await autoStartServe({
+        base,
+        repoRoot: repoRoot(),
+        bunPath: process.execPath,
+        cliPath: import.meta.path,
+      });
+      res = await post();
+    } catch (error) {
+      console.error((error as Error).message);
+      process.exit(1);
+    }
   }
   const payload = (await res.json().catch(() => ({}))) as {
     ok?: boolean;
     text?: string;
+    data?: unknown;
   };
   const ok = res.ok && payload.ok === true;
   const text = payload.text ?? `command failed with HTTP ${res.status}`;
   if (ok) {
+    const launch = commanderForeground(payload.data);
+    if (argv[0] === "start" && options.directStart === true && !launch) {
+      console.error("dispatch did not return a valid foreground Commander launch");
+      process.exit(1);
+    }
     console.log(text);
+    if (launch) {
+      const agent = Bun.spawn(launch.command, {
+        cwd: launch.cwd,
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const code = await agent.exited;
+      if (code !== 0) process.exit(code);
+    }
     return;
   }
   console.error(text);
@@ -170,6 +222,7 @@ try {
     if (command === "submit") {
       options.input = await readStdin();
     }
+    if (command === "start") options.directStart = true;
     if (command === "begin" && process.argv.length <= 3 && process.env["HERDR_WORKSPACE_ID"]) {
       options.workspaceId = process.env["HERDR_WORKSPACE_ID"];
     }

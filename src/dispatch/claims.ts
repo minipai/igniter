@@ -793,6 +793,8 @@ export interface CommandResult {
 
 export interface CommandCallOptions {
   workspaceId?: string;
+  /** CLI `start` asks dispatch for a foreground Commander launch. */
+  directStart?: boolean;
   /** Raw stdin payload for `submit --input -`. */
   input?: string;
 }

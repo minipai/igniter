@@ -97,6 +97,13 @@ export function launchFor(profile: CommanderAgentConfig): { kind: string; args: 
   return { kind: profile.harness, args: launchArgsFor(profile) };
 }
 
+/** Interactive Commander command with its first work order supplied at launch. */
+export function foregroundCommandFor(profile: CommanderAgentConfig, workOrder: string): string[] {
+  const { kind, args } = launchFor(profile);
+  if (kind === "opencode") return [kind, ...args, "--prompt", workOrder];
+  return [kind, ...args, workOrder];
+}
+
 // ---------------------------------------------------------------------------
 // Run record: the resolved stage-agent profiles frozen into workspace
 // metadata at claim time, so retries and recovery reuse the run's own

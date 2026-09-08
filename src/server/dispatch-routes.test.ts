@@ -94,11 +94,28 @@ async function postCommand(
 }
 
 describe("POST /api/command", () => {
+  test("CLI start returns a foreground agent launch without opening Herdr layout", async () => {
+    const served = await serve();
+    try {
+      const started = await postCommand(served.base, ["start"], { directStart: true });
+
+      expect(started.status).toBe(200);
+      expect(started.payload.ok).toBe(true);
+      expect(started.payload.data).toMatchObject({
+        kind: "commander_foreground",
+        cwd: expect.any(String),
+      });
+      expect(served.workspaces.calls).toEqual([]);
+      expect(served.workspaces.workspaces).toEqual([]);
+    } finally {
+      served.stop();
+    }
+  });
+
   test("status, start, begin, pause, and resume round-trip through HTTP", async () => {
     const served = await serve();
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-
       const started = await postCommand(served.base, ["start", "STA-1"]);
       expect(started.status).toBe(200);
       expect(started.payload.ok).toBe(true);

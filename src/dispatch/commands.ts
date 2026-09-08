@@ -174,7 +174,7 @@ export function runCommand(
       case "status":
         return statusCommand(args, ctx);
       case "start":
-        return startCommand(args, ctx);
+        return startCommand(args, ctx, options.directStart === true);
       case "begin":
         return beginCommand(args, ctx, options.workspaceId);
       case "reconcile":
@@ -615,7 +615,11 @@ export function answerKeysFor(kind: string | undefined, key: string): string[] {
  * `commander-<ticket>`. `start` is Commander lifecycle and assignment; the
  * Commander itself launches stage workers with ticket-targeted `begin`.
  */
-async function startCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
+async function startCommand(
+  args: string[],
+  ctx: CommandContext,
+  directStart: boolean,
+): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   if (args.length > 1 || (args.length === 1 && (!args[0] || args[0].startsWith("-")))) {
     return fail(usage("start"));
@@ -639,7 +643,32 @@ async function startCommand(args: string[], ctx: CommandContext): Promise<Comman
     }
     assignment = full;
   }
-  const { startCommanderFlow } = await import("./commander-start.ts");
+  const { prepareCommanderForeground, startCommanderFlow } = await import("./commander-start.ts");
+  if (directStart) {
+    let launch;
+    try {
+      launch = prepareCommanderForeground(
+        {
+          client,
+          resolved,
+          workspaces: ctx.workspaces,
+          decisions,
+          repoRoot: ctx.repoRoot,
+        },
+        assignment,
+      );
+    } catch (error) {
+      await decisions.record("commander", `start failed: ${(error as Error).message}`);
+      return fail(`start failed: ${(error as Error).message}`);
+    }
+    const what = assignment ? `assigned ${assignment.identifier}` : "patrolling queue and active tickets";
+    await decisions.record("commander", `prepared foreground ${launch.command[0]} Commander (${what})`);
+    return {
+      ok: true,
+      text: `starting Commander with ${launch.command[0]} in the current terminal; ${what}`,
+      data: launch,
+    };
+  }
   const out = await startCommanderFlow(
     {
       client,

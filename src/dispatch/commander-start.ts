@@ -26,7 +26,7 @@
 // were for an identical retry.
 
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
-import { launchFor } from "./agents.ts";
+import { foregroundCommandFor, launchFor } from "./agents.ts";
 import type { LinearClient } from "./linear.ts";
 import {
   confirmPromptDelivery,
@@ -62,6 +62,12 @@ export interface CommanderStartResult {
   text: string;
   workspaceId?: string;
   agent?: string;
+}
+
+export interface CommanderForegroundLaunch {
+  kind: "commander_foreground";
+  command: string[];
+  cwd: string;
 }
 
 export interface CommanderWorkOrderInput {
@@ -117,6 +123,53 @@ export function buildCommanderWorkOrder(input: CommanderWorkOrderInput): string 
     `completion marker, read and validate the worker result file, then perform the ticket-targeted submit. ` +
     `Keep patrolling the rest of the queue beside it.\n`
   );
+}
+
+/**
+ * A small first message for an interactive Commander launched by the CLI.
+ * The bundled document owns the full operating instructions; keeping this
+ * message to paths and the first command also avoids presenting policy-like
+ * meta-instructions as the user's first prompt.
+ */
+export function buildCommanderLaunchPrompt(input: CommanderWorkOrderInput): string {
+  const context =
+    `Run the Igniter Global Commander workflow documented at ${input.globalMd}.\n` +
+    `Project: ${input.project} (team ${input.team}). Workspace: ${input.repoRoot}. ` +
+    `Deliveries land on local \`${input.targetBranch}\`.\n`;
+  if (input.assignment) {
+    return (
+      context +
+      `Assigned ticket: ${input.assignment.identifier}: "${input.assignment.title}". ` +
+      `Begin with \`igniter status ${input.assignment.identifier} --json\`.\n`
+    );
+  }
+  return context + `Begin with \`igniter status --json\`.\n`;
+}
+
+/** The configured interactive Commander command for the calling terminal. */
+export function prepareCommanderForeground(
+  deps: CommanderStartDeps,
+  assignment?: FullIssue,
+): CommanderForegroundLaunch {
+  const config = deps.config ?? deps.resolved.config;
+  const assets = deps.assets ?? commanderAssetPaths();
+  const profile = config.commander.agents.commander;
+  const order = buildCommanderLaunchPrompt({
+    project: config.project,
+    team: config.team ?? "",
+    repoRoot: deps.repoRoot,
+    targetBranch: config.targetBranch,
+    globalMd: assets.global,
+    commanderHarness: profile.harness,
+    commanderModel: profile.model,
+    ...(profile.effort !== undefined ? { commanderEffort: profile.effort } : {}),
+    ...(assignment ? { assignment: { identifier: assignment.identifier, title: assignment.title } } : {}),
+  });
+  return {
+    kind: "commander_foreground",
+    command: foregroundCommandFor(profile, order),
+    cwd: deps.repoRoot,
+  };
 }
 
 /** A pane in the workspace with no agent on it; null when every pane is busy. */

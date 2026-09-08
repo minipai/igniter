@@ -110,6 +110,34 @@ describe("singleton lifecycle", () => {
     }
   });
 
+  test("CLI start prepares the configured foreground Commander without touching Herdr layout", async () => {
+    const h = await harness();
+    try {
+      const out = await runCommand(["start"], h.ctx, { directStart: true });
+
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("current terminal");
+      const launch = out.data as { kind: string; cwd: string; command: string[] };
+      expect(launch.kind).toBe("commander_foreground");
+      expect(launch.cwd).toBe(h.repoRoot);
+      expect(launch.command.slice(0, 5)).toEqual([
+        "codex",
+        "-m",
+        "gpt-5.6-sol",
+        "-c",
+        'model_reasoning_effort="high"',
+      ]);
+      expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
+      expect(launch.command.at(-1)).toContain(commanderAssetPaths().global);
+      expect(launch.command.at(-1)).not.toContain("Do not read any other prompt");
+      expect(launch.command.at(-1)).not.toContain("You are the Global Commander");
+      expect(h.workspaces.calls).toEqual([]);
+      expect(h.workspaces.workspaces).toEqual([]);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("start STA-X reuses the same singleton across tickets, never commander-STA-X", async () => {
     const h = await harness();
     try {

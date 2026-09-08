@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   commanderConfigForRun,
+  foregroundCommandFor,
   launchArgsFor,
   launchFor,
   launchProblems,
@@ -123,6 +124,28 @@ describe("launchArgsFor", () => {
       kind: "claude",
       args: ["--model", "claude-sonnet-5", "--effort", "high"],
     });
+  });
+
+  test("foregroundCommandFor supplies the work order to each interactive harness", () => {
+    expect(foregroundCommandFor(
+      { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+      "patrol now",
+    )).toEqual([
+      "codex",
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="high"',
+      "patrol now",
+    ]);
+    expect(foregroundCommandFor(
+      { harness: "claude", model: "claude-sonnet-5", effort: "high" },
+      "patrol now",
+    )).toEqual(["claude", "--model", "claude-sonnet-5", "--effort", "high", "patrol now"]);
+    expect(foregroundCommandFor(
+      { harness: "opencode", model: "opencode/model" },
+      "patrol now",
+    )).toEqual(["opencode", "-m", "opencode/model", "--prompt", "patrol now"]);
   });
 });
 

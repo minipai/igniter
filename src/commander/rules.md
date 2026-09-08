@@ -107,9 +107,10 @@ call Linear directly or through MCP, or publish receipts.
   retry, and recovery. It returns the ticket, criteria, status, Progress,
   checkpoint, latest receipt, legal next commands, and current submit
   schema, with no ticket workspace context.
-- `igniter start [<ticket>]` starts or resumes the singleton Commander and,
-  with a ticket, assigns it immediately. Repeated calls reuse the one
-  Commander; never `commander-<ticket>`.
+- `igniter start [<ticket>]` starts the configured Commander directly in the
+  calling terminal and, with a ticket, assigns it immediately. The CLI starts
+  `igniter serve` detached first when dispatch is absent; it never opens a
+  Herdr workspace, tab, or pane for the Commander.
 - `igniter begin <ticket>` launches the ticket's current stage worker.
   The stage derives from Linear; never pass a stage name. Linear moves to
   In progress only after the worker is ready and its prompt delivery

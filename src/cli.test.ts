@@ -77,10 +77,11 @@ describe("cli --version", () => {
 interface SeenCommand {
   argv: string[];
   workspaceId?: string;
+  directStart?: boolean;
   input?: string;
 }
 
-function startFakeDispatch(reply: (seen: SeenCommand) => { ok: boolean; text: string }): {
+function startFakeDispatch(reply: (seen: SeenCommand) => { ok: boolean; text: string; data?: unknown }): {
   port: number;
   seen: SeenCommand[];
   stop: () => void;
@@ -140,6 +141,31 @@ describe("cli dispatch forwarding", () => {
     }
   });
 
+  test("start runs the prepared Commander in the current terminal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "igniter-cli-foreground-"));
+    const marker = join(dir, "commander-started");
+    const fake = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: {
+        kind: "commander_foreground",
+        command: ["/usr/bin/touch", marker],
+        cwd: dir,
+      },
+    }));
+    try {
+      const result = await runCliFull(["start"], {
+        cwd: repoPointingAt(fake.port),
+        env: outsideWorkspaceEnv(),
+      });
+      expect(result.code).toBe(0);
+      expect(await Bun.file(marker).exists()).toBe(true);
+      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
+    } finally {
+      fake.stop();
+    }
+  });
+
   test("a refused command prints to stderr and exits 1", async () => {
     const fake = startFakeDispatch(() => ({ ok: false, text: 'ticket "STA-9" was not found in Linear' }));
     try {
@@ -150,7 +176,7 @@ describe("cli dispatch forwarding", () => {
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('ticket "STA-9" was not found in Linear');
       expect(result.stdout).toBe("");
-      expect(fake.seen).toEqual([{ argv: ["start", "STA-9"] }]);
+      expect(fake.seen).toEqual([{ argv: ["start", "STA-9"], directStart: true }]);
     } finally {
       fake.stop();
     }
@@ -256,7 +282,13 @@ describe("cli workspace commands", () => {
 
 describe("cli command coverage", () => {
   test("every dispatch command forwards argv and honors the reply", async () => {
-    const fake = startFakeDispatch((seen) => ({ ok: true, text: seen.argv.join(" ") }));
+    const fake = startFakeDispatch((seen) => ({
+      ok: true,
+      text: seen.argv.join(" "),
+      ...(seen.argv[0] === "start"
+        ? { data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() } }
+        : {}),
+    }));
     try {
       const dir = repoPointingAt(fake.port);
       const cases: string[][] = [
@@ -285,6 +317,7 @@ describe("cli command coverage", () => {
       }
       expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
       expect(fake.seen.every((entry) => entry.workspaceId === undefined)).toBe(true);
+      expect(fake.seen.filter((entry) => entry.argv[0] === "start").every((entry) => entry.directStart === true)).toBe(true);
     } finally {
       fake.stop();
     }
