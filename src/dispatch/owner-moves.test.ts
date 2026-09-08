@@ -185,11 +185,17 @@ function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
   return runCommand(argv, h.ctx, { workspaceId: wsIdOf(h, identifier), input });
 }
 
-/** Claim through `start` and drive the ticket to Review+Complete. */
+/** Claim through `start`, submit the first Build, and hand it to Review: the owner moves Build+Complete to Review and an explicit reconcile converges it. */
 async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+  expect(issueOf(h, identifier).stateId).toBe(BUILD);
+  expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
+  seedLineage(h, identifier);
+  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
+  expect(issueOf(h, identifier).labelIds).toEqual([PENDING]);
   expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
   seedLineage(h, identifier);
@@ -636,7 +642,8 @@ describe("submission retries", () => {
       const receipts = issueOf(h, "STA-1").comments.filter((c) => parseReceiptBlock(c.body) !== null);
       expect(receipts).toHaveLength(1);
       expect(parseReceiptBlock(receipts[0]!.body)).toMatchObject({ kind: "build", checkpoint: HEAD });
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
     } finally {
       h.stop();
     }
@@ -666,7 +673,8 @@ describe("submission retries", () => {
       expect(repeated.text).toContain("already submitted build");
       const receipts = issueOf(h, "STA-1").comments.filter((c) => parseReceiptBlock(c.body) !== null);
       expect(receipts).toHaveLength(1);
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
     } finally {
       h.stop();
     }
@@ -676,16 +684,23 @@ describe("submission retries", () => {
 describe("multi-receipt tickets read newest-first", () => {
   const HEAD2 = "cafef00dcafe0002";
 
-  /** Build, fail the review, rebuild at a new checkpoint, pass the review. */
+  /** Build, hand to Review, fail the review, rebuild at a new checkpoint, pass the review. */
   async function toSecondPass(h: Harness, identifier: string): Promise<void> {
     addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
     expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+    seedLineage(h, identifier);
+    await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+    expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
     h.git.head = HEAD2;
     expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
-    expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)))).ok).toBe(true);
+    // The correction submit returns straight to Review+Pending: no owner step.
+    const corrected = await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
+    expect(corrected.ok).toBe(true);
+    expect(corrected.text).toContain("→ Review+Pending");
+    expect(issueOf(h, identifier).stateId).toBe(REVIEW);
     expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass", HEAD2)))).ok).toBe(true);
     h.git.ancestors.add(`${HEAD2} feature/${identifier.toLowerCase()}`);
@@ -872,6 +887,9 @@ describe("owner-move guards", () => {  async function outcomeOf(h: Harness, iden
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+      seedLineage(h, "STA-1");
+      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
       await wsCmd(h, "STA-1", ["begin"]);
       // A planted newer receipt for another checkpoint moves history on. The
       // far-future stamp keeps it newest no matter how many comments earlier

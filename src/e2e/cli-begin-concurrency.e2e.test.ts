@@ -141,8 +141,8 @@ describe("e2e serialized concurrent CLI", () => {
         }
       });
       expect(receipts).toHaveLength(1);
-      expect(issue.stateId).toBe("st-review");
-      expect(issue.labelIds).toEqual(["label-pending"]);
+      expect(issue.stateId).toBe("st-build");
+      expect(issue.labelIds).toEqual(["label-complete"]);
     });
   });
 });

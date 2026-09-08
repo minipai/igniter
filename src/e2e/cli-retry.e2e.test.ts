@@ -11,6 +11,7 @@ import {
   expectFail,
   expectOk,
   git,
+  ownerHandoff,
   reviewPayload,
 } from "./fake-harness.ts";
 
@@ -65,7 +66,8 @@ describe("e2e safe submit retries", () => {
         stdin: JSON.stringify(buildPayload(secondHead)),
       }));
       expect(receiptCount(e2e, "STA-21")).toBe(1);
-      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-21")?.stateId).toBe("st-review");
+      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-21")?.stateId).toBe("st-build");
+      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-21")?.labelIds).toContain("label-complete");
     });
   });
 
@@ -86,6 +88,7 @@ describe("e2e safe submit retries", () => {
       const head = await beginAndCommit(e2e, "STA-220");
       const build = JSON.stringify(buildPayload(head));
       expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: build }));
+      await ownerHandoff(e2e, "STA-220");
       expectOk(await e2e.cli(["begin", "STA-220"]));
 
       const oldBuild = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: build }));
@@ -134,7 +137,7 @@ describe("e2e safe submit retries", () => {
         stdin: JSON.stringify(buildPayload(lostHead)),
       }));
       expect(receiptCount(e2e, "STA-27")).toBe(1);
-      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-27")?.labelIds).toContain("label-pending");
+      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-27")?.labelIds).toContain("label-complete");
 
       const readHead = await beginAndCommit(e2e, "STA-28");
       const payload = JSON.stringify(buildPayload(readHead));
@@ -144,14 +147,17 @@ describe("e2e safe submit retries", () => {
       e2e.client.failNext("fetchIssue", { status: 502, message: "post-write read still unavailable", afterWrite: false });
       expectFail(await e2e.cli(["submit", "STA-28", "--input", "-"], { stdin: payload }), "post-write read");
       const partial = e2e.world.issues.find((issue) => issue.identifier === "STA-28")!;
-      expect(partial.stateId).toBe("st-review");
+      expect(partial.stateId).toBe("st-build");
       expect(partial.labelIds).toContain("label-in-progress");
       expect(receiptCount(e2e, "STA-28")).toBe(1);
 
+      // The first Build never leaves Build: the retry converges through the
+      // normal idempotent path (receipt adopted, no duplicate) and rests at
+      // Build+Complete for the owner.
       const retry = expectOk(await e2e.cli(["submit", "STA-28", "--input", "-"], { stdin: payload }));
-      expect(retry.stdout).toContain("resumed build");
-      expect(partial.stateId).toBe("st-review");
-      expect(partial.labelIds).toContain("label-pending");
+      expect(retry.stdout).toContain(`submitted build ${readHead} → Build+Complete`);
+      expect(partial.stateId).toBe("st-build");
+      expect(partial.labelIds).toContain("label-complete");
       expect(partial.labelIds).not.toContain("label-in-progress");
       expect(receiptCount(e2e, "STA-28")).toBe(1);
     });
@@ -163,6 +169,7 @@ describe("e2e safe submit retries", () => {
       expectOk(await e2e.cli(["submit", "STA-24", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(head)),
       }));
+      await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.cli(["begin", "STA-24"]));
       const payload = JSON.stringify(reviewPayload(head, "pass", "https://example.com/e2e/retry-proof"));
       e2e.client.failNextReads("listAttachments", 1, 502, "attachment readback unavailable");
@@ -196,7 +203,7 @@ describe("e2e safe submit retries", () => {
 
       await e2e.waitFor("background build submit", () => {
         const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-25");
-        return issue?.stateId === "st-review" && issue.labelIds.includes("label-pending") ? true : null;
+        return issue?.stateId === "st-build" && issue.labelIds.includes("label-complete") ? true : null;
       });
       expect(receiptCount(e2e, "STA-25")).toBe(1);
       const repeated = expectOk(await e2e.cli(["submit", "STA-25", "--input", "-"], { stdin: payload }));
@@ -213,6 +220,7 @@ describe("e2e reconcile follow-up retries", () => {
       expectOk(await e2e.cli(["submit", "STA-26", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(head)),
       }));
+      await ownerHandoff(e2e, "STA-26");
       expectOk(await e2e.cli(["begin", "STA-26"]));
       expectOk(await e2e.cli(["submit", "STA-26", "--input", "-"], {
         stdin: JSON.stringify(reviewPayload(head, "pass")),
@@ -237,6 +245,7 @@ describe("e2e reconcile follow-up retries", () => {
     await withE2E(async (e2e) => {
       const head = await beginAndCommit(e2e, "STA-29");
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(buildPayload(head)) }));
+      await ownerHandoff(e2e, "STA-29");
       expectOk(await e2e.cli(["begin", "STA-29"]));
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }));
       ownerSetState(e2e.world, "STA-29", "Deliver");

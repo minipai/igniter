@@ -27,6 +27,7 @@ const REVIEW = "st-review";
 const DELIVER = "st-deliver";
 const PENDING = "label-pending";
 const IN_PROGRESS = "label-in-progress";
+const COMPLETE = "label-complete";
 const BLOCKED = "label-blocked";
 const CRITERIA = "## 驗收條件\n- [ ] works\n";
 const HEAD = "cafe0001deadbeef";
@@ -288,7 +289,10 @@ describe("automatic result collection and submission", () => {
         input: JSON.stringify(buildPayload()),
       });
       expect(out.ok).toBe(true);
-      expect(h.world.issues[0]!.stateId).toBe(REVIEW);
+      // The first Build waits at Build+Complete for the owner's Diffwalk
+      // review; only the owner handoff moves it toward Review.
+      expect(h.world.issues[0]!.stateId).toBe(BUILD);
+      expect(h.world.issues[0]!.labelIds).toEqual([COMPLETE]);
       expect(latestValidReceipt(h.world.issues[0]!.comments)).toMatchObject({ receipt: { kind: "build" } });
     } finally {
       h.stop();

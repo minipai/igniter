@@ -30,7 +30,9 @@ Repository-specific engineering rules come from the target repository.
   records its local Diffwalk capture/check artifact. It never publishes:
   review publication happens on the host after the owner's one-time consent.
 - **Acceptance agent:** tests the committed feature through its public UI, CLI,
-  or API without inspecting source code or diffs.
+  or API without inspecting source code or diffs. It never modifies product
+  code: every finding returns to the original Build agent for the fix,
+  however small the correction looks.
 - **Deliver agent:** merges the accepted checkpoint into local `main` and
   reports its lineage and remaining owner actions.
 - **Owner:** accepts the evidence, authorizes delivery, and confirms landing.
@@ -118,7 +120,13 @@ call Linear directly or through MCP, or publish receipts.
   confirms.
 - `igniter submit <ticket> --input -` publishes the current worker's
   validated report using the schema returned by `status`:
-  - Build lands in Review + Pending.
+  - The first Build lands in Build + Complete and waits there for the
+    owner's Diffwalk review. The owner moves the ticket to Review in
+    Linear; the next `igniter reconcile <ticket>` converges it to Review +
+    Pending from Linear status, Progress, and the Build receipt alone.
+  - A correction Build (after a Review FAIL or after the owner sends Review
+    + Complete back to Build) lands straight back in Review + Pending with
+    no further owner step.
   - Review PASS lands in Review + Complete.
   - Review FAIL lands in Build + Pending.
   - Deliver lands in Deliver + Complete.
@@ -129,11 +137,15 @@ call Linear directly or through MCP, or publish receipts.
 - `igniter reconcile <ticket>` normalizes one owner move from Linear state
   alone.
 
-The owner moves Review + Complete to Deliver to approve delivery, or back to
+The owner reviews the first Build's Diffwalk while the ticket waits at Build +
+Complete, then moves it to Review to approve the first acceptance run. The
+owner moves Review + Complete to Deliver to approve delivery, or back to
 Build to request changes. The owner moves Deliver + Complete to Done only after
 the change has landed. After an owner move, the Global Commander runs
 `igniter reconcile <ticket>` to normalize Progress and workspace state for that
-ticket. Igniter never scans the project for owner moves in the background.
+ticket. Repeated reconciles never move Build + Complete on their own: without
+the owner's move to Review there is no handoff, no repeated comment, and no
+Acceptance worker. Igniter never scans the project for owner moves in the background.
 
 A receipt covers only its named checkpoint. Any new feature commit requires a
 new Build report and another acceptance attempt. A Deliver rebase that only
@@ -252,7 +264,11 @@ That publication needs the owner's one-time consent for this ticket lifecycle
 (`igniter start <ticket> --publish-review`); without it the submit refuses
 with the next step instead of publishing silently.
 
-Build evidence is self-acceptance, never approval. There is no code audit by
+Build evidence is self-acceptance, never approval. After the first Build
+submit the ticket rests at Build + Complete: do not create the Acceptance
+worker until the owner has moved the ticket to Review and `igniter reconcile
+<ticket>` has converged it to Review + Pending. A correction Build needs no
+owner step and returns straight to Review + Pending. There is no code audit by
 default. Only the owner may request a bounded read-only audit, and it never
 replaces black-box acceptance.
 
@@ -262,9 +278,15 @@ continuing. Preserve the worktree and current checkpoint.
 
 ## Review
 
-After Build submission lands in Review + Pending, run `igniter begin <ticket>` and
+After a correction Build or an owner-approved Build handoff lands in Review +
+Pending, run `igniter begin <ticket>` and
 create the Acceptance agent. Give it no Build plan, diff, file list,
 implementation explanation, or Builder conclusion.
+
+The Acceptance agent never modifies product code: it reports findings and
+stops. However small a fix looks, send it to the original Build agent with
+only the reproducible failed criteria — never fix inside acceptance, never
+open a second Builder.
 
 On PASS, validate and publish its evidence, read the destination back, then
 submit the Review report. Keep owner acceptance pending.

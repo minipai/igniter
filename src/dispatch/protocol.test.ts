@@ -181,6 +181,23 @@ async function claim(h: Harness, identifier: string): Promise<string> {
   return workspaceIdOf(h, identifier);
 }
 
+/**
+ * Drive a claimed ticket through the first Build plus the owner handoff:
+ * the initial submit rests at Build+Complete, the owner moves it to
+ * Review, and an explicit reconcile converges it to Review+Pending.
+ */
+async function toReviewPending(h: Harness, identifier: string): Promise<void> {
+  expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+  expect(issueOf(h, identifier).stateId).toBe(BUILD);
+  expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
+  seedLineage(h, identifier);
+  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  const reconciled = await runCommand(["reconcile", identifier], h.ctx);
+  expect(reconciled.ok).toBe(true);
+  expect(issueOf(h, identifier).stateId).toBe(REVIEW);
+  expect(issueOf(h, identifier).labelIds).toEqual([PENDING]);
+}
+
 describe("acceptance criteria", () => {
   test("parses checklist items under the heading only", () => {
     expect(parseAcceptanceCriteria(null)).toEqual([]);
@@ -490,8 +507,8 @@ describe("begin", () => {
       await claim(h, "STA-1");
       // Build+In progress cannot begin again.
       expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false);
-      // Drive to Review+Pending, then begin.
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+      // Drive through the first Build plus the owner handoff, then begin.
+      await toReviewPending(h, "STA-1");
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
@@ -536,28 +553,56 @@ describe("begin", () => {
 });
 
 describe("submit", () => {
-  test("build submit publishes a receipt and lands in Review+Pending", async () => {
+  test("initial build submit publishes a receipt and waits at Build+Complete", async () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
       expect(out.ok).toBe(true);
+      expect(out.text).toContain("→ Build+Complete");
       const issue = issueOf(h, "STA-1");
-      expect(issue.stateId).toBe(REVIEW);
-      expect(issue.labelIds).toEqual([PENDING]);
+      expect(issue.stateId).toBe(BUILD);
+      expect(issue.labelIds).toEqual([COMPLETE]);
       const receipt = issue.comments.at(-1)!;
       expectYamlReceipt(receipt.body, "build", HEAD);
       expect(receipt.body).toContain("# Build receipt");
       expect(h.workspaces.tokensFor("STA-1")).toMatchObject({
-        status: "review",
-        progress: "pending",
+        status: "build",
+        progress: "complete",
         checkpoint: HEAD,
         receipt_kind: "build",
       });
+      // state --json waits on the owner: no workspace command applies.
+      const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
+      expect(state).toMatchObject({ status: "build", progress: "complete", next: [] });
+      expect(state["note"]).toContain("owner");
+      expect((state["submit_schema"] as Record<string, unknown>)["kind"]).toBe("build");
+      // No Acceptance worker can start while the owner has not moved it.
+      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("owner handoff converges Build+Complete to Review+Pending on explicit reconcile", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      seedLineage(h, "STA-1");
+      // The owner moves the first Build to Review in Linear (Complete kept).
+      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
+      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      expect(reconciled.ok).toBe(true);
+      expect(reconciled.text).toContain("Build+Complete → Review+Pending");
+      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       // state --json now offers the review schema and begin.
       const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "review", progress: "pending", next: ["begin", "block"] });
       expect((state["submit_schema"] as Record<string, unknown>)["kind"]).toBe("review");
+      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
     } finally {
       h.stop();
     }
@@ -569,12 +614,15 @@ describe("submit", () => {
       await claim(h, "STA-1");
       const payload = JSON.stringify(buildPayload());
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       const count = issueOf(h, "STA-1").comments.length;
       // Back in Build+In progress with the same checkpoint: resubmit converges.
       issueOf(h, "STA-1").stateId = BUILD;
       issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
+      const repeated = await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload);
+      expect(repeated.ok).toBe(true);
       expect(issueOf(h, "STA-1").comments.length).toBe(count);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
     } finally {
       h.stop();
     }
@@ -603,7 +651,7 @@ describe("submit", () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
       expect(out.ok).toBe(true);
@@ -628,7 +676,7 @@ describe("submit", () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       const payload = reviewPayload("pass");
       payload.results[0]!.evidence = "";
@@ -647,7 +695,7 @@ describe("submit", () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       const payload = reviewPayload("pass");
       payload.results[0]!.evidence = "Command output: everything passed";
@@ -665,7 +713,7 @@ describe("submit", () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")));
       expect(out.ok).toBe(true);
@@ -683,7 +731,7 @@ describe("submit", () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       h.git.head = "newcommit0000002";
       const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass", "newcommit0000002")));
@@ -825,6 +873,10 @@ describe("submit", () => {
       await claim(h, "STA-1");
       issueOf(h, "STA-1").labelIds.push("label-keep");
       await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      expect(new Set(issueOf(h, "STA-1").labelIds)).toEqual(new Set([COMPLETE, "label-keep"]));
+      seedLineage(h, "STA-1");
+      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
       expect(new Set(issueOf(h, "STA-1").labelIds)).toEqual(new Set([PENDING, "label-keep"]));
       await wsCmd(h, "STA-1", ["begin"]);
       await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
@@ -862,7 +914,7 @@ describe("block and unblock", () => {
     try {
       await claim(h, "STA-1");
       expect((await wsCmd(h, "STA-1", ["unblock"])).ok).toBe(false);
-      await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+      await toReviewPending(h, "STA-1");
       await wsCmd(h, "STA-1", ["begin"]);
       await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
       expect((await wsCmd(h, "STA-1", ["block", "--reason", "x"])).ok).toBe(false);
@@ -876,7 +928,7 @@ describe("block and unblock", () => {
 describe("owner moves", () => {
   async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
     await claim(h, identifier);
-    await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()));
+    await toReviewPending(h, identifier);
     await wsCmd(h, identifier, ["begin"]);
     const out = await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
     expect(out.ok).toBe(true);
@@ -1080,15 +1132,15 @@ describe("dispatch commands", () => {
       expect(building.text).toContain("1 / 3 slots");
       expect(building.text).toContain("STA-1  Build/In progress");
       await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()));
-      // Review holds no Build slot.
+      // Build+Complete still holds its Build slot while the owner reviews.
       const out = await runCommand(["status"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("0 / 3 slots");
+      expect(out.text).toContain("1 / 3 slots");
       expect(out.text).toContain("STA-1");
-      expect(out.text).toContain("Review");
+      expect(out.text).toContain("Build/");
       const data = out.data as { slots: { used: number; max: number }; tickets: Record<string, unknown>[] };
-      expect(data.slots).toEqual({ used: 0, max: 3 });
-      expect(data.tickets[0]).toMatchObject({ identifier: "STA-1", progress: "pending", checkpoint: HEAD });
+      expect(data.slots).toEqual({ used: 1, max: 3 });
+      expect(data.tickets[0]).toMatchObject({ identifier: "STA-1", progress: "complete", checkpoint: HEAD });
     } finally {
       h.stop();
     }

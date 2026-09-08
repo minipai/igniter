@@ -127,11 +127,14 @@ describe("Commander delivery protocol", () => {
   });
 
   test("names the legal Linear handoffs", () => {
-    expect(commonRules).toContain("Build lands in Review + Pending.");
+    expect(commonRules).toContain("The first Build lands in Build + Complete and waits there");
+    expect(commonRules).toContain("A correction Build (after a Review FAIL or after the owner sends Review");
     expect(commonRules).toContain("Review PASS lands in Review + Complete.");
     expect(commonRules).toContain("Review FAIL lands in Build + Pending.");
     expect(commonRules).toContain("Deliver lands in Deliver + Complete.");
     expect(commonRules).toContain("Deliver + Complete to Done");
+    expect(commonRules).toContain("The Acceptance agent never modifies product code");
+    expect(stageRules[1]).toContain("Never modify product code");
   });
 
   test("keeps Linear publication with the Commander", () => {

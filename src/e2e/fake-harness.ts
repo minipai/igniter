@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { parseDispatchConfig } from "../dispatch/config.ts";
-import { MemoryLinearClient, standardMemoryWorld, type MemoryWorld } from "../dispatch/fake-memory-linear.ts";
+import { MemoryLinearClient, ownerSetState, standardMemoryWorld, type MemoryWorld } from "../dispatch/fake-memory-linear.ts";
 import { FakeWorkspaces } from "../dispatch/fake-workspaces.ts";
 import { startDispatchServe, type DispatchServeHandle } from "../server/dispatch-serve.ts";
 import type { PromptDeliveryPolicy } from "../dispatch/prompt-delivery.ts";
@@ -372,4 +372,14 @@ export function commitWorktreeFile(
   git(["add", name], wt);
   git(["commit", "-m", message], wt);
   return git(["rev-parse", "HEAD"], wt).stdout.trim();
+}
+
+/**
+ * Owner handoff for a first Build: the ticket waits at Build+Complete, the
+ * owner moves it to Review in Linear (Complete kept), and an explicit
+ * reconcile converges it to Review+Pending.
+ */
+export async function ownerHandoff(e2e: E2E, ticket: string): Promise<void> {
+  ownerSetState(e2e.world, ticket, "Review");
+  expectOk(await e2e.cli(["reconcile", ticket]));
 }

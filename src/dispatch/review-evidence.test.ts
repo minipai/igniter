@@ -99,11 +99,15 @@ function buildPayload() {
   };
 }
 
-/** Reach Review+In progress, ready for a review submit. */
+/** Reach Review+In progress, ready for a review submit: first Build, owner handoff, begin. */
 async function toReview(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+  expect(issueOf(h, identifier).stateId).toBe(BUILD);
+  h.git.ancestors.add(`${HEAD} feature/${identifier.toLowerCase()}`);
+  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["begin"])).ok).toBe(true);
 }
 

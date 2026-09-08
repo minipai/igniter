@@ -58,20 +58,23 @@ There is no resident commander-ticket agent and no resident pane.
     no Linear write (takeover after your own session restart).
 - `igniter submit <ticket> --input -`: submit the worker's validated
   report as JSON on stdin using the schema from `status <ticket> --json`.
-  - Build lands in Review+Pending.
+  - The first Build lands in Build+Complete and waits for the owner's
+    Diffwalk review; a correction Build lands in Review+Pending.
   - Review PASS lands in Review+Complete; Review FAIL lands in Build+Pending.
   - Deliver lands in Deliver+Complete.
   - Submission is idempotent on (ticket, stage, checkpoint, payload):
-    retrying the identical payload reuses the receipt, never duplicates.
+    retrying the identical payload reuses the receipt, never duplicates,
+    and never changes the initial/correction classification.
 - `igniter block <ticket> --reason "<phrase>"`: keep the status, move
   Progress to Blocked, record the external reason. Frees a Build slot.
   Ask the owner only from Blocked.
 - `igniter unblock <ticket>`: return Blocked to Pending. Then run
   `igniter begin <ticket>` to launch the stage worker again.
 - `igniter reconcile <ticket>`: normalize one owner move from Linear
-  state alone (approval, send-back, landing). Run it after the owner
-  moves Review+Complete to Deliver or back to Build, or Deliver+Complete
-  to Done.
+  state alone (Build+Complete to Review handoff, approval, send-back,
+  landing). Run it after the owner moves the first Build+Complete to
+  Review, Review+Complete to Deliver or back to Build, or Deliver+Complete
+  to Done. Without an owner move it leaves the ticket still.
 - `igniter pause <ticket>` / `igniter resume <ticket>`: park on an
   external condition and return to Pending. `resume` never starts agents;
   follow it with `igniter begin <ticket>`.
@@ -101,11 +104,18 @@ There is no resident commander-ticket agent and no resident pane.
    schema requires.
 6. `igniter submit <ticket> --input -` with the validated report JSON.
    Read status back and confirm the receipt before treating the stage as
-   complete.
+   complete. A first Build rests at Build+Complete: do not begin
+   Acceptance until the owner has moved the ticket to Review and
+   `igniter reconcile <ticket>` has converged it to Review+Pending.
 7. On Review FAIL the ticket returns to Build+Pending: begin again with
    `igniter begin <ticket>` and send only the reproducible failed
-   criteria to the Build worker. On Review PASS keep owner acceptance
-   pending: the owner approves by moving Review+Complete to Deliver.
+   criteria to the original Build agent — never to a new Builder, and
+   never fix inside acceptance. The correction submit returns straight
+   to Review+Pending with no owner step. On Review PASS keep owner acceptance
+   pending: the owner approves by moving Review+Complete to Deliver. The
+   same correction path applies when the owner sends Review+Complete back
+   to Build: reconcile, begin, correct with the original Builder, and the
+   submit returns straight to Review+Pending.
 
 After each submitted stage, patrol status again. Continue eligible assigned
 work until every ticket is at an owner gate, Blocked on an external reason,

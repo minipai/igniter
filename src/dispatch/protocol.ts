@@ -360,6 +360,31 @@ export function latestValidReceipt(comments: { id?: string; body: string }[]): F
   return null;
 }
 
+/**
+ * The newest valid receipt excluding one submission identity. A Build
+ * submit classifies initial vs correction from the history before its own
+ * submission, so a retry that already landed its receipt classifies
+ * exactly like its first attempt instead of reading its own build receipt
+ * as the newest history.
+ */
+export function latestValidReceiptExcluding(
+  comments: { id?: string; body: string }[],
+  submission: string,
+): FoundReceipt | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    let parsed: ParsedReceipt | null;
+    try {
+      parsed = parseReceiptBlock(comments[i]?.body ?? "");
+    } catch {
+      continue;
+    }
+    if (parsed && parsed.submission !== submission) {
+      return { id: comments[i]?.id ?? null, body: comments[i]?.body ?? "", receipt: parsed };
+    }
+  }
+  return null;
+}
+
 export const BLOCK_MARKER = "<!-- igniter:blocked -->";
 
 // ---------------------------------------------------------------------------
@@ -1018,6 +1043,9 @@ function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { n
   if (progress === "pending") return { next: ["begin", "block"], note: null };
   if (progress === "in_progress") return { next: ["submit", "block"], note: null };
   if (progress === "blocked") return { next: ["unblock"], note: null };
+  if (status === "build" && progress === "complete") {
+    return { next: [], note: "waiting for the owner to review the Diffwalk and move the ticket to Review in Linear" };
+  }
   if (status === "review" && progress === "complete") {
     return { next: [], note: "waiting for the owner to approve (Deliver) or send back (Build) in Linear" };
   }
@@ -1408,6 +1436,51 @@ async function resumeWrittenTransition(
   raw: unknown,
 ): Promise<string | null> {
   if (!isRecord(raw)) return null;
+  if (raw["kind"] === "build" && state.status === "build" && state.progress === "complete") {
+    // Initial-build partial: the receipt landed and Linear converged on
+    // Build+Complete, but the mirror still names the pre-submit
+    // Build+In progress marker. Heal the mirror; Linear is already truth.
+    if (!latestReceiptOf(full.comments, "build")) return null;
+    const payload = parseBuildSubmit(raw, state.criteria);
+    const submission = submissionId({ ticket: full.identifier, ...payload });
+    const receipt = findReceipt(full.comments, "build", submission);
+    if (!receipt?.id) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    await mirror(deps, workspaceId, {
+      status: "build",
+      progress: "complete",
+      checkpoint: payload.checkpoint,
+      receipt_id: receipt.id,
+      receipt_kind: "build",
+      submission,
+    });
+    return `resumed build ${payload.checkpoint} → Build+Complete (receipt ${receipt.id})`;
+  }
+  if (raw["kind"] === "build" && state.status === "review" && state.progress === "pending") {
+    // Correction-build partial: the receipt landed and Linear converged
+    // on Review+Pending, but the mirror still names the pre-submit
+    // Build+In progress marker. Only a correction converges here — an
+    // initial retry landing in Review+Pending belongs to the owner
+    // handoff, so it falls through to the already-submitted
+    // acknowledgement below instead of claiming the transition.
+    if (!latestReceiptOf(full.comments, "build")) return null;
+    const payload = parseBuildSubmit(raw, state.criteria);
+    const submission = submissionId({ ticket: full.identifier, ...payload });
+    const receipt = findReceipt(full.comments, "build", submission);
+    if (!receipt?.id) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    const prior = latestValidReceiptExcluding(full.comments, submission);
+    if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
+    await mirror(deps, workspaceId, {
+      status: "review",
+      progress: "pending",
+      checkpoint: payload.checkpoint,
+      receipt_id: receipt.id,
+      receipt_kind: "build",
+      submission,
+    });
+    return `resumed build ${payload.checkpoint} → Review+Pending (correction after ${prior.receipt.kind}; receipt ${receipt.id})`;
+  }
   if (raw["kind"] === "build" && state.status === "review" && state.progress === "in_progress") {
     if (!latestReceiptOf(full.comments, "build")) return null;
     const payload = parseBuildSubmit(raw, state.criteria);
@@ -1559,6 +1632,20 @@ async function submitBuild(
     );
   }
   const submission = submissionId({ ticket: full.identifier, ...payload });
+  // Initial vs correction reads the receipt history before this
+  // submission, excluding the submission itself so a retry classifies
+  // exactly like its first attempt. Only Linear history decides; workspace
+  // metadata never authorizes the target. No prior review receipt means
+  // the first Build: it stops at Build+Complete for the owner's Diffwalk
+  // review. A newest review-fail receipt means an Acceptance correction; a
+  // newest review-pass receipt means an owner send-back correction (the
+  // ticket could only return to Build+In progress through the send-back
+  // reconcile): both return straight to Review+Pending.
+  const prior = latestValidReceiptExcluding(full.comments, submission);
+  const correctionKind =
+    prior !== null && (prior.receipt.kind === "review-fail" || prior.receipt.kind === "review-pass")
+      ? prior.receipt.kind
+      : null;
   // A carried Diffwalk artifact turns this submit into a host-side
   // publication: verify consent, destination, lifecycle, and checkpoint
   // before anything is published or recorded. Any refusal leaves Linear
@@ -1594,10 +1681,21 @@ async function submitBuild(
     receipt_kind: "build",
     submission,
   });
-  await moveStatus(deps, full, "review", "pending");
-  await mirror(deps, workspaceId, { status: "review", progress: "pending" });
   const review = reviewUrl !== undefined ? ` (review ${reviewUrl})` : "";
-  const text = `submitted build ${payload.checkpoint} → Review+Pending (receipt ${commentId}${review})`;
+  if (correctionKind !== null) {
+    await moveStatus(deps, full, "review", "pending");
+    await mirror(deps, workspaceId, { status: "review", progress: "pending" });
+    const text =
+      `submitted build ${payload.checkpoint} → Review+Pending ` +
+      `(correction after ${correctionKind} receipt ${prior!.id ?? prior!.receipt.submission}; receipt ${commentId}${review})`;
+    await deps.decisions.record(full.identifier, text);
+    return text;
+  }
+  await moveStatus(deps, full, "build", "complete");
+  await mirror(deps, workspaceId, { status: "build", progress: "complete" });
+  const text =
+    `submitted build ${payload.checkpoint} → Build+Complete ` +
+    `(awaiting owner Diffwalk review; receipt ${commentId}${review})`;
   await deps.decisions.record(full.identifier, text);
   return text;
 }
@@ -1931,11 +2029,16 @@ export async function normalizeOwnerMove(
     );
   }
   if (linearStatus === "build") {
+    // An initial Build+Complete bound to its build receipt waits for the
+    // owner's Diffwalk review in Linear: only the owner moves it to
+    // Review. Reconcile keeps it still — no transition, no line, no
+    // Acceptance wake-up — however often it runs.
+    if (kind === "build") return quiet();
     if (kind === "review-pass" || kind === "review-fail") {
       return inheritInto(deps, reread, latest, "build", "sent back: Review+Complete → Build+Pending");
     }
     return fail(
-      `${full.identifier}: Build+Complete but the newest receipt is ${kind}, not a review receipt; ` +
+      `${full.identifier}: Build+Complete but the newest receipt is ${kind}, not a build or review receipt; ` +
         `refusing to treat the inherited state as progress`,
     );
   }

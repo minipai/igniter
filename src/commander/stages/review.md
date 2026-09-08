@@ -37,6 +37,12 @@ Implementation guesses, architecture advice, file-and-line findings, and
 hypothetical failures are not acceptance findings. Report environment or tool
 failures separately; they do not fail a product criterion.
 
+Never modify product code: do not edit, commit, or otherwise change the
+worktree's product files, configuration, or history. You test and report
+only. Every correction — however small it looks — returns to the original
+Builder through the Commander; fixing it yourself, even a one-line fix, is
+out of scope.
+
 On a correction attempt, recheck the failed criteria plus a short smoke test of
 previously passing critical behavior. Do not reopen passed criteria for
 exploratory testing.

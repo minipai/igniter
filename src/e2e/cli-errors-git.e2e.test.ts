@@ -22,6 +22,7 @@ import {
   expectOk,
   git,
   mainHead,
+  ownerHandoff,
   worktreeHeadOf,
 } from "./fake-harness.ts";
 
@@ -69,6 +70,7 @@ async function advanceToDeliverComplete(e2e: E2E, identifier: string): Promise<s
   expectOk(await e2e.cli(["submit", identifier, "--input", "-"], {
     stdin: JSON.stringify(buildPayload(head)),
   }));
+  await ownerHandoff(e2e, identifier);
   expectOk(await e2e.cli(["begin", identifier]));
   expectOk(await e2e.cli(["submit", identifier, "--input", "-"], {
     stdin: JSON.stringify(commandEvidencePayload(head, "pass")),
@@ -128,6 +130,8 @@ describe("e2e submit refusal has no workflow side effects", () => {
       expectOk(await e2e.cli(["submit", "STA-20", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(head)),
       }));
+      // The first Build waits at Build+Complete: a Review payload is refused
+      // without touching Linear, and the owner handoff is still pending.
       const comments = issue.comments.map((comment) => comment.body);
       const wrongStage = expectFail(
         await e2e.cli(["submit", "STA-20", "--input", "-"], {
@@ -136,9 +140,9 @@ describe("e2e submit refusal has no workflow side effects", () => {
         "submit needs an In progress stage",
       );
       expect(wrongStage.stdout).toBe("");
-      expect(wrongStage.stderr).toContain("review+pending");
-      expect(issue.stateId).toBe("st-review");
-      expect(progressNames(e2e, issue)).toEqual(["Pending"]);
+      expect(wrongStage.stderr).toContain("build+complete");
+      expect(issue.stateId).toBe("st-build");
+      expect(progressNames(e2e, issue)).toEqual(["Complete"]);
       expect(issue.comments.map((comment) => comment.body)).toEqual(comments);
       expect(issue.attachments).toEqual([]);
     });
@@ -169,6 +173,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
       expectOk(await e2e.cli(["submit", "STA-21", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(original)),
       }));
+      await ownerHandoff(e2e, "STA-21");
       expectOk(await e2e.cli(["begin", "STA-21"]));
       const moved = commitWorktreeFile(e2e.repoDir, "STA-21", "later.txt", "later\n", "later checkpoint");
       expect(moved).not.toBe(original);
@@ -205,6 +210,7 @@ describe("e2e rebased approval and scratch boundaries", () => {
       expectOk(await e2e.cli(["submit", "STA-22", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(approved)),
       }));
+      await ownerHandoff(e2e, "STA-22");
       expectOk(await e2e.cli(["begin", "STA-22"]));
       expectOk(await e2e.cli(["submit", "STA-22", "--input", "-"], {
         stdin: JSON.stringify(commandEvidencePayload(approved, "pass")),

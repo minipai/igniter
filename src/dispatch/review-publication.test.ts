@@ -277,9 +277,11 @@ describe("submit gate", () => {
     expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
     const out = await submitBuild(h, "STA-1", buildPayload());
     expect(out.ok).toBe(true);
+    expect(out.text).toContain("→ Build+Complete");
     expect(out.text).not.toContain("review https://");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").stateId).toBe("st-review");
+    expect(issueOf(h, "STA-1").stateId).toBe("st-build");
+    expect(issueOf(h, "STA-1").labelIds).toEqual(["label-complete"]);
   });
 
   test("consented submit publishes from the host and writes the review URL into the receipt", async () => {
@@ -288,7 +290,7 @@ describe("submit gate", () => {
     await consentedBegin(h, "STA-1");
     const out = await submitBuild(h, "STA-1", buildPayload(HEAD, artifact()));
     expect(out.ok).toBe(true);
-    expect(out.text).toContain("→ Review+Pending");
+    expect(out.text).toContain("→ Build+Complete");
     expect(out.text).toContain("review https://review.diffwalk.dev/");
     expect(h.publisher.publications).toHaveLength(1);
     expect(h.publisher.publishCalls).toHaveLength(1);
@@ -303,7 +305,8 @@ describe("submit gate", () => {
     expect(body).toContain(`Review: ${h.publisher.publications[0]?.url}`);
     expect(parseReceiptBlock(body)).toMatchObject({ kind: "build", checkpoint: HEAD });
     expect(reviewUrlOfReceipt(body)).toBe(h.publisher.publications[0]?.url ?? null);
-    expect(issueOf(h, "STA-1").stateId).toBe("st-review");
+    expect(issueOf(h, "STA-1").stateId).toBe("st-build");
+    expect(issueOf(h, "STA-1").labelIds).toEqual(["label-complete"]);
   });
 
   test("destination drift refuses with no publish and no receipt", async () => {

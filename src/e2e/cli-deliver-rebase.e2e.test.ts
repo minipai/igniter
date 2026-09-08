@@ -22,6 +22,7 @@ import {
   expectOk,
   git,
   mainHead,
+  ownerHandoff,
   reviewPayload,
   worktreeHeadOf,
 } from "./fake-harness.ts";
@@ -58,6 +59,7 @@ async function approve(e2e: E2E, ticket: string, file: string): Promise<string> 
   expectOk(await e2e.cli(["begin", ticket]));
   const head = commitWorktreeFile(e2e.repoDir, ticket, file, `${ticket} change\n`, `${ticket} change`);
   expectOk(await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(buildPayload(head)) }));
+  await ownerHandoff(e2e, ticket);
   expectOk(await e2e.cli(["begin", ticket]));
   expectOk(
     await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }),

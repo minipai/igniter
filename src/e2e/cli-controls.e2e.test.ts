@@ -12,6 +12,7 @@ import {
   commitWorktreeFile,
   expectFail,
   expectOk,
+  ownerHandoff,
 } from "./fake-harness.ts";
 
 async function withE2E(
@@ -222,8 +223,9 @@ describe("e2e CLI permission answers", () => {
           stdin: JSON.stringify(buildPayload(head)),
         }),
       );
-      expect(submitted.stdout).toContain(`submitted build ${head} → Review+Pending`);
+      expect(submitted.stdout).toContain(`submitted build ${head} → Build+Complete`);
       expect(submitted.stderr).toBe("");
+      await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.cli(["begin", "STA-24"]));
       const reviewer = e2e.workspaces.agents.find((agent) => agent.name === "reviewer-sta-24")!;
       expect(reviewer.kind).toBe("claude");
