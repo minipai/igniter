@@ -23,8 +23,9 @@ describe("stage mapping", () => {
     // Deliver no longer reuses Builder.
     expect(commander.stages.deliver.agent).not.toBe("builder");
     expect(commander.agents.deliverer).toEqual({
-      harness: "opencode",
-      model: "opencode/muse-spark-1.3-contributor-free",
+      harness: "codex",
+      model: "gpt-5.6-luna",
+      effort: "high",
     });
   });
 });
@@ -168,7 +169,7 @@ describe("launchProblems", () => {
     const config = parseDispatchConfig({
       project: "x",
       agents: {
-        deliverer: { effort: "high" },
+        deliverer: { harness: "opencode", model: "opencode/model", effort: "high" },
         builder: { fallback: { effort: "turbo" } },
       },
     });
@@ -191,18 +192,19 @@ describe("run-recorded stage profiles", () => {
       "profile_reviewer",
     ]);
     expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
-      harness: "opencode",
-      model: "opencode/muse-spark-1.3-contributor-free",
-      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+      harness: "codex",
+      model: "gpt-5.6-terra",
+      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
     });
     expect(JSON.parse(recorded["profile_reviewer"]!)).toEqual({
-      harness: "claude",
-      model: "claude-sonnet-5",
+      harness: "codex",
+      model: "gpt-5.6-sol",
       effort: "high",
     });
     expect(JSON.parse(recorded["profile_deliverer"]!)).toEqual({
-      harness: "opencode",
-      model: "opencode/muse-spark-1.3-contributor-free",
+      harness: "codex",
+      model: "gpt-5.6-luna",
+      effort: "high",
     });
     // The freeze round-trips back to the configured profiles.
     expect(commanderConfigForRun(config.commander, recorded).agents).toEqual(config.commander.agents);
@@ -217,7 +219,7 @@ describe("run-recorded stage profiles", () => {
     });
     expect(rerun.agents.builder).toEqual(config.commander.agents.builder);
     // Invalid fields fall back; absent fields stay absent, not inherited.
-    expect(rerun.agents.reviewer).toEqual({ harness: "claude", model: "claude-sonnet-5" });
+    expect(rerun.agents.reviewer).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
     expect(rerun.agents.deliverer).toEqual(config.commander.agents.deliverer);
   });
 
@@ -234,13 +236,13 @@ describe("run-recorded stage profiles", () => {
     });
     const rerun = commanderConfigForRun(edited.commander, recorded);
     expect(rerun.agents.builder).toMatchObject({
-      harness: "opencode",
-      model: "opencode/muse-spark-1.3-contributor-free",
+      harness: "codex",
+      model: "gpt-5.6-terra",
     });
     expect(rerun.agents.builder.effort).toBeUndefined();
     expect(rerun.agents.builder.fallback.effort).toBe("high");
-    expect(rerun.agents.reviewer.model).toBe("claude-sonnet-5");
-    expect(rerun.agents.deliverer.harness).toBe("opencode");
+    expect(rerun.agents.reviewer.model).toBe("gpt-5.6-sol");
+    expect(rerun.agents.deliverer.harness).toBe("codex");
   });
 
   test("an effective builder model override still wins for the Build stage", () => {
@@ -248,8 +250,8 @@ describe("run-recorded stage profiles", () => {
     const recorded = { ...recordStageProfiles(config), builder: "custom/builder-x" };
     const rerun = commanderConfigForRun(config.commander, recorded);
     expect(rerun.agents.builder.model).toBe("custom/builder-x");
-    expect(rerun.agents.builder.harness).toBe("opencode");
-    expect(rerun.agents.deliverer.model).toBe("opencode/muse-spark-1.3-contributor-free");
+    expect(rerun.agents.builder.harness).toBe("codex");
+    expect(rerun.agents.deliverer.model).toBe("gpt-5.6-luna");
   });
 
   test("a run without a record falls back to the live configuration", () => {

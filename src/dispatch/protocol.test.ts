@@ -273,9 +273,9 @@ describe("claim", () => {
       // Linear is the authority; workspace metadata carries identity plus
       // the run's frozen profiles, never the protocol transition.
       expect(workspace.tokens).toMatchObject({ ticket: "STA-1" });
-      expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ harness: "opencode" });
-      expect(JSON.parse(workspace.tokens["profile_reviewer"]!)).toMatchObject({ effort: "high" });
-      expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
+      expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-terra" });
+      expect(JSON.parse(workspace.tokens["profile_reviewer"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-sol" });
+      expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-luna" });
       expect(workspace.tokens).not.toHaveProperty("commander");
       expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();

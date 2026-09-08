@@ -118,11 +118,13 @@ describe("parseDispatchConfig", () => {
   test("loads bundled agent profiles and applies repository overrides", () => {
     const defaults = parseDispatchConfig({ project: "x" }).commander;
     expect(defaults.agents.commander).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
-    expect(defaults.agents.builder.harness).toBe("opencode");
-    expect(defaults.agents.builder.effort).toBeUndefined();
-    expect(defaults.agents.builder.fallback).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
-    expect(defaults.agents.reviewer).toEqual({ harness: "claude", model: "claude-sonnet-5", effort: "high" });
-    expect(defaults.agents.deliverer).toEqual({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" });
+    expect(defaults.agents.builder).toEqual({
+      harness: "codex",
+      model: "gpt-5.6-terra",
+      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
+    });
+    expect(defaults.agents.reviewer).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
+    expect(defaults.agents.deliverer).toEqual({ harness: "codex", model: "gpt-5.6-luna", effort: "high" });
     expect(defaults.stages.build.agent).toBe("builder");
     expect(defaults.stages.review.agent).toBe("reviewer");
     expect(defaults.stages.deliver.agent).toBe("deliverer");
@@ -143,8 +145,8 @@ describe("parseDispatchConfig", () => {
     expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
     expect(overridden.agents.builder.fallback.effort).toBe("high");
     expect(overridden.agents.reviewer.model).toBe("review/model");
-    expect(overridden.agents.deliverer).toEqual({ harness: "claude", model: "opencode/muse-spark-1.3-contributor-free", effort: "low" });
-    expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("opencode");
+    expect(overridden.agents.deliverer).toEqual({ harness: "claude", model: "gpt-5.6-luna", effort: "low" });
+    expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("codex");
   });
 
   test("rejects bundled prompt overrides while agent fields still merge", () => {
@@ -276,11 +278,11 @@ test("omitted agents fall back to the bundled profiles", () => {
   expect(parseDispatchConfig({ project: "x" }).commander.agents).toEqual({
     commander: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     builder: {
-      harness: "opencode",
-      model: "opencode/muse-spark-1.3-contributor-free",
-      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+      harness: "codex",
+      model: "gpt-5.6-terra",
+      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
     },
-    reviewer: { harness: "claude", model: "claude-sonnet-5", effort: "high" },
-    deliverer: { harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+    reviewer: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+    deliverer: { harness: "codex", model: "gpt-5.6-luna", effort: "high" },
   });
 });

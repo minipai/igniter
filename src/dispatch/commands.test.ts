@@ -227,13 +227,13 @@ describe("begin", () => {
       expect(h.workspaces.tokensFor("STA-176")).toMatchObject({ ticket: "STA-176" });
       // The run freeze compacts to three JSON profile tokens.
       const frozen = h.workspaces.tokensFor("STA-176");
-      expect(JSON.parse(frozen["profile_builder"]!)).toMatchObject({ harness: "opencode" });
-      expect(JSON.parse(frozen["profile_reviewer"]!)).toMatchObject({ harness: "claude", effort: "high" });
-      expect(JSON.parse(frozen["profile_deliverer"]!)).toMatchObject({ harness: "opencode" });
-      // The Build worker runs the unified builder profile (opencode), never
+      expect(JSON.parse(frozen["profile_builder"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-terra" });
+      expect(JSON.parse(frozen["profile_reviewer"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-sol" });
+      expect(JSON.parse(frozen["profile_deliverer"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-luna" });
+      // The Build worker runs the unified builder profile, never
       // a resident commander.
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-176" });
+      expect(started?.params).toMatchObject({ kind: "codex", name: "builder-sta-176" });
       expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
       const inbox = h.workspaces.promptsFor("builder-sta-176");
       expect(inbox).toHaveLength(1);
@@ -317,7 +317,7 @@ describe("begin", () => {
       expect(out.ok).toBe(true);
       expect(out.text).toContain("builder-sta-1");
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-1" });
+      expect(started?.params).toMatchObject({ kind: "codex", name: "builder-sta-1" });
       expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
     } finally {
       h.stop();
@@ -350,7 +350,7 @@ describe("begin", () => {
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { builder: { effort: "high" } },
+        agents: { builder: { harness: "opencode", model: "opencode/model", effort: "high" } },
       });
       const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
@@ -443,7 +443,7 @@ describe("begin", () => {
       expect(h.world.issues[0]!.stateId).toBe(REVIEW);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "claude", name: "reviewer-sta-6" });
+      expect(started?.params).toMatchObject({ kind: "codex", name: "reviewer-sta-6" });
 
       // Half-written claim: workspace open, Linear still Todo+Pending.
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
@@ -950,13 +950,13 @@ describe("work order", () => {
       "do not create another branch",
       "bun install",
       "b-model",
-      "claude-sonnet-5",
       "gpt-5.6-sol",
+      "gpt-5.6-luna",
+      "gpt-6-astra",
       "/stages/build.md",
       "/stages/review.md",
       "/stages/deliver.md",
-      "harness `opencode`",
-      "harness `claude`",
+      "harness `codex`",
       "/rules.md",
       "AGENTS.md",
       "`igniter state --json`",
@@ -1064,8 +1064,8 @@ describe("work order", () => {
       commanderConfig: DEFAULT_COMMANDER_CONFIG,
     });
     expect(bundled).toContain("Acceptance: prompt `/");
-    expect(bundled).toContain("harness `claude`; model `claude-sonnet-5`; effort `high`");
-    expect(bundled).toContain("Builder fallback: harness `codex`; model `gpt-5.6-sol`; effort `high`");
+    expect(bundled).toContain("harness `codex`; model `gpt-5.6-sol`; effort `high`");
+    expect(bundled).toContain("Builder fallback: harness `codex`; model `gpt-6-astra`; effort `high`");
   });
 
   test("a begin reuses the recorded stage profiles when the configuration drifts", async () => {
@@ -1089,10 +1089,10 @@ describe("work order", () => {
       expect(out.ok).toBe(true);
       // The worker still launches the run's recorded stage profile.
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-1" });
+      expect(started?.params).toMatchObject({ kind: "codex", name: "builder-sta-1" });
       const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("harness `opencode`; model `opencode/muse-spark-1.3-contributor-free`");
+      expect(inbox[0]).toContain("harness `codex`; model `gpt-5.6-terra`");
       expect(inbox[0]).not.toContain("new/builder");
     } finally {
       h.stop();
@@ -1147,7 +1147,6 @@ describe("worker scratch", () => {
     expect(order).toContain(scratch.builder);
     expect(order).toContain(scratch.reviewer);
     expect(order).toContain(scratch.deliverer);
-    expect(order).toContain("harness `opencode`");
     expect(order).toContain("harness `codex`");
     expect(order).toContain(scratch.builder);
     expect(order).toContain("Do not invent generic permission flags");

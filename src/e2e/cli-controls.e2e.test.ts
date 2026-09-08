@@ -233,6 +233,13 @@ describe("e2e CLI permission answers", () => {
       expect(denied.stdout).toContain("answered n for STA-24 (denied, sent esc)");
       expect(denied.stderr).toBe("");
       expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: reviewer.paneId, keys: ["esc"] });
+    }, {
+      config: {
+        agents: {
+          builder: { harness: "opencode", model: "opencode-go/deepseek-v4-flash" },
+          reviewer: { harness: "claude", model: "claude-sonnet-5" },
+        },
+      },
     });
   });
 });
