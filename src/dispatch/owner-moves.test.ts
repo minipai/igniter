@@ -626,7 +626,9 @@ describe("submission retries", () => {
       // The lost result never surfaces: the post-write read-back adopts the
       // landed receipt inside the same submit.
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(false); // Review+Pending: nothing to submit
+      const repeated = await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload);
+      expect(repeated.ok).toBe(true);
+      expect(repeated.text).toContain("already submitted build");
       const receipts = issueOf(h, "STA-1").comments.filter((c) => parseReceiptBlock(c.body) !== null);
       expect(receipts).toHaveLength(1);
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);

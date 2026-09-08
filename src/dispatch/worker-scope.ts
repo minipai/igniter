@@ -49,6 +49,13 @@ export async function ensureScratchDir(path: string, root: string): Promise<void
   if (canonical !== rootLex && !canonical.startsWith(rootLex + sep)) {
     throw new ScratchError(`refused: scratch ${path} escapes its root ${root}`);
   }
+  const rootStat = await lstat(rootLex).catch(() => null);
+  if (rootStat?.isSymbolicLink()) {
+    throw new ScratchError(`refused: scratch component ${rootLex} is a symlink; remove it first`);
+  }
+  if (rootStat && !rootStat.isDirectory()) {
+    throw new ScratchError(`refused: scratch component ${rootLex} is not a directory`);
+  }
   const relative = canonical.slice(rootLex.length).split(sep).filter(Boolean);
   let cursor = rootLex;
   for (const part of relative) {

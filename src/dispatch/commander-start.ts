@@ -27,7 +27,7 @@
 
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { foregroundCommandFor, launchFor } from "./agents.ts";
-import type { LinearClient } from "./linear.ts";
+import type { LinearClientLike } from "./linear.ts";
 import {
   confirmPromptDelivery,
   workOrderHash,
@@ -47,7 +47,7 @@ import type { DispatchConfig } from "./config.ts";
 import type { FullIssue } from "./protocol.ts";
 
 export interface CommanderStartDeps {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
   decisions: DecisionLog;

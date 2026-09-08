@@ -31,7 +31,7 @@ import {
 import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
 import { commanderConfigForRun, keptStageProfiles, launchFor, recordStageProfiles } from "./agents.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
-import { LinearClient } from "./linear.ts";
+import type { LinearClientLike } from "./linear.ts";
 import {
   beginMutation,
   blockMutation,
@@ -48,6 +48,7 @@ import {
   type ProtocolDeps,
   type ProtocolProgress,
   type ProtocolStatus,
+  type OwnerMoveFollowUp,
   type WorkspaceMeta,
 } from "./protocol.ts";
 import {
@@ -86,7 +87,7 @@ export type { CommandResult };
 export { formatDuration };
 
 export interface CommandContext {
-  client: LinearClient;
+  client: LinearClientLike;
   resolved: ResolvedDispatch;
   host: string;
   decisions: DecisionLog;
@@ -99,6 +100,11 @@ export interface CommandContext {
   now?: () => number;
   /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
   promptDelivery?: PromptDeliveryPolicy;
+  /** Deferred Herdr work from an explicit reconcile, retained by the service. */
+  reconcilePending?: Map<string, {
+    followUp: OwnerMoveFollowUp | null;
+    closeDue: { workspaceId: string | null; checkpoint: string } | null;
+  }>;
 }
 
 const TOP_USAGE =
@@ -526,9 +532,23 @@ async function reconcileCommand(args: string[], ctx: CommandContext): Promise<Co
     await ctx.decisions.record(full.identifier, `reconcile failed: not in project "${ctx.resolved.config.project}"`);
     return fail(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
+  const pending = ctx.reconcilePending?.get(full.identifier);
+  if (pending) {
+    try {
+      const finished = await retryReconcilePending(ctx, full, pending);
+      ctx.reconcilePending?.delete(full.identifier);
+      return { ok: true, text: `${full.identifier}: ${finished}` };
+    } catch (error) {
+      return fail(`${full.identifier}: workspace follow-up still pending — ${(error as Error).message}`);
+    }
+  }
   const outcome = await normalizeOwnerMove(depsOf(ctx), full);
   if (outcome.result) await ctx.decisions.record(full.identifier, outcome.result.text);
   if (outcome.followUp || outcome.closeDue) {
+    ctx.reconcilePending?.set(full.identifier, {
+      followUp: outcome.followUp,
+      closeDue: outcome.closeDue,
+    });
     const applied = outcome.result?.text ?? `${full.identifier} Linear state converged`;
     return fail(`${applied}; workspace follow-up did not finish — inspect it, then run reconcile again`);
   }
@@ -538,6 +558,48 @@ async function reconcileCommand(args: string[], ctx: CommandContext): Promise<Co
     ok: true,
     text: `${full.identifier}: no owner transition to reconcile (${state.status}+${state.progress ?? "none"})`,
   };
+}
+
+async function retryReconcilePending(
+  ctx: CommandContext,
+  full: FullIssue,
+  pending: {
+    followUp: OwnerMoveFollowUp | null;
+    closeDue: { workspaceId: string | null; checkpoint: string } | null;
+  },
+): Promise<string> {
+  const state = deriveState(ctx.resolved, full);
+  if (pending.followUp) {
+    const due = pending.followUp;
+    if (state.status !== due.tokens["status"] || state.progress !== due.tokens["progress"]) {
+      throw new ProtocolError(`Linear moved to ${state.status}+${state.progress ?? "no progress"}; deferred mirror was not applied`);
+    }
+    const snapshot = await ctx.workspaces.snapshot();
+    const workspace = due.workspaceId
+      ? snapshot.workspaces.find((w) => w.workspaceId === due.workspaceId)
+      : workspaceForTicket(snapshot, full.identifier);
+    if (!workspace || workspace.tokens["ticket"] !== full.identifier) {
+      throw new Error(`no workspace for ${full.identifier}`);
+    }
+    await ctx.workspaces.reportMetadata(workspace.workspaceId, due.tokens);
+    const commander = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
+    if (commander) await ctx.workspaces.prompt(commander.name, due.wakeText);
+  }
+  if (pending.closeDue) {
+    if (state.status !== "done") {
+      throw new ProtocolError(`Linear moved to ${state.status}; deferred workspace close was not applied`);
+    }
+    const snapshot = await ctx.workspaces.snapshot();
+    const workspace = pending.closeDue.workspaceId
+      ? snapshot.workspaces.find((w) => w.workspaceId === pending.closeDue?.workspaceId)
+      : workspaceForTicket(snapshot, full.identifier);
+    if (workspace) await ctx.workspaces.close(workspace.workspaceId);
+  }
+  return pending.followUp && pending.closeDue
+    ? "workspace mirror, wake-up, and close completed on retry"
+    : pending.followUp
+      ? "workspace mirror and wake-up completed on retry"
+      : "workspace close completed on retry";
 }
 
 // ---------------------------------------------------------------------------
@@ -572,21 +634,32 @@ async function answerCommand(args: string[], ctx: CommandContext): Promise<Comma
     await decisions.record(full.identifier, "answer failed: no workspace");
     return fail(`no workspace for ${full.identifier}`);
   }
-  const workerName = stageWorkerForTicket(snapshot, full.identifier)
-    ?? snapshot.agents.find((a) => a.name === commanderName(full.identifier))?.name ?? null;
+  let status: ProtocolStatus;
+  try {
+    status = deriveState(resolved, full as FullIssue).status;
+  } catch (error) {
+    return refuse(ctx, full.identifier, error);
+  }
+  const stage = status === "review" ? "review" : status === "deliver" ? "deliver" : status === "build" ? "build" : null;
+  const workerName = stage
+    ? stageWorkerName(stage, full.identifier)
+    : snapshot.agents.find((a) => a.name === commanderName(full.identifier))?.name ?? null;
   const workerRow = workerName ? snapshot.agents.find((a) => a.name === workerName) : undefined;
   if (!workerRow) {
     await decisions.record(full.identifier, "answer failed: no live stage worker");
     return fail(`no live stage worker for ${full.identifier}`);
   }
+  const harness = stage
+    ? ctx.resolved.config.commander.agents[stage === "build" ? "builder" : stage === "review" ? "reviewer" : "deliverer"].harness
+    : ctx.resolved.config.commander.agents.commander.harness;
   try {
-    await ctx.workspaces.sendKeys(workerRow.paneId, answerKeysFor(ctx.resolved.config.commander.agents.commander.harness, key));
+    await ctx.workspaces.sendKeys(workerRow.paneId, answerKeysFor(harness, key));
   } catch (error) {
     await decisions.record(full.identifier, `answer failed: ${(error as Error).message}`);
     return fail(`answer failed: ${(error as Error).message}`);
   }
   const verdict = key === "y" ? "allowed once" : "denied";
-  const sent = answerKeysFor(ctx.resolved.config.commander.agents.commander.harness, key).join("+");
+  const sent = answerKeysFor(harness, key).join("+");
   await decisions.record(full.identifier, `answered ${key} (${verdict}, sent ${sent})`);
   return { ok: true, text: `answered ${key} for ${full.identifier} (${verdict}, sent ${sent}); worker pane received the key` };
 }

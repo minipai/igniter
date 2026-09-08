@@ -101,6 +101,42 @@ export interface LinearClientOptions {
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
+/**
+ * The Linear surface dispatch uses. Every command takes this interface, so
+ * tests inject a stateful in-memory client while production passes the real
+ * GraphQL adapter. Method contracts (unconditional state writes, whole-set
+ * label replacement, (issue, url) attachment dedupe, oldest-first comments)
+ * are part of the interface: any implementation must honor them.
+ */
+export interface LinearClientLike {
+  listTeams(): Promise<LinearTeam[]>;
+  teamStates(teamId: string): Promise<WorkflowState[]>;
+  listProjects(): Promise<LinearProject[]>;
+  /** Every label on the team, with its group parent when grouped. */
+  teamLabels(teamId: string): Promise<LinearLabelNode[]>;
+  listIssuesByState(projectId: string, stateId: string, first?: number): Promise<LinearIssue[]>;
+  fetchIssue(idOrIdentifier: string): Promise<(LinearIssue & { comments: LinearComment[] }) | null>;
+  /**
+   * Move an issue to a new workflow state. Unconditional: writing the state
+   * the issue already has succeeds, so callers must not read any locking
+   * semantic out of this call.
+   */
+  setIssueState(issueId: string, stateId: string): Promise<void>;
+  addComment(issueId: string, body: string): Promise<string>;
+  /** List the issue's attachments with their metadata round-tripped. */
+  listAttachments(issueIdOrIdentifier: string): Promise<LinearAttachment[]>;
+  /**
+   * Create an attachment, or update the one already stored under the same
+   * url on the same issue ((issueId, url) dedupe). Returns the attachment id.
+   */
+  createAttachment(input: LinearAttachmentCreateInput): Promise<string>;
+  /** Find a workspace-wide label by name. */
+  lookupIssueLabel(name: string): Promise<LinearLabel | null>;
+  createIssueLabel(teamId: string, name: string): Promise<LinearLabel>;
+  /** Replace the whole label set: callers read first and pass back kept ids. */
+  setIssueLabels(issueId: string, labelIds: string[]): Promise<void>;
+}
+
 interface GraphQLResponse<T> {
   data?: T;
   errors?: { message: string }[];
@@ -183,7 +219,7 @@ const ISSUE_LABELS_UPDATE_MUTATION = `mutation($id: String!, $labelIds: [String!
   }
 }`;
 
-export class LinearClient {
+export class LinearClient implements LinearClientLike {
   private readonly apiKey: string;
   private readonly endpoint: string;
   private readonly fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;

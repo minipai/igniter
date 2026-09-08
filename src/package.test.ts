@@ -30,7 +30,7 @@ test("the published package runs outside the checkout with its bundled assets", 
     run([process.execPath, "--no-env-file", "pm", "pack", "--ignore-scripts", "--quiet", "--filename", tarball], source);
     const files = run(["tar", "-tzf", tarball]).trim().split("\n");
     for (const file of files) {
-      expect(file).not.toMatch(/(^|\/)(\.igniter|\.env[^/]*|docs|scripts|skills|node_modules)(\/|$)/);
+      expect(file).not.toMatch(/(^|\/)(\.igniter|\.env[^/]*|docs|e2e|scripts|skills|node_modules)(\/|$)/);
       expect(file).not.toMatch(/\.test\.[^/]+$/);
       expect(file).not.toMatch(/\/(fake-[^/]+|generate-types\.ts|serve\.out)$/);
     }

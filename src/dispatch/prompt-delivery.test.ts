@@ -281,13 +281,20 @@ describe("stage start", () => {
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
       // The STA-197 observation: the agent sits idle with an empty context.
       h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.agentStatus = "idle";
+      // The nudge lands the prompt: the retry redelivers the byte-identical
+      // work order to the same worker and converges Linear without a second
+      // worker, work order, or receipt.
+      h.workspaces.promptMode = "consumed";
       const retry = await runCommand(["begin", "STA-1"], h.ctx);
       expect(retry.ok).toBe(true);
-      // The retry reuses the same worker and converges Linear without a
-      // second work order.
-      expect(retry.text).toContain("reused without a second work order");
+      expect(retry.text).toContain("work order redelivered");
       expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
       expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
+      const inbox = h.workspaces.promptsFor("builder-sta-1");
+      // Two sends from the stalled first attempt plus one from the retry:
+      // every send carries the byte-identical work order to the same worker.
+      expect(inbox).toHaveLength(3);
+      expect(new Set(inbox).size).toBe(1);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
