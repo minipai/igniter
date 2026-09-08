@@ -38,6 +38,7 @@ import {
   countBuildSlots,
   deriveState,
   describeState,
+  incompleteStatusText,
   latestValidReceipt,
   normalizeOwnerMove,
   statusOf,
@@ -526,6 +527,11 @@ async function ticketStatusCommand(identifier: string, ctx: CommandContext): Pro
   try {
     state = deriveState(ctx.resolved, full);
   } catch (error) {
+    // Incomplete active states fail closed here without writes: the text
+    // names the pair and points at `reconcile`. Other tickets are
+    // unaffected — this command names exactly one ticket.
+    const incomplete = incompleteStatusText(ctx.resolved, full);
+    if (incomplete) return fail(incomplete);
     return fail((error as Error).message);
   }
   const data = describeState(full, meta, state);
@@ -877,6 +883,10 @@ async function beginTicket(ctx: CommandContext, identifier: string): Promise<Com
   try {
     state = deriveState(resolved, full);
   } catch (error) {
+    // Incomplete active states start no stage agent: fail closed and point
+    // at `reconcile`, before any workspace or worker exists.
+    const incomplete = incompleteStatusText(resolved, full);
+    if (incomplete) return refuse(ctx, full.identifier, new ProtocolError(incomplete));
     return refuse(ctx, full.identifier, error);
   }
   if (state.status === "todo") {

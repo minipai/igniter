@@ -1882,6 +1882,338 @@ export async function unblockMutation(
 }
 
 // ---------------------------------------------------------------------------
+// Incomplete active state (STA-190)
+//
+// An owner move or a half-written label update can leave Build, Review, or
+// Deliver with zero or several Progress labels. That state is incomplete:
+// dispatch starts no stage agent on it, guesses no checkpoint or completion,
+// and never picks one of several carried labels. The ticket-targeted
+// `reconcile` converges it from the current Linear status plus Progress plus
+// the newest valid YAML receipt alone — Herdr snapshots and workspace
+// metadata never authorize the outcome, and no workspace is opened here.
+//
+// Only a receipt that uniquely proves the expected Progress repairs Linear
+// (a label-only write; status, checkpoint, and receipts never change).
+// Anything else — no receipt, a stale checkpoint, a receipt kind that
+// belongs to another stage, or a correction receipt whose stage moved on —
+// parks the ticket as same-stage Blocked with one actionable comment. The
+// comment carries a fingerprint of the exact error, so an unchanged bad
+// state never comments twice: after a park the ticket reads Blocked (a
+// complete pair) and later reconciles stay quiet.
+// ---------------------------------------------------------------------------
+
+export const INCOMPLETE_MARKER = "<!-- igniter:incomplete-state -->";
+
+export type IncompleteKind = "missing-progress" | "multiple-progress";
+
+export interface IncompleteDiagnosis {
+  status: "build" | "review" | "deliver";
+  kind: IncompleteKind;
+  progresses: ProtocolProgress[];
+}
+
+/**
+ * The incomplete active state of a fully read issue, or null when the
+ * ticket is not in scope (not Build/Review/Deliver, or exactly one
+ * Progress). Todo keeps its own normalization; Backlog/Done carry none.
+ */
+export function diagnoseIncompleteState(resolved: ResolvedDispatch, full: FullIssue): IncompleteDiagnosis | null {
+  const status = statusOf(resolved, full.state.id);
+  if (status !== "build" && status !== "review" && status !== "deliver") return null;
+  const progresses = (full.labels ?? [])
+    .map((l) => progressOf(resolved, l.id))
+    .filter((p): p is ProtocolProgress => p !== undefined);
+  if (progresses.length === 1) return null;
+  return {
+    status,
+    kind: progresses.length === 0 ? "missing-progress" : "multiple-progress",
+    progresses,
+  };
+}
+
+/**
+ * Read-only diagnosis for `status` and `begin`: names the incomplete pair
+ * and points at `reconcile` without writing Linear or opening anything.
+ * Null when the ticket is not incomplete.
+ */
+export function incompleteStatusText(resolved: ResolvedDispatch, full: FullIssue): string | null {
+  const diagnosis = diagnoseIncompleteState(resolved, full);
+  if (!diagnosis) return null;
+  const pair = diagnosis.progresses.length === 0
+    ? "no Progress label"
+    : `${diagnosis.progresses.length} Progress labels (${[...diagnosis.progresses].sort().join(", ")})`;
+  const latest = latestValidReceipt(full.comments);
+  const receipt = latest
+    ? `newest receipt: ${latest.receipt.kind} binds ${latest.receipt.checkpoint}`
+    : "newest receipt: none";
+  const stage = resolved.config.states[diagnosis.status];
+  return (
+    `${full.identifier}: ${stage} carries ${pair} (${receipt}); ` +
+    `dispatch starts no worker on an incomplete active state — ` +
+    `run \`igniter reconcile ${full.identifier}\` to converge it ` +
+    `(a receipt-proven repair, or same-stage Blocked with manual steps)`
+  );
+}
+
+type IncompleteParkReason = "no-receipt" | "stale-checkpoint" | "kind-mismatch" | "stage-conflict";
+
+/**
+ * The Progress a receipt uniquely proves for an incomplete active status,
+ * or null when no receipt proves exactly one outcome. The owner's status
+ * is trusted (repairs never move stage); only the Progress is derived:
+ *
+ * - build receipt: initial Build proves Complete, unless a prior review
+ *   receipt marks it a correction that belongs in Review (stage conflict);
+ *   in Review it proves Pending; in Deliver it proves nothing.
+ * - review-pass: Review proves Complete, Deliver proves Pending (approval),
+ *   Build proves Pending (send-back).
+ * - review-fail: Build proves Pending; Review/Deliver prove nothing (a
+ *   failure belongs in Build).
+ * - deliver: Deliver proves Complete; anywhere else proves nothing.
+ */
+function repairTargetFor(
+  status: "build" | "review" | "deliver",
+  latestKind: ReceiptKind,
+  priorKind: ReceiptKind | null,
+): ProtocolProgress | null {
+  if (status === "build") {
+    if (latestKind === "build") {
+      return priorKind === "review-pass" || priorKind === "review-fail" ? null : "complete";
+    }
+    if (latestKind === "review-pass" || latestKind === "review-fail") return "pending";
+    return null;
+  }
+  if (status === "review") {
+    if (latestKind === "build") return "pending";
+    if (latestKind === "review-pass") return "complete";
+    return null;
+  }
+  if (latestKind === "review-pass") return "pending";
+  if (latestKind === "deliver") return "complete";
+  return null;
+}
+
+function progressKeyOf(diagnosis: IncompleteDiagnosis): string {
+  return diagnosis.progresses.length === 0 ? "none" : [...diagnosis.progresses].sort().join("+");
+}
+
+function parkReasonText(
+  diagnosis: IncompleteDiagnosis,
+  reason: IncompleteParkReason,
+  latest: FoundReceipt | null,
+  prior: FoundReceipt | null,
+): string {
+  const stage = diagnosis.status;
+  if (reason === "no-receipt") {
+    return `${stage} carries ${progressKeyOf(diagnosis) === "none" ? "no Progress label" : "several Progress labels"} and Linear holds no valid Igniter receipt; no checkpoint or completion can be proven`;
+  }
+  if (reason === "stale-checkpoint" && latest) {
+    return `${stage} names checkpoint ${latest.receipt.checkpoint} (${latest.receipt.kind} receipt ${latest.receipt.submission}) but it is not in the ticket branch lineage; the receipt is stale`;
+  }
+  if (reason === "stage-conflict" && latest && prior) {
+    return `${stage} holds a correction build receipt (${latest.receipt.submission} binds ${latest.receipt.checkpoint} after ${prior.receipt.kind}); it belongs in Review+Pending, not ${stage} — the stage needs an owner move, not a label guess`;
+  }
+  if (latest) {
+    return `${stage} with ${latest.receipt.kind} receipt ${latest.receipt.submission} proves no single Progress here; only its owning stage converges from it`;
+  }
+  return `${stage} proves no single Progress from the receipt history`;
+}
+
+function incompleteFingerprint(
+  diagnosis: IncompleteDiagnosis,
+  latest: FoundReceipt | null,
+  decision: string,
+): string {
+  return `${diagnosis.status}|${progressKeyOf(diagnosis)}|${latest?.receipt.submission ?? "no-receipt"}|${decision}`;
+}
+
+function incompleteParkBody(
+  identifier: string,
+  diagnosis: IncompleteDiagnosis,
+  latest: FoundReceipt | null,
+  prior: FoundReceipt | null,
+  reason: IncompleteParkReason,
+  fingerprint: string,
+  resolved: ResolvedDispatch,
+): string {
+  const stage = resolved.config.states[diagnosis.status];
+  const lines = [
+    `${INCOMPLETE_MARKER}`,
+    `<!-- fingerprint: ${fingerprint} -->`,
+    `Blocked: ${identifier} is ${stage} with ${progressKeyOf(diagnosis) === "none" ? "no Progress label" : `several Progress labels (${progressKeyOf(diagnosis)})`} — ${parkReasonText(diagnosis, reason, latest, prior)}.`,
+    ``,
+    `Dispatch parked it as ${stage}+Blocked without guessing a checkpoint or completion, and starts no worker here.`,
+    `To fix manually:`,
+    `- Keep the ticket in ${stage} and leave exactly one Progress label (Pending, In progress, Complete, or Blocked) that matches the newest valid receipt${latest ? ` (${latest.receipt.kind} binds ${latest.receipt.checkpoint})` : ""};`,
+    `- or move the ticket to the stage the receipt belongs to, with its converging Progress;`,
+    `- then run \`igniter reconcile ${identifier}\`.`,
+    ``,
+    `This diagnosis posts once per unchanged error; a changed status, Progress set, or newest receipt diagnoses again.`,
+  ];
+  return lines.join("\n") + "\n";
+}
+
+function hasIncompleteComment(comments: { body: string }[], fingerprint: string): boolean {
+  return comments.some((c) => c.body.includes(INCOMPLETE_MARKER) && c.body.includes(fingerprint));
+}
+
+/**
+ * Converge one incomplete active state without Herdr and without opening a
+ * workspace: a receipt-proven repair writes exactly one Progress label, and
+ * anything else parks as same-stage Blocked with one fingerprinted comment.
+ * Both paths read Linear back and verify the converged pair; the checkpoint
+ * and the receipt history never change here. Throws ProtocolError (retry
+ * the command) when Linear does not converge or moves mid-write.
+ */
+export async function convergeIncompleteState(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  diagnosis: IncompleteDiagnosis,
+): Promise<OwnerMoveOutcome> {
+  const { resolved } = deps;
+  const latest = latestValidReceipt(full.comments);
+  const prior = latest ? latestValidReceiptExcluding(full.comments, latest.receipt.submission) : null;
+  const target = latest ? repairTargetFor(diagnosis.status, latest.receipt.kind, prior?.receipt.kind ?? null) : null;
+
+  if (latest && target) {
+    // Every repair except a landed delivery still binds the ticket branch:
+    // a replaced branch refuses as stale instead of endorsing an old
+    // completion or handoff.
+    if (!(diagnosis.status === "deliver" && latest.receipt.kind === "deliver")) {
+      const inLineage = await checkpointInLineage(deps, full.identifier, latest.receipt.checkpoint);
+      if (!inLineage) {
+        return parkIncomplete(deps, full);
+      }
+    }
+    // Re-read before writing: the keep-list and the decision must come from
+    // fresh Linear, so a concurrent owner fix is never clobbered. A changed
+    // newest receipt retries instead of converging on stale history; only
+    // receipt identity guards the write, so a benign concurrent comment
+    // does not force a retry.
+    const fresh = await readback(deps, full.id);
+    if (!diagnoseIncompleteState(resolved, fresh as FullIssue)) {
+      return alreadyConverged(deps, full, fresh);
+    }
+    const freshLatest = latestValidReceipt(fresh.comments);
+    if ((freshLatest?.receipt.submission ?? null) !== latest.receipt.submission) {
+      throw new ProtocolError(`Linear changed mid-repair; retry the command`);
+    }
+    await setProgress(deps, fresh as FullIssue, target);
+    const verified = await readback(deps, full.id);
+    const restate = deriveState(resolved, verified);
+    if (restate.status !== diagnosis.status || restate.progress !== target) {
+      throw new ProtocolError(`Linear did not converge on ${diagnosis.status}+${target}; retry the command`);
+    }
+    const after = latestValidReceipt(verified.comments);
+    if ((after?.receipt.submission ?? null) !== latest.receipt.submission) {
+      throw new ProtocolError(`Linear changed mid-repair; retry the command`);
+    }
+    const from = progressKeyOf(diagnosis);
+    const text =
+      `repaired: ${full.identifier} ${diagnosis.status}+${from} → ${diagnosis.status}+${target} ` +
+      `(${latest.receipt.kind} receipt ${latest.receipt.submission} binds ${latest.receipt.checkpoint}; checkpoint and receipts kept)`;
+    return { result: { ok: true, text }, followUp: null, closeDue: null };
+  }
+
+  return parkIncomplete(deps, full);
+}
+
+/**
+ * The park reason for a fresh snapshot. Stale beats stage-conflict: a
+ * correction receipt the branch no longer contains misdirects as a Review
+ * handoff when the checkpoint itself is unprovable.
+ */
+async function parkReasonFor(
+  deps: ProtocolDeps,
+  identifier: string,
+  diagnosis: IncompleteDiagnosis,
+  latest: FoundReceipt | null,
+  prior: FoundReceipt | null,
+): Promise<IncompleteParkReason> {
+  if (!latest) return "no-receipt";
+  if (latest.receipt.kind === "deliver" && diagnosis.status === "deliver") return "kind-mismatch";
+  if (!(await checkpointInLineage(deps, identifier, latest.receipt.checkpoint))) return "stale-checkpoint";
+  if (
+    latest.receipt.kind === "build" && diagnosis.status === "build"
+    && (prior?.receipt.kind === "review-pass" || prior?.receipt.kind === "review-fail")
+  ) {
+    return "stage-conflict";
+  }
+  return "kind-mismatch";
+}
+
+/** The pair a fresh read actually holds, for already-converged notes. */
+function freshPairText(resolved: ResolvedDispatch, fresh: FullIssue): string {
+  const status = statusOf(resolved, fresh.state.id) ?? fresh.state.name;
+  const progresses = (fresh.labels ?? [])
+    .map((l) => progressOf(resolved, l.id))
+    .filter((p): p is ProtocolProgress => p !== undefined);
+  return `${status}+${progresses.length === 0 ? "none" : [...progresses].sort().join("+")}`;
+}
+
+/** A concurrent change already converged the ticket: report it, write nothing. */
+function alreadyConverged(deps: ProtocolDeps, full: FullIssue, fresh: FullIssue): OwnerMoveOutcome {
+  void deps;
+  return {
+    result: {
+      ok: true,
+      text: `${full.identifier}: Linear already converged while diagnosing (now ${freshPairText(deps.resolved, fresh)}); no change made`,
+    },
+    followUp: null,
+    closeDue: null,
+  };
+}
+
+async function parkIncomplete(
+  deps: ProtocolDeps,
+  full: FullIssue,
+): Promise<OwnerMoveOutcome> {
+  const { resolved } = deps;
+  // Every input below is recomputed from fresh Linear: the fingerprint
+  // describes the current error, and a concurrent owner fix returns
+  // without writes instead of being clobbered back to Blocked.
+  const fresh = await readback(deps, full.id);
+  const diagnosis = diagnoseIncompleteState(resolved, fresh as FullIssue);
+  if (!diagnosis) {
+    return alreadyConverged(deps, full, fresh);
+  }
+  const latest = latestValidReceipt(fresh.comments);
+  const prior = latest ? latestValidReceiptExcluding(fresh.comments, latest.receipt.submission) : null;
+  const reason = await parkReasonFor(deps, full.identifier, diagnosis, latest, prior);
+  const fingerprint = incompleteFingerprint(diagnosis, latest, `park:${reason}`);
+  if (!hasIncompleteComment(fresh.comments, fingerprint)) {
+    const body = incompleteParkBody(full.identifier, diagnosis, latest, prior, reason, fingerprint, resolved);
+    try {
+      await deps.client.addComment(full.id, body);
+    } catch (error) {
+      if (!isTransientLinearError(error)) throw error;
+      const reread = await readback(deps, full.id);
+      if (!hasIncompleteComment(reread.comments, fingerprint)) throw error;
+    }
+  }
+  const current = await readback(deps, full.id);
+  if (!diagnoseIncompleteState(resolved, current as FullIssue)) {
+    return alreadyConverged(deps, full, current);
+  }
+  await setProgress(deps, current as FullIssue, "blocked");
+  const verified = await readback(deps, full.id);
+  const restate = deriveState(resolved, verified);
+  if (restate.status !== diagnosis.status || restate.progress !== "blocked") {
+    throw new ProtocolError(`Linear did not converge on ${diagnosis.status}+blocked; retry the command`);
+  }
+  const after = latestValidReceipt(verified.comments);
+  if ((after?.receipt.submission ?? null) !== (latest?.receipt.submission ?? null)) {
+    throw new ProtocolError(`Linear changed mid-park; retry the command`);
+  }
+  const stage = resolved.config.states[diagnosis.status];
+  const text =
+    `${full.identifier}: ${diagnosis.status}+${progressKeyOf(diagnosis)} is incomplete — ` +
+    `${parkReasonText(diagnosis, reason, latest, prior)}; ` +
+    `parked as ${stage}+Blocked (no worker started; run \`igniter reconcile ${full.identifier}\` after fixing)`;
+  return { result: { ok: false, text }, followUp: null, closeDue: null };
+}
+
+// ---------------------------------------------------------------------------
 // Owner moves in Linear (normalized from the current Linear status +
 // Progress + the newest valid receipt alone; workspace metadata never
 // authorizes a transition, and an inherited Complete is never a new
@@ -1906,7 +2238,7 @@ export interface OwnerMoveOutcome {
 }
 
 /** The receipt checkpoint must still bind the ticket branch lineage. */
-async function checkpointInLineage(
+export async function checkpointInLineage(
   deps: ProtocolDeps,
   identifier: string,
   checkpoint: string,
@@ -1956,6 +2288,16 @@ export async function normalizeOwnerMove(
   const linearStatus = statusOf(resolved, full.state.id);
   if (!linearStatus) {
     return fail(`${full.identifier} sits in unknown Linear status "${full.state.name}"; ignoring`);
+  }
+  // Incomplete active states converge through the receipt-proven repair
+  // or the same-stage Blocked park below — never by picking one of
+  // several carried labels, never by guessing. Other statuses keep the
+  // plain refusal: Todo normalizes elsewhere, Backlog/Done carry none.
+  if (linearStatus === "build" || linearStatus === "review" || linearStatus === "deliver") {
+    const incomplete = diagnoseIncompleteState(resolved, full);
+    if (incomplete) {
+      return convergeIncompleteState(deps, full, incomplete);
+    }
   }
   const progresses = (full.labels ?? [])
     .map((l) => progressOf(resolved, l.id))

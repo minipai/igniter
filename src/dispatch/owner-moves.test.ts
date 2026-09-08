@@ -817,16 +817,19 @@ describe("owner-move guards", () => {  async function outcomeOf(h: Harness, iden
     );
   }
 
-  test("multiple Progress labels refuse without writes", async () => {
+  test("multiple Progress labels fail closed through receipt convergence, never by picking one", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE, PENDING] });
       seedReceipt(h, "STA-1", "review-pass");
-      const before = JSON.stringify(issueOf(h, "STA-1"));
+      // No branch lineage for the receipt checkpoint: the repair refuses as
+      // stale and the ticket parks as Deliver+Blocked with one diagnosis.
       const outcome = await outcomeOf(h, "STA-1");
       expect(outcome.result?.ok).toBe(false);
-      expect(outcome.result?.text).toContain("2 Progress labels");
-      expect(JSON.stringify(issueOf(h, "STA-1"))).toBe(before);
+      expect(outcome.result?.text).toContain("parked as Deliver+Blocked");
+      expect(issueOf(h, "STA-1").labelIds).toEqual(["label-blocked"]);
+      const parked = issueOf(h, "STA-1").comments.filter((c) => c.body.includes("igniter:incomplete-state"));
+      expect(parked).toHaveLength(1);
     } finally {
       h.stop();
     }
