@@ -6,6 +6,7 @@ import {
   DEFAULT_COMMANDER_CONFIG,
   DEFAULT_PROGRESS,
   DEFAULT_STATES,
+  findProjectRoot,
   loadDispatchConfig,
   parseDispatchConfig,
 } from "./config";
@@ -271,6 +272,39 @@ describe("loadDispatchConfig", () => {
     const dir = configDir("project: igniter\n");
     const config = await loadDispatchConfig(dir);
     expect(config.delivery).toBeUndefined();
+  });
+});
+
+describe("findProjectRoot", () => {
+  test("the project root itself resolves to itself", async () => {
+    const dir = configDir("project: igniter\n");
+    expect(await findProjectRoot(dir)).toBe(dir);
+  });
+
+  test("one and many levels of subdirectory resolve to the enclosing root", async () => {
+    const dir = configDir("project: igniter\n");
+    mkdirSync(join(dir, "src", "nested"), { recursive: true });
+    expect(await findProjectRoot(join(dir, "src"))).toBe(dir);
+    expect(await findProjectRoot(join(dir, "src", "nested"))).toBe(dir);
+  });
+
+  test("nested projects resolve to the nearest config", async () => {
+    const outer = configDir("project: outer\n");
+    const inner = join(outer, "inner");
+    mkdirSync(join(inner, ".igniter"), { recursive: true });
+    writeFileSync(join(inner, ".igniter", "config.yaml"), "project: inner\n");
+    mkdirSync(join(inner, "src"), { recursive: true });
+    mkdirSync(join(outer, "src"), { recursive: true });
+    expect(await findProjectRoot(join(inner, "src"))).toBe(inner);
+    expect(await findProjectRoot(join(outer, "src"))).toBe(outer);
+  });
+
+  test("no ancestor config fails with a clear search error", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "igniter-noroot-"));
+    mkdirSync(join(dir, "a", "b"), { recursive: true });
+    await expect(findProjectRoot(join(dir, "a", "b"))).rejects.toThrow(
+      ".igniter/config.yaml not found from",
+    );
   });
 });
 
