@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,8 @@ import {
   loadDispatchConfig,
   parseDispatchConfig,
 } from "./config";
+import { commanderAssetPaths } from "../commander/assets";
+import { promptPathForStage } from "./stage-start";
 
 function configDir(yaml: string): string {
   const dir = mkdtempSync(join(tmpdir(), "igniter-config-"));
@@ -150,17 +152,35 @@ describe("parseDispatchConfig", () => {
     expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("codex");
   });
 
-  test("rejects bundled prompt overrides while agent fields still merge", () => {
-    expect(() => parseDispatchConfig({
-      project: "x",
-      stages: { build: { prompt: "other/build.md" } },
-    })).toThrow('"stages" is bundled');
+  test("accepts a complete stage override while agent fields still merge", () => {
     const merged = parseDispatchConfig({
       project: "x",
       agents: { builder: { model: "custom/builder" } },
+      stages: {
+        build: { prompt: ".igniter/workflow/build.md", agent: "builder" },
+        review: { prompt: ".igniter/workflow/review.md", agent: "reviewer" },
+        deliver: { prompt: ".igniter/workflow/deliver.md", agent: "deliverer" },
+      },
     }).commander;
     expect(merged.agents.builder.model).toBe("custom/builder");
-    expect(merged.stages).toEqual(DEFAULT_COMMANDER_CONFIG.stages);
+    expect(merged.stages.build.prompt).toBe(".igniter/workflow/build.md");
+    expect(merged.stages.review.prompt).toBe(".igniter/workflow/review.md");
+    expect(merged.stages.deliver.prompt).toBe(".igniter/workflow/deliver.md");
+  });
+
+  test("a stage override must be complete and keep protocol agent roles", () => {
+    expect(() => parseDispatchConfig({
+      project: "x",
+      stages: { build: { prompt: "build.md", agent: "builder" } },
+    })).toThrow('stages."review" is required');
+    expect(() => parseDispatchConfig({
+      project: "x",
+      stages: {
+        build: { prompt: "build.md", agent: "reviewer" },
+        review: { prompt: "review.md", agent: "reviewer" },
+        deliver: { prompt: "deliver.md", agent: "deliverer" },
+      },
+    })).toThrow('stages."build" must run on "builder"');
   });
 
   test("rejects invalid agent overrides", () => {
@@ -272,6 +292,65 @@ describe("loadDispatchConfig", () => {
     const dir = configDir("project: igniter\n");
     const config = await loadDispatchConfig(dir);
     expect(config.delivery).toBeUndefined();
+  });
+
+  test("stage overrides resolve to non-empty files under the repo root", async () => {
+    const yaml = [
+      "project: igniter",
+      "stages:",
+      "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
+      "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
+      "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
+      "",
+    ].join("\n");
+    const dir = configDir(yaml);
+    mkdirSync(join(dir, ".igniter", "workflow"));
+    for (const stage of ["build", "review", "deliver"] as const) {
+      writeFileSync(join(dir, ".igniter", "workflow", `${stage}.md`), `# ${stage}\n`);
+    }
+    const config = await loadDispatchConfig(dir);
+    expect(config.commander.stages.build.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "build.md")));
+    expect(config.commander.stages.review.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "review.md")));
+    expect(config.commander.stages.deliver.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "deliver.md")));
+    expect(promptPathForStage(commanderAssetPaths(), "build", config.commander)).toBe(
+      realpathSync(join(dir, ".igniter", "workflow", "build.md")),
+    );
+
+    writeFileSync(join(dir, ".igniter", "workflow", "review.md"), "");
+    await expect(loadDispatchConfig(dir)).rejects.toThrow('stages."review"."prompt"');
+  });
+
+  test("stage override prompts cannot escape the repo root", async () => {
+    const dir = configDir([
+      "project: igniter",
+      "stages:",
+      "  build: { prompt: ../build.md, agent: builder }",
+      "  review: { prompt: review.md, agent: reviewer }",
+      "  deliver: { prompt: deliver.md, agent: deliverer }",
+      "",
+    ].join("\n"));
+    await expect(loadDispatchConfig(dir)).rejects.toThrow("outside");
+  });
+
+  test("stage override prompts cannot escape through a symbolic link", async () => {
+    const yaml = [
+      "project: igniter",
+      "stages:",
+      "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
+      "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
+      "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
+      "",
+    ].join("\n");
+    const dir = configDir(yaml);
+    const workflow = join(dir, ".igniter", "workflow");
+    const outside = join(mkdtempSync(join(tmpdir(), "igniter-prompt-outside-")), "outside.md");
+    mkdirSync(workflow);
+    writeFileSync(outside, "# outside\n");
+    symlinkSync(outside, join(workflow, "build.md"));
+    writeFileSync(join(workflow, "review.md"), "# review\n");
+    writeFileSync(join(workflow, "deliver.md"), "# deliver\n");
+
+    await expect(loadDispatchConfig(dir)).rejects.toThrow("through a symbolic link");
   });
 });
 

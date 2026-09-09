@@ -13,8 +13,18 @@ max_running: 3
 # `--port` / `IGNITER_PORT` still override the port portion.
 listen: 127.0.0.1:3457
 
-# Project instructions the Commander reads at the start of a run.
-delivery: delivery.md
+# Project workflow. Supplying `stages` replaces all three bundled prompts;
+# every prompt path is relative to the repository root.
+stages:
+  build:
+    prompt: .igniter/workflow/build.md
+    agent: builder
+  review:
+    prompt: .igniter/workflow/review.md
+    agent: reviewer
+  deliver:
+    prompt: .igniter/workflow/deliver.md
+    agent: deliverer
 
 # Linear status display names: igniter's vocabulary on the left, whatever
 # this Linear workspace calls it on the right. Dispatch validates all six

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { commanderAssetPaths } from "../commander/assets";
 import { runCommand, type CommandContext } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "./claims";
-import { parseDispatchConfig } from "./config";
+import { loadDispatchConfig, parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import { latestValidReceipt } from "./protocol";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
@@ -267,6 +267,35 @@ describe("ticket-targeted begin", () => {
       expect(inbox[0]).not.toContain("`igniter state");
       expect(inbox[0]).not.toContain("`igniter submit");
       expect(inbox[0]).not.toContain("`igniter begin");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("begin sends a project stage prompt loaded from .igniter/config.yaml", async () => {
+    const h = await harness();
+    try {
+      const workflow = join(h.repoRoot, ".igniter", "workflow");
+      mkdirSync(workflow, { recursive: true });
+      writeFileSync(join(h.repoRoot, ".igniter", "config.yaml"), [
+        "project: igniter",
+        "team: Starcoder",
+        "stages:",
+        "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
+        "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
+        "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
+        "",
+      ].join("\n"));
+      for (const stage of ["build", "review", "deliver"] as const) {
+        writeFileSync(join(workflow, `${stage}.md`), `# project ${stage}\n`);
+      }
+      h.ctx.resolved.config.commander = (await loadDispatchConfig(h.repoRoot)).commander;
+
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      const order = h.workspaces.promptsFor("builder-sta-1")[0]!;
+      expect(order).toContain(join(workflow, "build.md"));
+      expect(order).not.toContain(commanderAssetPaths().prompts.build);
     } finally {
       h.stop();
     }
