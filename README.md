@@ -35,8 +35,8 @@ One ticket. A team of agents. A traceable path to delivery.
   idempotent submissions let the Commander pick up interrupted work while
   preserving the existing worktree and recorded results.
 - **You own the release.** Review the evidence before approving delivery.
-  Delivery lands the accepted change on local `main`; pushing and deployment
-  follow your authorization and repository rules.
+  Delivery opens a pull request, follows CI through automatic merge, and leaves
+  deployment to your authorization and repository rules.
 
 ## The workflow
 
@@ -46,7 +46,9 @@ flowchart LR
   Build --> Acceptance[Independent acceptance]
   Acceptance -->|Needs fixes| Build
   Acceptance -->|Pass| Approval[Your approval]
-  Approval --> Deliver[Deliver to local main]
+  Approval --> Deliver[Pull request and CI]
+  Deliver --> Merge[Automatic merge]
+  Merge --> Done[Linear Done]
 ```
 
 The Commander works from the project root. Build, Acceptance, and Deliver
@@ -142,12 +144,13 @@ for a ticket's current state. To supervise the service separately or inspect
 startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
 
 After acceptance passes, review the evidence and move the ticket from Review
-to Deliver to approve landing. Delivery rebases the feature branch onto local
-`main`, runs the required checks, lands on local `main`, and records both the
-approved checkpoint and the landed commit; a rebase that only changes the SHA
-keeps the approval, while a landing that needs code changes returns to
-acceptance or to you for a new decision. Move Deliver to Done after confirming
-the final push or deployment. The Commander reconciles those owner decisions.
+to Deliver to approve landing. Delivery follows `delivery.md`: it rebases the
+feature branch onto remote `main`, pushes it, opens a pull request, and watches
+the `Check` and `Auto Merge` workflows through the final merge. A rebase that
+only changes the SHA keeps the approval, while a change needed to fix CI
+returns to Build and acceptance. After Igniter records the merged commit, the
+GitHub workflow moves the Linear issue to Done and the Commander reconciles
+the local workspace.
 
 ## Development
 

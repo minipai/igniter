@@ -38,8 +38,12 @@ have been a form — are squashed into the feature commit before review, not
 left as follow-up commits on top of it. A separate commit is for a separate
 change.
 
-No pull requests. Once the owner moves the ticket to Deliver, rebase the commit
-onto local `main`. Do not push; the owner pushes. `.diffwalk/` stays out of git.
+Deliveries use pull requests. Once the owner moves the ticket to Deliver,
+follow `delivery.md`: rebase onto the current remote `main`, push the ticket
+branch, open or update its pull request, and monitor CI and automatic merge
+until the pull request is merged or a concrete blocker is reported. Never push
+directly to `main`. A CI failure that needs a code change returns to Build and
+Review; do not reuse the old acceptance. `.diffwalk/` stays out of git.
 
 ## Acceptance evidence
 

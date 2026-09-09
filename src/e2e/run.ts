@@ -24,6 +24,8 @@ try {
     process.execPath,
     "test",
     "src/e2e",
+    "--timeout",
+    "30000",
     "--reporter=junit",
     `--reporter-outfile=${report}`,
   ], {

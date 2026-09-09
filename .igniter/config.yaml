@@ -14,7 +14,7 @@ max_running: 3
 listen: 127.0.0.1:3457
 
 # Project instructions the Commander reads at the start of a run.
-delivery: README.md
+delivery: delivery.md
 
 # Linear status display names: igniter's vocabulary on the left, whatever
 # this Linear workspace calls it on the right. Dispatch validates all six
