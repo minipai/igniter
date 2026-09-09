@@ -1,7 +1,7 @@
 // Singleton Global Commander flow (STA-225, corrected) against a fake
 // Linear endpoint and fake Herdr: `start` boots the one project-level
 // Commander, `start STA-X` assigns to that same singleton, and the
-// Commander drives stage workers itself through ticket-targeted `begin`.
+// Commander drives stage workers itself through ticket-targeted `worker start`.
 // No real credentials, project, or daemon.
 
 import { describe, expect, test } from "bun:test";
@@ -50,7 +50,7 @@ interface Harness {
 async function harness(maxRunning = 3): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -199,8 +199,8 @@ describe("singleton lifecycle", () => {
   });
 });
 
-describe("ticket-targeted begin", () => {
-  test("begin derives the stage and launches the worker; start never does", async () => {
+describe("ticket-targeted worker start", () => {
+  test("worker start confirms the worker before begin records the stage", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
@@ -208,10 +208,12 @@ describe("ticket-targeted begin", () => {
       // Assignment alone moves no Linear state and starts no worker.
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeUndefined();
-      // The Commander begins the stage itself.
-      const begun = await runCommand(["begin", "STA-1"], h.ctx);
+      // The Commander confirms the worker before recording the stage start.
+      const begun = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(begun.ok).toBe(true);
       expect(begun.text).toContain("builder-sta-1");
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
@@ -225,10 +227,10 @@ describe("ticket-targeted begin", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand(["begin", "STA-1", "build"], h.ctx)).ok).toBe(false);
       addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["begin", "STA-2"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["worker", "start", "STA-2"], h.ctx)).ok).toBe(true);
       expect(h.workspaces.agents.find((a) => a.name === "reviewer-sta-2")).toBeDefined();
       addIssue(h.world, { identifier: "STA-3", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["begin", "STA-3"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["worker", "start", "STA-3"], h.ctx)).ok).toBe(true);
       expect(h.workspaces.agents.find((a) => a.name === "deliverer-sta-3")).toBeDefined();
     } finally {
       h.stop();
@@ -240,13 +242,15 @@ describe("ticket-targeted begin", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.workspaces.failMethods.add("agent.start");
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(false);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       h.workspaces.failMethods.clear();
       h.workspaces.promptMode = "input-buffer";
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(false);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       h.workspaces.promptMode = "consumed";
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
     } finally {
@@ -258,7 +262,7 @@ describe("ticket-targeted begin", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, title: "Feature", labelIds: [PENDING] });
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       const assets = commanderAssetPaths();
       const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox[0]).toContain(assets.prompts.build);
@@ -272,7 +276,7 @@ describe("ticket-targeted begin", () => {
     }
   });
 
-  test("begin sends a project stage prompt loaded from .igniter/config.yaml", async () => {
+  test("worker start sends a project stage prompt loaded from .igniter/config.yaml", async () => {
     const h = await harness();
     try {
       const workflow = join(h.repoRoot, ".igniter", "workflow");
@@ -292,7 +296,7 @@ describe("ticket-targeted begin", () => {
       h.ctx.resolved.config.commander = (await loadDispatchConfig(h.repoRoot)).commander;
 
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       const order = h.workspaces.promptsFor("builder-sta-1")[0]!;
       expect(order).toContain(join(workflow, "build.md"));
       expect(order).not.toContain(commanderAssetPaths().prompts.build);
@@ -307,6 +311,7 @@ describe("automatic result collection and submission", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       // The worker writes its result file with the completion marker.
       const dir = scratchFor(h.repoRoot, "STA-1", "builder");
@@ -349,19 +354,19 @@ describe("automatic result collection and submission", () => {
 });
 
 describe("idempotent recovery", () => {
-  test("same worker, partial begin, and retry never duplicate", async () => {
+  test("same worker, partial start, and retry never duplicate", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.workspaces.promptMode = "input-buffer";
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(false);
       expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
       h.workspaces.promptMode = "consumed";
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
       expect(h.workspaces.workspaces.filter((w) => w.label === "STA-1")).toHaveLength(1);
       const inboxBefore = h.workspaces.promptsFor("builder-sta-1").length;
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.workspaces.promptsFor("builder-sta-1")).toHaveLength(inboxBefore);
       // Same singleton assignment twice never duplicates either.
       expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
@@ -371,16 +376,16 @@ describe("idempotent recovery", () => {
     }
   });
 
-  test("a known ticket with no workspace is refused by identity with no Linear write", async () => {
+  test("submit validates a ticket checkpoint without requiring a worker workspace", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       const submit = await runCommand(["submit", "STA-1", "--input", "-"], h.ctx, {
         input: JSON.stringify(buildPayload()),
       });
-      expect(submit.ok).toBe(false);
-      expect(submit.text).toContain("no workspace for STA-1");
-      expect(h.world.issues[0]!.comments).toHaveLength(0);
+      expect(submit.ok).toBe(true);
+      expect(h.workspaces.calls).toHaveLength(0);
+      expect(latestValidReceipt(h.world.issues[0]!.comments)).toMatchObject({ receipt: { kind: "build", checkpoint: HEAD } });
     } finally {
       h.stop();
     }

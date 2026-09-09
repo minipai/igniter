@@ -134,6 +134,7 @@ function artifact() {
 async function consentedBegin(h: Harness, identifier: string) {
   const started = await runCommand(["start", identifier, "--publish-review"], h.ctx, { directStart: true });
   expect(started.ok).toBe(true);
+  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   const begun = await runCommand(["begin", identifier], h.ctx);
   expect(begun.ok).toBe(true);
   return begun;
@@ -186,7 +187,7 @@ describe("consent", () => {
     }
   });
 
-  test("begin stamps the granted lifecycle into the ticket workspace", async () => {
+  test("worker start stamps the granted lifecycle into the ticket workspace", async () => {
     const h = await harness();
     addTicket(h, "STA-1");
     await consentedBegin(h, "STA-1");
@@ -200,6 +201,7 @@ describe("consent", () => {
   test("a late grant stamps the live workspace, so submit still verifies", async () => {
     const h = await harness();
     addTicket(h, "STA-1");
+    expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
     expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
     const started = await runCommand(["start", "STA-1", "--publish-review"], h.ctx, { directStart: true });
     expect(started.ok).toBe(true);
@@ -259,6 +261,7 @@ describe("submit gate", () => {
   test("without consent the submit refuses, publishes nothing, and records no receipt", async () => {
     const h = await harness();
     addTicket(h, "STA-1");
+    expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
     expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
     const out = await submitBuild(h, "STA-1", buildPayload(HEAD, artifact()));
     expect(out.ok).toBe(false);
@@ -267,13 +270,14 @@ describe("submit gate", () => {
     expect(out.text).toContain("no receipt was recorded");
     expect(h.publisher.publications).toHaveLength(0);
     expect(h.publisher.publishCalls).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
     expect(issueOf(h, "STA-1").stateId).toBe("st-build");
   });
 
   test("a plain build submit without an artifact still lands with no publication", async () => {
     const h = await harness();
     addTicket(h, "STA-1");
+    expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
     expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
     const out = await submitBuild(h, "STA-1", buildPayload());
     expect(out.ok).toBe(true);
@@ -299,7 +303,7 @@ describe("submit gate", () => {
       checkpoint: HEAD,
       capture: CAPTURE,
     });
-    const comments = issueOf(h, "STA-1").comments;
+    const comments = issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body));
     expect(comments).toHaveLength(1);
     const body = comments[0]?.body ?? "";
     expect(body).toContain(`Review: ${h.publisher.publications[0]?.url}`);
@@ -321,7 +325,7 @@ describe("submit gate", () => {
     expect(out.ok).toBe(false);
     expect(out.text).toContain("fixed destination is review.diffwalk.dev");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
   });
 
   test("checkpoint drift refuses with no publish and no receipt", async () => {
@@ -332,7 +336,7 @@ describe("submit gate", () => {
     expect(out.ok).toBe(false);
     expect(out.text).toContain("worktree HEAD");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
   });
 
   test("a failed diffwalk check refuses with no publish and no receipt", async () => {
@@ -347,7 +351,7 @@ describe("submit gate", () => {
     expect(out.ok).toBe(false);
     expect(out.text).toContain("diffwalk check did not pass");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
   });
 
   test("lifecycle drift refuses with the exact recovery command", async () => {
@@ -361,7 +365,7 @@ describe("submit gate", () => {
     expect(out.text).toContain("publication lifecycle changed");
     expect(out.text).toContain("`igniter start STA-1 --publish-review`");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
   });
 
   test("a tampered destination stamp refuses the same way", async () => {
@@ -374,7 +378,7 @@ describe("submit gate", () => {
     expect(out.ok).toBe(false);
     expect(out.text).toContain("publication lifecycle changed");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
   });
 
   test("the gate refuses a drifted destination even when called directly", async () => {
@@ -457,12 +461,12 @@ describe("retry idempotency", () => {
     expect(first.ok).toBe(false);
     expect(first.text).toContain("retry the identical submit");
     expect(h.publisher.publications).toHaveLength(0);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
     const retry = await submitBuild(h, "STA-1", payload);
     expect(retry.ok).toBe(true);
     expect(h.publisher.publications).toHaveLength(1);
     expect(h.publisher.publishCalls).toHaveLength(2);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(1);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(1);
   });
 
   test("a lost publish response is read back and reused on retry", async () => {
@@ -474,7 +478,7 @@ describe("retry idempotency", () => {
     expect(out.ok).toBe(true);
     expect(h.publisher.publications).toHaveLength(1);
     expect(h.publisher.publishCalls).toHaveLength(1);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(1);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(1);
   });
 
   test("a lost receipt response retries into the same receipt, never a second review", async () => {
@@ -487,13 +491,13 @@ describe("retry idempotency", () => {
     const out = await submitBuild(h, "STA-1", payload);
     expect(out.ok).toBe(true);
     expect(h.publisher.publications).toHaveLength(1);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(1);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(1);
     // A duplicate submit after success acknowledges without new writes.
     const again = await submitBuild(h, "STA-1", payload);
     expect(again.ok).toBe(true);
     expect(again.text).toContain("already submitted build");
     expect(h.publisher.publications).toHaveLength(1);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(1);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(1);
   });
 
   test("one grant covers the lifecycle: no re-consent across begin and submit", async () => {
@@ -506,7 +510,7 @@ describe("retry idempotency", () => {
     const grants = h.lines.filter((line) => line.includes("recorded review publication consent"));
     expect(grants).toHaveLength(1);
     expect(h.publisher.publications).toHaveLength(1);
-    expect(issueOf(h, "STA-1").comments).toHaveLength(1);
+    expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(1);
   });
 });
 

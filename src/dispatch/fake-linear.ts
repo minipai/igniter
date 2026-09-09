@@ -78,6 +78,7 @@ export interface FakeLinearWorld {
 
 export interface FakeLinearHandle {
   url: string;
+  fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   world: FakeLinearWorld;
   requests: number;
   maxConcurrent: number;
@@ -222,9 +223,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
   let failuresLeft = world.failFirst ?? 0;
   let stalledLeft = world.stallBodyFirst ?? 0;
 
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (req: Request): Promise<Response> => {
+  const respond = async (req: Request): Promise<Response> => {
       requests += 1;
       inFlight += 1;
       maxConcurrent = Math.max(maxConcurrent, inFlight);
@@ -464,11 +463,11 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
       } finally {
         inFlight -= 1;
       }
-    },
-  });
+    };
 
   return {
-    url: `http://localhost:${server.port}/graphql`,
+    url: "https://linear.test/graphql",
+    fetchImpl: (input, init) => respond(new Request(input, init)),
     world,
     get requests() {
       return requests;
@@ -479,7 +478,7 @@ export function startFakeLinear(world: FakeLinearWorld): FakeLinearHandle {
     get sawKeyOutsideHeader() {
       return sawKeyOutsideHeader;
     },
-    stop: () => server.stop(),
+    stop: () => {},
   };
 }
 

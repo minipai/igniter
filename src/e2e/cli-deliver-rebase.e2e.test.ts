@@ -7,11 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  memoryAddIssue,
-  ownerSetProgress,
-  ownerSetState,
-} from "../dispatch/fake-memory-linear.ts";
+import { memoryAddIssue } from "../dispatch/fake-memory-linear.ts";
 import { latestValidReceipt, parseReceiptBlock } from "../dispatch/protocol.ts";
 import {
   buildPayload,
@@ -56,18 +52,17 @@ async function approve(e2e: E2E, ticket: string, file: string): Promise<string> 
     description: CRITERIA,
     labelIds: ["label-pending"],
   });
-  expectOk(await e2e.cli(["begin", ticket]));
+  expectOk(await e2e.startStage(ticket));
   const head = commitWorktreeFile(e2e.repoDir, ticket, file, `${ticket} change\n`, `${ticket} change`);
   expectOk(await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(buildPayload(head)) }));
   await ownerHandoff(e2e, ticket);
-  expectOk(await e2e.cli(["begin", ticket]));
+  expectOk(await e2e.startStage(ticket));
   expectOk(
     await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }),
   );
-  ownerSetState(e2e.world, ticket, "Deliver");
-  ownerSetProgress(e2e.world, ticket, "Complete");
-  const approved = expectOk(await e2e.cli(["reconcile", ticket]));
-  expect(approved.stdout).toContain("approved: Review+Complete → Deliver+Pending");
+  const status = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } };
+  const approved = expectOk(await e2e.cli(["approve", ticket, "--receipt", status.receipt.id]));
+  expect(approved.stdout).toContain("review+complete → deliver+pending");
   return head;
 }
 
@@ -81,7 +76,7 @@ describe("e2e deliver lands a rebased approval", () => {
       const approved41 = await approve(e2e, "STA-41", "forty-one.txt");
 
       // STA-40 lands without a rebase: approved and landed are the same SHA.
-      expectOk(await e2e.cli(["begin", "STA-40"]));
+      expectOk(await e2e.startStage("STA-40"));
       git(["merge", "feature/sta-40", "--no-ff", "-m", "land STA-40"], e2e.repoDir);
       const landed40 = expectOk(
         await e2e.cli(["submit", "STA-40", "--input", "-"], { stdin: JSON.stringify(deliverPayload(approved40)) }),
@@ -94,7 +89,7 @@ describe("e2e deliver lands a rebased approval", () => {
       expect(git(["merge-base", "--is-ancestor", approved40, "main"], e2e.repoDir).stdout).toBe("");
 
       // STA-41 enters Deliver after main moved: rebase, land, then submit.
-      expectOk(await e2e.cli(["begin", "STA-41"]));
+      expectOk(await e2e.startStage("STA-41"));
       const worktree41 = join(e2e.repoDir, ".igniter", "runtime", "worktrees", "sta-41");
       git(["rebase", "main"], worktree41);
       const rebased41 = worktreeHeadOf(e2e.repoDir, "STA-41");
@@ -146,13 +141,13 @@ describe("e2e deliver lands a rebased approval", () => {
         });
       }
 
-      // Owner confirms both landings: Done clears Progress and cleans the checkouts.
+      // Owner confirms both landings; worker stop performs cleanup explicitly.
       for (const ticket of ["STA-40", "STA-41"]) {
-        ownerSetState(e2e.world, ticket, "Done");
-        ownerSetProgress(e2e.world, ticket, "Complete");
-        const done = expectOk(await e2e.cli(["reconcile", ticket]));
-        expect(done.stdout).toContain("done: Deliver+Complete → Done");
-        expect(done.stdout).toContain("checkout cleaned");
+        const status = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } };
+        const done = expectOk(await e2e.cli(["approve", ticket, "--receipt", status.receipt.id]));
+        expect(done.stdout).toContain("deliver+complete → done");
+        expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).toContain(`worktrees/${ticket.toLowerCase()}`);
+        expectOk(await e2e.cli(["worker", "stop", ticket]));
         expect(progressNames(e2e, ticket)).toEqual([]);
       }
       await e2e.waitFor("both worktrees removed", () => {
@@ -169,7 +164,7 @@ describe("e2e deliver lands a rebased approval", () => {
   test("an unlanded or unknown landed commit is refused with no receipt", async () => {
     await withE2E(async (e2e) => {
       const approved = await approve(e2e, "STA-42", "forty-two.txt");
-      expectOk(await e2e.cli(["begin", "STA-42"]));
+      expectOk(await e2e.startStage("STA-42"));
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-42")!;
       const receiptsBefore = receiptCount(e2e, "STA-42");
 

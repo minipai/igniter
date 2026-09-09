@@ -57,7 +57,7 @@ interface Harness {
 async function harness(maxRunning = 3): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -98,7 +98,11 @@ function workspaceIdOf(h: Harness, identifier: string): string {
   return workspace.workspaceId;
 }
 
-function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+async function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+  if (argv[0] === "begin") {
+    const started = await runCommand(["worker", "start", identifier], h.ctx);
+    if (!started.ok) return started;
+  }
   return runCommand(argv, h.ctx, { workspaceId: workspaceIdOf(h, identifier), input });
 }
 
@@ -178,6 +182,7 @@ function deliverPayload(head = HEAD, landed = head) {
 /** Claim a ticket through `start` and return its workspace id. */
 async function claim(h: Harness, identifier: string): Promise<string> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   const out = await runCommand(["begin", identifier], h.ctx);
   expect(out.ok).toBe(true);
   return workspaceIdOf(h, identifier);
@@ -303,20 +308,20 @@ describe("claim", () => {
       expect(created?.params).toMatchObject({ label: "STA-1", env: {} });
       expect(JSON.stringify(created?.params)).not.toContain("test-key");
       expect(JSON.stringify(created?.params)).not.toContain("IGNITER_TICKET");
-      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 started build worker builder-sta-1 in ws-1 (Todo → Build)"));
+      expect(h.lines).toContainEqual(expect.stringContaining("STA-1 begin: todo+pending → build+in_progress"));
     } finally {
       h.stop();
     }
   });
 
-  test("claim refuses without criteria, leaving a nudge and no workspace", async () => {
+  test("begin refuses without criteria or worker effects", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: "plans only", labelIds: [PENDING] });
       const out = await runCommand(["begin", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       expect(issueOf(h, "STA-1").stateId).toBe(TODO);
-      expect(issueOf(h, "STA-1").comments.some((c) => c.body.includes("<!-- igniter:missing-criteria -->"))).toBe(true);
+      expect(issueOf(h, "STA-1").comments).toHaveLength(0);
       expect(h.workspaces.workspaces).toHaveLength(0);
     } finally {
       h.stop();
@@ -329,9 +334,9 @@ describe("claim", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
-      const recovered = await runCommand(["begin", "STA-2"], h.ctx);
+      const recovered = await runCommand(["worker", "start", "STA-2"], h.ctx);
       expect(recovered.ok).toBe(true); // recovery, not claim
-      expect(recovered.text).toContain("Linear kept");
+      expect(recovered.text).toContain("confirmed");
       expect(issueOf(h, "STA-1").stateId).toBe(TODO);
       expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-2").labelIds).toEqual([IN_PROGRESS]);
@@ -560,7 +565,7 @@ describe("begin", () => {
     try {
       await claim(h, "STA-1");
       // Build+In progress cannot begin again.
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false);
+      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
       // Drive through the first Build plus the owner handoff, then begin.
       await toReviewPending(h, "STA-1");
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
@@ -592,9 +597,9 @@ describe("begin", () => {
       const rebased = "bbbbbbbbbbbbbbbb";
       h.git.head = rebased;
 
-      const recovered = await runCommand(["begin", "STA-1"], h.ctx);
+      const recovered = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(recovered.ok).toBe(true);
-      expect(recovered.text).toContain("Linear kept");
+      expect(recovered.text).toContain("confirmed");
       const order = h.workspaces.promptsFor("deliverer-sta-1").at(-1)!;
       expect(order).toContain(`Checkpoint to work from: \`${HEAD}\``);
       expect(order).not.toContain(`Checkpoint to work from: \`${rebased}\``);
@@ -620,15 +625,10 @@ describe("submit", () => {
       const receipt = issue.comments.at(-1)!;
       expectYamlReceipt(receipt.body, "build", HEAD);
       expect(receipt.body).toContain("# Build receipt");
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({
-        status: "build",
-        progress: "complete",
-        checkpoint: HEAD,
-        receipt_kind: "build",
-      });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
       // state --json waits on the owner: no workspace command applies.
       const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
-      expect(state).toMatchObject({ status: "build", progress: "complete", next: [] });
+      expect(state).toMatchObject({ status: "build", progress: "complete", next: ["approve"] });
       expect(state["note"]).toContain("owner");
       expect((state["submit_schema"] as Record<string, unknown>)["kind"]).toBe("build");
       // No Acceptance worker can start while the owner has not moved it.
@@ -654,7 +654,7 @@ describe("submit", () => {
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       // state --json now offers the review schema and begin.
       const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
-      expect(state).toMatchObject({ status: "review", progress: "pending", next: ["begin", "block"] });
+      expect(state).toMatchObject({ status: "review", progress: "pending", next: ["worker start", "begin", "block"] });
       expect((state["submit_schema"] as Record<string, unknown>)["kind"]).toBe("review");
       expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
     } finally {
@@ -718,9 +718,9 @@ describe("submit", () => {
       expect(issue.attachments.map((a) => a.url).sort()).toEqual(
         ["https://example.test/shines", "https://example.test/works"],
       );
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ receipt_kind: "review-pass", checkpoint: HEAD });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
       const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
-      expect(state).toMatchObject({ status: "review", progress: "complete", next: [] });
+      expect(state).toMatchObject({ status: "review", progress: "complete", next: ["approve"] });
     } finally {
       h.stop();
     }
@@ -774,7 +774,7 @@ describe("submit", () => {
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("Agent acceptance: FAIL");
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ status: "build", progress: "pending" });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("status");
       expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_id");
     } finally {
       h.stop();
@@ -815,7 +815,7 @@ describe("submit", () => {
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expectYamlReceipt(issueOf(h, "STA-1").comments.at(-1)!.body, "deliver", HEAD);
       expect(parseReceiptBlock(issueOf(h, "STA-1").comments.at(-1)!.body)).toMatchObject({ landed: HEAD });
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ receipt_kind: "deliver", landed: HEAD });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
     } finally {
       h.stop();
     }
@@ -844,7 +844,7 @@ describe("submit", () => {
       expect(issueOf(h, "STA-1").stateId).toBe(DONE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
       expectYamlReceipt(issueOf(h, "STA-1").comments.at(-1)!.body, "deliver", HEAD);
-      expect(h.workspaces.workspaces.find((workspace) => workspace.label === "STA-1")?.closed).toBe(true);
+      expect(h.workspaces.workspaces.find((workspace) => workspace.label === "STA-1")?.closed).toBe(false);
     } finally {
       h.stop();
     }
@@ -859,7 +859,7 @@ describe("submit", () => {
       const status = await runCommand(["status", "STA-1", "--json"], h.ctx);
       expect(status.ok).toBe(false);
       expect(status.text).toContain("Done but still carries Progress");
-      expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+      expect(issueOf(h, "STA-1").comments.filter(comment => parseReceiptBlock(comment.body))).toHaveLength(0);
     } finally {
       h.stop();
     }
@@ -994,7 +994,8 @@ describe("block and unblock", () => {
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
       expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("waiting on vendor");
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ progress: "blocked", block_reason: "waiting on vendor" });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("progress");
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("block_reason");
       // Blocked is not a submit state.
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(false);
       expect((await wsCmd(h, "STA-1", ["unblock"])).ok).toBe(true);
@@ -1173,38 +1174,6 @@ describe("owner moves", () => {
 });
 
 describe("dispatch commands", () => {
-  test("pause shares the block transition and resume shares unblock", async () => {
-    const h = await harness();
-    try {
-      await claim(h, "STA-1");
-      expect((await runCommand(["pause", "STA-1"], h.ctx)).ok).toBe(true);
-      expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ paused: "1", block_reason: "owner pause" });
-      const inbox = h.workspaces.promptsFor("builder-sta-1");
-      expect(inbox.at(-1)).toContain("the owner paused this ticket");
-      expect((await runCommand(["resume", "STA-1"], h.ctx)).ok).toBe(true);
-      expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("paused");
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("resume on an active ticket with a live worker reports already running", async () => {
-    const h = await harness();
-    try {
-      await claim(h, "STA-1");
-      const before = h.workspaces.agents.length;
-      const out = await runCommand(["resume", "STA-1"], h.ctx);
-      expect(out.ok).toBe(true);
-      expect(out.text).toContain("already running");
-      expect(h.workspaces.agents).toHaveLength(before);
-      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
-    } finally {
-      h.stop();
-    }
-  });
-
   test("fail returns the ticket to Backlog with Progress cleared", async () => {
     const h = await harness();
     try {
@@ -1215,7 +1184,7 @@ describe("dispatch commands", () => {
       expect(issueOf(h, "STA-1").labelIds).toEqual(
         [h.world.labels.find((l) => l.name === "agent-failed")!.id],
       );
-      expect(h.workspaces.workspaces.find((w) => w.label === "STA-1")!.closed).toBe(true);
+      expect(h.workspaces.workspaces.find((w) => w.label === "STA-1")!.closed).toBe(false);
     } finally {
       h.stop();
     }
@@ -1244,14 +1213,14 @@ describe("dispatch commands", () => {
     }
   });
 
-  test("start and begin do not collide; resume and unblock do not collide", async () => {
+  test("begin retries are idempotent and obsolete resume is rejected", async () => {
     const h = await harness();
     try {
       await claim(h, "STA-1");
-      // begin takes no ticket: a ticket argument is a usage error.
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false); // Build+In progress: precondition refusal
+      // Both the legacy workspace form and ticket form acknowledge a duplicate begin.
+      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true); // Repeated begin is idempotent.
       const wsId = workspaceIdOf(h, "STA-1");
-      expect((await runCommand(["begin", "STA-1"], h.ctx, { workspaceId: wsId })).ok).toBe(false);
+      expect((await runCommand(["begin", "STA-1"], h.ctx, { workspaceId: wsId })).ok).toBe(true);
       expect((await runCommand(["unblock"], h.ctx, { workspaceId: wsId })).ok).toBe(false);
       expect((await runCommand(["resume"], h.ctx)).ok).toBe(false);
     } finally {

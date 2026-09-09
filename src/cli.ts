@@ -164,7 +164,7 @@ async function readStdin(): Promise<string> {
   return new Response(Bun.stdin.stream()).text();
 }
 
-const DISPATCH_COMMANDS = ["status", "start", "begin", "reconcile", "pause", "resume", "fail", "restart", "answer", "submit", "block", "unblock"];
+const DISPATCH_COMMANDS = ["status", "start", "begin", "reconcile", "approve", "fail", "worker", "submit", "block", "unblock"];
 const WORKSPACE_COMMANDS = ["state"];
 
 async function versionCommand(): Promise<void> {
@@ -203,16 +203,20 @@ try {
     const options: CommandCallOptions = { workspaceId: process.env["HERDR_WORKSPACE_ID"] };
     await forwardCommand(process.argv.slice(2), options);
   } else {
-    console.error("usage: igniter <serve|status|start|begin|reconcile|pause|resume|fail|restart|answer|submit|block|unblock|state> [--port N]");
+    console.error("usage: igniter <serve|status|start|begin|reconcile|approve|fail|worker|submit|block|unblock|state> [--port N]");
     console.error("  serve [--port N]");
     console.error("  status [--json|<ticket> --json]");
     console.error("  start [<ticket> [--publish-review]]");
     console.error("  begin <ticket>");
     console.error("  reconcile <ticket>");
-    console.error("  pause <ticket> | resume <ticket>");
+    console.error("  approve <ticket> --receipt <id>");
     console.error("  fail <ticket> --reason TEXT");
-    console.error("  restart <ticket> --builder <model>");
-    console.error("  answer <ticket> y|n");
+    console.error("  worker start <ticket> [--role build|review|deliver]");
+    console.error("  worker send <ticket> [--role build|review|deliver] TEXT");
+    console.error("  worker restart <ticket> [--role build|review|deliver] --model MODEL");
+    console.error("    restart also accepts --profile builder|reviewer|deliverer|fallback, --harness HARNESS, --effort EFFORT");
+    console.error("  worker stop <ticket> [--role build|review|deliver]");
+    console.error("  worker answer <ticket> [--role build|review|deliver] y|n");
     console.error("  submit <ticket> --input -");
     console.error("  block <ticket> --reason TEXT | unblock <ticket>");
     console.error("  state --json");

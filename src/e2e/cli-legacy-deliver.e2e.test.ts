@@ -12,7 +12,7 @@ import {
   type MemoryIssue,
 } from "../dispatch/fake-memory-linear.ts";
 import { latestValidReceipt, receiptBlock } from "../dispatch/protocol.ts";
-import { CRITERIA, E2E, expectOk, git, mainHead } from "./fake-harness.ts";
+import { CRITERIA, E2E, expectFail, expectOk, git, mainHead } from "./fake-harness.ts";
 
 interface LegacyTicket {
   identifier: string;
@@ -167,10 +167,12 @@ describe("e2e legacy Deliver receipt upgrade", () => {
         ownerSetState(e2e.world, ticket.identifier, "Done");
         ownerSetProgress(e2e.world, ticket.identifier, "Complete");
         const done = expectOk(await e2e.cli(["reconcile", ticket.identifier]));
-        expect(done.stdout).toContain(
-          `binds approved ${ticket.checkpoint} landed ${ticket.checkpoint}`,
-        );
-        expect(done.stdout).toContain(ticket === clean ? "checkout cleaned" : "checkout kept");
+        expect(done.stdout).toContain("done: Deliver+Complete → Done");
+        expect(done.stdout).toContain(`worker stop ${ticket.identifier}`);
+        expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).toContain(ticket.worktree);
+        const cleanup = await e2e.cli(["worker", "stop", ticket.identifier]);
+        if (ticket === clean) expectOk(cleanup);
+        else expectFail(cleanup, "keeping worktree and branch");
         expect(ticket.issue.stateId).toBe("st-done");
         expect(ticket.issue.labelIds).toEqual([]);
         const originalComments = commentsBefore.get(ticket.identifier);

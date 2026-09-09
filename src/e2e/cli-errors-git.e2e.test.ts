@@ -48,7 +48,7 @@ function progressNames(e2e: E2E, issue: MemoryIssue): string[] {
 }
 
 function expectNoPublishedResult(issue: MemoryIssue): void {
-  expect(issue.comments).toEqual([]);
+  expect(latestValidReceipt(issue.comments)).toBeNull();
   expect(issue.attachments).toEqual([]);
 }
 
@@ -59,7 +59,7 @@ async function advanceToDeliverComplete(e2e: E2E, identifier: string): Promise<s
     description: CRITERIA,
     labelIds: ["label-pending"],
   });
-  expectOk(await e2e.cli(["begin", identifier]));
+  expectOk(await e2e.startStage(identifier));
   const head = commitWorktreeFile(
     e2e.repoDir,
     identifier,
@@ -71,14 +71,14 @@ async function advanceToDeliverComplete(e2e: E2E, identifier: string): Promise<s
     stdin: JSON.stringify(buildPayload(head)),
   }));
   await ownerHandoff(e2e, identifier);
-  expectOk(await e2e.cli(["begin", identifier]));
+  expectOk(await e2e.startStage(identifier));
   expectOk(await e2e.cli(["submit", identifier, "--input", "-"], {
     stdin: JSON.stringify(commandEvidencePayload(head, "pass")),
   }));
   ownerSetState(e2e.world, identifier, "Deliver");
   ownerSetProgress(e2e.world, identifier, "Complete");
   expectOk(await e2e.cli(["reconcile", identifier]));
-  expectOk(await e2e.cli(["begin", identifier]));
+  expectOk(await e2e.startStage(identifier));
   git(["merge", `feature/${identifier.toLowerCase()}`, "--no-ff", "-m", `land ${identifier}`], e2e.repoDir);
   expectOk(await e2e.cli(["submit", identifier, "--input", "-"], {
     stdin: JSON.stringify(deliverPayload(head)),
@@ -95,7 +95,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-20"]));
+      expectOk(await e2e.startStage("STA-20"));
       const issue = issueOf(e2e, "STA-20");
 
       const malformed = expectFail(
@@ -156,7 +156,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-21"]));
+      expectOk(await e2e.startStage("STA-21"));
       const issue = issueOf(e2e, "STA-21");
       const original = worktreeHeadOf(e2e.repoDir, "STA-21");
 
@@ -174,7 +174,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
         stdin: JSON.stringify(buildPayload(original)),
       }));
       await ownerHandoff(e2e, "STA-21");
-      expectOk(await e2e.cli(["begin", "STA-21"]));
+      expectOk(await e2e.startStage("STA-21"));
       const moved = commitWorktreeFile(e2e.repoDir, "STA-21", "later.txt", "later\n", "later checkpoint");
       expect(moved).not.toBe(original);
       const receiptBodies = issue.comments.map((comment) => comment.body);
@@ -205,13 +205,13 @@ describe("e2e rebased approval and scratch boundaries", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-22"]));
+      expectOk(await e2e.startStage("STA-22"));
       const approved = commitWorktreeFile(e2e.repoDir, "STA-22", "feature.txt", "before rebase\n", "feature");
       expectOk(await e2e.cli(["submit", "STA-22", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(approved)),
       }));
       await ownerHandoff(e2e, "STA-22");
-      expectOk(await e2e.cli(["begin", "STA-22"]));
+      expectOk(await e2e.startStage("STA-22"));
       expectOk(await e2e.cli(["submit", "STA-22", "--input", "-"], {
         stdin: JSON.stringify(commandEvidencePayload(approved, "pass")),
       }));
@@ -257,9 +257,9 @@ describe("e2e rebased approval and scratch boundaries", () => {
       symlinkSync(e2e.stubBin, join(scratchParent, "sta-23"));
       const targetBefore = readdirSync(e2e.stubBin);
 
-      const begun = expectFail(await e2e.cli(["begin", "STA-23"]), "is a symlink; remove it first");
+      const begun = expectFail(await e2e.startStage("STA-23"), "is a symlink; remove it first");
       expect(begun.stdout).toBe("");
-      expect(begun.stderr).toContain("begin failed: refused: scratch component");
+      expect(begun.stderr).toContain("worker start failed: refused: scratch component");
       expect(readdirSync(e2e.stubBin)).toEqual(targetBefore);
       const issue = issueOf(e2e, "STA-23");
       expect(issue.stateId).toBe("st-todo");
@@ -293,8 +293,8 @@ describe("e2e Done cleanup refuses to discard real Git state", () => {
       for (const identifier of ["STA-24", "STA-25", "STA-26"]) {
         ownerSetState(e2e.world, identifier, "Done");
         ownerSetProgress(e2e.world, identifier, "Complete");
-        const reconciled = expectOk(await e2e.cli(["reconcile", identifier]));
-        expect(reconciled.stdout).toContain("checkout kept");
+        expectOk(await e2e.cli(["reconcile", identifier]));
+        expectFail(await e2e.cli(["worker", "stop", identifier]), "keeping");
         const issue = issueOf(e2e, identifier);
         expect(issue.stateId).toBe("st-done");
         expect(progressNames(e2e, issue)).toEqual([]);

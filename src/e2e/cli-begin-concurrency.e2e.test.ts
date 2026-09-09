@@ -33,14 +33,14 @@ describe("e2e begin worker recovery", () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-30");
       e2e.workspaces.failNext("agent.start");
-      expectFail(await e2e.cli(["begin", "STA-30"]), "begin failed");
+      expectFail(await e2e.cli(["worker", "start", "STA-30"]), "worker start failed");
       let issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-30")!;
       expect(issue.stateId).toBe("st-todo");
       expect(issue.labelIds).toEqual(["label-pending"]);
       expect(e2e.workspaces.workspaces.filter((workspace) => !workspace.closed)).toHaveLength(1);
       expect(e2e.workspaces.agents).toHaveLength(0);
 
-      expectOk(await e2e.cli(["begin", "STA-30"]));
+      expectOk(await e2e.startStage("STA-30"));
       issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-30")!;
       expect(issue.stateId).toBe("st-build");
       expect(issue.labelIds).toEqual(["label-in-progress"]);
@@ -52,12 +52,13 @@ describe("e2e begin worker recovery", () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-31");
       e2e.workspaces.promptMode = "input-buffer";
-      expectFail(await e2e.cli(["begin", "STA-31"]), "prompt delivery stalled");
+      expectFail(await e2e.cli(["worker", "start", "STA-31"]), "prompt delivery stalled");
       const worker = e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-31")!;
       worker.agentStatus = "idle";
       e2e.workspaces.promptMode = "consumed";
-      const recovered = expectOk(await e2e.cli(["begin", "STA-31"]));
-      expect(recovered.stdout).toContain("work order redelivered");
+      const recovered = expectOk(await e2e.cli(["worker", "start", "STA-31"]));
+      expect(recovered.stdout).toContain("work order confirmed");
+      expectOk(await e2e.cli(["begin", "STA-31"]));
       expect(e2e.workspaces.promptsFor("builder-sta-31")).toHaveLength(2);
       expect(new Set(e2e.workspaces.promptsFor("builder-sta-31")).size).toBe(1);
       expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-31")).toHaveLength(1);
@@ -70,14 +71,14 @@ describe("e2e begin worker recovery", () => {
   test("a live In-progress worker is not duplicated; a missing worker is rebuilt with the current order", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-32");
-      expectOk(await e2e.cli(["begin", "STA-32"]));
-      expectFail(await e2e.cli(["begin", "STA-32"]), "already running");
+      expectOk(await e2e.startStage("STA-32"));
+      expectOk(await e2e.cli(["worker", "start", "STA-32"]));
       expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-32")).toHaveLength(1);
 
       const at = e2e.workspaces.agents.findIndex((agent) => agent.name === "builder-sta-32");
       e2e.workspaces.agents.splice(at, 1);
-      const recovered = expectOk(await e2e.cli(["begin", "STA-32"]));
-      expect(recovered.stdout).toContain("recovered");
+      const recovered = expectOk(await e2e.cli(["worker", "start", "STA-32"]));
+      expect(recovered.stdout).toContain("work order confirmed");
       expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-32")).toHaveLength(1);
       expect(e2e.workspaces.promptsFor("builder-sta-32")[0]).toContain("STA-32");
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-32")!;
@@ -102,24 +103,23 @@ describe("e2e serialized concurrent CLI", () => {
       const issues = e2e.world.issues.filter((issue) => issue.identifier === "STA-33" || issue.identifier === "STA-34");
       expect(issues.filter((issue) => issue.stateId === "st-build")).toHaveLength(1);
       expect(issues.filter((issue) => issue.stateId === "st-todo")).toHaveLength(1);
-      expect(e2e.workspaces.workspaces.filter((workspace) => !workspace.closed)).toHaveLength(1);
-      expect(e2e.workspaces.agents.filter((agent) => agent.name.startsWith("builder-sta-"))).toHaveLength(1);
+      expect(e2e.workspaces.workspaces.filter((workspace) => !workspace.closed)).toHaveLength(0);
+      expect(e2e.workspaces.agents.filter((agent) => agent.name.startsWith("builder-sta-"))).toHaveLength(0);
     });
   });
 
-  test("parallel begin of one ticket creates one workspace and one worker", async () => {
+  test("parallel worker start of one ticket creates one workspace and one worker", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-35");
-      const calls = [e2e.spawnCli(["begin", "STA-35"]), e2e.spawnCli(["begin", "STA-35"])];
+      const calls = [e2e.spawnCli(["worker", "start", "STA-35"]), e2e.spawnCli(["worker", "start", "STA-35"])];
       const results = await Promise.all(calls.map((call) => call.done));
-      expect(results.filter((result) => result.code === 0)).toHaveLength(1);
-      expect(results.filter((result) => result.code !== 0)[0]?.stderr).toContain("already running");
+      expect(results.filter((result) => result.code === 0)).toHaveLength(2);
       expect(e2e.workspaces.workspaces.filter((workspace) => !workspace.closed)).toHaveLength(1);
       expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-35")).toHaveLength(1);
     });
   });
 
-  test("parallel begin of a bare Todo converges on one workspace, one worker, and one Progress label", async () => {
+  test("parallel worker start of a bare Todo converges on one workspace, one worker, and one Progress label", async () => {
     await withE2E({}, async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-37",
@@ -127,10 +127,10 @@ describe("e2e serialized concurrent CLI", () => {
         description: CRITERIA,
         labelIds: [],
       });
-      const calls = [e2e.spawnCli(["begin", "STA-37"]), e2e.spawnCli(["begin", "STA-37"])];
+      const calls = [e2e.spawnCli(["worker", "start", "STA-37"]), e2e.spawnCli(["worker", "start", "STA-37"])];
       const results = await Promise.all(calls.map((call) => call.done));
-      expect(results.filter((result) => result.code === 0)).toHaveLength(1);
-      expect(results.filter((result) => result.code !== 0)[0]?.stderr).toContain("already running");
+      expect(results.filter((result) => result.code === 0)).toHaveLength(2);
+      expectOk(await e2e.cli(["begin", "STA-37"]));
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-37")!;
       expect(issue.stateId).toBe("st-build");
       expect(issue.labelIds).toEqual(["label-in-progress"]);
@@ -142,7 +142,7 @@ describe("e2e serialized concurrent CLI", () => {
   test("parallel identical submits converge on one receipt", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-36");
-      expectOk(await e2e.cli(["begin", "STA-36"]));
+      expectOk(await e2e.startStage("STA-36"));
       const head = commitWorktreeFile(e2e.repoDir, "STA-36", "work.txt", "parallel\n", "parallel work");
       const stdin = JSON.stringify(buildPayload(head));
       const calls = [

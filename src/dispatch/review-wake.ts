@@ -12,7 +12,7 @@
 // - the worker is `done` (or gone entirely) while the Commander is `idle`
 //   or `done`: prompt the Commander once to read and handle the report;
 // - the Commander itself is gone: rebuild it through the same recovery path
-//   `igniter resume` uses, then hand it the same read-the-report prompt.
+//   Commander recovery uses, then hand it the same read-the-report prompt.
 //
 // The wake-up never judges: it does not read the report, does not decide
 // PASS or FAIL, and never submits a Review receipt. A missing worker or a
@@ -42,12 +42,12 @@ export function buildReviewWakePrompt(ticket: string, reviewer: string): string 
   return (
     `igniter: the Acceptance worker ${reviewer} for ${ticket} is done. ` +
     `Its Herdr status is only a lifecycle hint, never the result. ` +
-    `Run \`igniter state --json\`, read the worker's report in its pane, and validate it end to end: ` +
+    `Run \`igniter status ${ticket} --json\`, read the worker's result file, and validate it end to end: ` +
     `it must end with ACCEPTANCE_COMPLETE and cover every criterion with expected, actual, evidence, ` +
     `and environment at the current checkpoint. ` +
-    `Submit the validated report with \`igniter submit --input -\`; never submit without a complete report. ` +
-    `Ask the owner only from Blocked: run \`igniter block --reason "<what you need>"\` before any owner question; ` +
-    `after the answer, \`igniter unblock\` and \`igniter begin\`.`
+    `Submit the validated report with \`igniter submit ${ticket} --input -\`; never submit without a complete report. ` +
+    `Ask the owner only from Blocked: run \`igniter block ${ticket} --reason "<what you need>"\` before any owner question; ` +
+    `after the answer, \`igniter unblock ${ticket}\`, \`igniter worker start ${ticket}\`, confirm delivery, then \`igniter begin ${ticket}\`.`
   );
 }
 
@@ -55,11 +55,11 @@ export function buildReviewWakePrompt(ticket: string, reviewer: string): string 
 export function buildReviewerGonePrompt(ticket: string, reviewer: string): string {
   return (
     `igniter: the Acceptance worker ${reviewer} for ${ticket} is gone (no live agent). ` +
-    `Run \`igniter state --json\` and inspect the workspace: when no usable report survives, ` +
-    `recreate the Acceptance agent for the current checkpoint exactly as the Review section says. ` +
+    `Run \`igniter status ${ticket} --json\` and inspect the workspace: when no usable report survives, ` +
+    `use \`igniter worker start ${ticket}\` to recover Acceptance at the current checkpoint and confirm delivery. ` +
     `Never submit without a complete report ending in ACCEPTANCE_COMPLETE. ` +
-    `Ask the owner only from Blocked: run \`igniter block --reason "<what you need>"\` before any owner question; ` +
-    `after the answer, \`igniter unblock\` and \`igniter begin\`.`
+    `Ask the owner only from Blocked: run \`igniter block ${ticket} --reason "<what you need>"\` before any owner question; ` +
+    `after the answer, \`igniter unblock ${ticket}\`, \`igniter worker start ${ticket}\`, confirm delivery, then \`igniter begin ${ticket}\`.`
   );
 }
 
@@ -87,7 +87,6 @@ export async function wakeReviewers(
     if (progresses.length !== 1 || progresses[0] !== "in_progress") continue;
     const workspace = workspaceForTicket(snapshot, issue.identifier);
     if (!workspace) continue;
-    if (workspace.tokens["paused"] === "1") continue;
     const reviewer = snapshot.agents.find((a) => a.name === reviewerName(issue.identifier));
     const finished = reviewer !== undefined && reviewer.agentStatus === "done";
     const gone = reviewer === undefined;

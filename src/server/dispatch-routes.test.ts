@@ -37,7 +37,7 @@ interface Served {
 async function serve(): Promise<Served> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 2 }),
@@ -106,7 +106,7 @@ describe("POST /api/command", () => {
     }
   });
 
-  test("status, start, begin, pause, and resume round-trip through HTTP", async () => {
+  test("status, worker start, begin, and worker stop round-trip through HTTP", async () => {
     const served = await serve();
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
@@ -115,9 +115,12 @@ describe("POST /api/command", () => {
       expect(started.payload.ok).toBe(true);
       expect(started.payload.text).toContain("assigned STA-1");
 
+      const worker = await postCommand(served.base, ["worker", "start", "STA-1"]);
+      expect(worker.payload.ok).toBe(true);
+      expect(worker.payload.data).toMatchObject({ confirmed: true, worker: "builder-sta-1" });
       const begun = await postCommand(served.base, ["begin", "STA-1"]);
       expect(begun.payload.ok).toBe(true);
-      expect(begun.payload.text).toContain("builder-sta-1");
+      expect(begun.payload.text).toContain("build+in_progress");
 
       const status = await postCommand(served.base, ["status"]);
       expect(status.payload.ok).toBe(true);
@@ -125,12 +128,9 @@ describe("POST /api/command", () => {
       expect(data.slots).toEqual({ used: 1, max: 2 });
       expect(data.tickets.map((t) => t.identifier)).toEqual(["STA-1"]);
 
-      const paused = await postCommand(served.base, ["pause", "STA-1"]);
-      expect(paused.payload).toMatchObject({ ok: true });
-      expect(paused.payload.text).toContain("paused STA-1");
-
-      const resumed = await postCommand(served.base, ["resume", "STA-1"]);
-      expect(resumed.payload).toMatchObject({ ok: true });
+      const stopped = await postCommand(served.base, ["worker", "stop", "STA-1"]);
+      expect(stopped.payload).toMatchObject({ ok: true });
+      expect(stopped.payload.text).toContain("stopped; checkout preserved");
     } finally {
       served.stop();
     }
@@ -140,6 +140,7 @@ describe("POST /api/command", () => {
     const served = await serve();
     try {
       addIssue(served.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      await postCommand(served.base, ["worker", "start", "STA-1"]);
       await postCommand(served.base, ["begin", "STA-1"]);
       const ticketWs = served.workspaces.workspaces.find((w) => w.label === "STA-1")!;
       const wsId = ticketWs.workspaceId;

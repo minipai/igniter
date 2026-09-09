@@ -54,9 +54,11 @@ export interface CommandWorkspaces extends RunningWorkspaces {
   }>;
   close(workspaceId: string): Promise<void>;
   /** Open a fresh tab in a live workspace for an agent that needs its own pane. */
-  createTab(input: { workspaceId: string; cwd?: string }): Promise<{ tabId: string }>;
+  createTab(input: { workspaceId: string; cwd?: string; title?: string }): Promise<{ tabId: string }>;
   startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void>;
   prompt(agentName: string, text: string): Promise<void>;
+  /** Close the worker pane to terminate its process; preserve the checkout. */
+  stopAgent?(agentName: string): Promise<void>;
   /** Send raw keys (e.g. y/n answers) straight to a pane. */
   sendKeys(paneId: string, keys: string[]): Promise<void>;
   readPane(paneId: string, lines: number): Promise<PaneRead>;
@@ -189,8 +191,8 @@ export function extractRunningTickets(snapshot: WorkspaceListing): Set<string> {
 
 /**
  * Per-ticket igniter tokens from one snapshot: the workspace whose label is
- * the ticket as written, or whose tokens name it, wins. Lets the watch loop
- * and the commands see `paused` without a second socket round trip.
+ * the ticket as written, or whose tokens name it, wins. Commands read this
+ * metadata without a second socket round trip.
  */
 export function tokensByTicket(snapshot: WorkspaceSnapshot): Map<string, Record<string, string>> {
   const byTicket = new Map<string, Record<string, string>>();
@@ -211,15 +213,6 @@ export function tokensByTicket(snapshot: WorkspaceSnapshot): Map<string, Record<
     }
   }
   return byTicket;
-}
-
-/** Tickets whose workspace metadata carries `paused=1`. */
-export function pausedTickets(snapshot: WorkspaceSnapshot): Set<string> {
-  const paused = new Set<string>();
-  for (const [ticket, tokens] of tokensByTicket(snapshot)) {
-    if (tokens["paused"] === "1") paused.add(ticket);
-  }
-  return paused;
 }
 
 /** Tickets whose workspace metadata carries `over_budget=1`. */
@@ -380,6 +373,7 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       const created = (await call("tab.create", {
         workspace_id: input.workspaceId,
         ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.title ? { label: input.title } : {}),
         focus: false,
       })) as {
         tab?: { tab_id?: string };
@@ -420,6 +414,11 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       // The socket start returns while the agent is still launch_pending;
       // prompting now would fail, so wait the way the herdr CLI does.
       await waitAgentReady(input.name);
+    },
+    stopAgent: async (agentName) => {
+      const snapshot = shapeSnapshot(await call("session.snapshot", {}));
+      const agent = snapshot.agents.find((a) => a.name === agentName);
+      if (agent) await call("pane.close", { pane_id: agent.paneId });
     },
     prompt: async (agentName, text) => {
       await call("agent.prompt", { target: agentName, text });

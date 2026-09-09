@@ -52,7 +52,7 @@ interface Harness {
 async function harness(maxRunning = 3): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -516,10 +516,10 @@ describe("bad states stay ticket-targeted", () => {
       const overview = await runCommand(["status"], h.ctx);
       expect(overview.ok).toBe(true);
       expect(overview.text).toContain("STA-1");
-      // The healthy ticket begins normally and opens only its workspace.
+      // The healthy ticket begins normally without worker side effects.
       const begun = await runCommand(["begin", "STA-2"], h.ctx);
       expect(begun.ok).toBe(true);
-      expect(h.workspaces.workspaces.map((w) => w.label)).toEqual(["STA-2"]);
+      expect(h.workspaces.workspaces).toHaveLength(0);
       expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-2").labelIds).toEqual([IN_PROGRESS]);
       // The bad ticket is untouched by the good ticket's begin.

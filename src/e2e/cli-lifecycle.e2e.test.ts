@@ -1,10 +1,10 @@
-// Full CLI lifecycle through the real service: Todo begin, Build submit,
-// Review PASS, owner Deliver + reconcile, Deliver submit, owner Done +
-// reconcile. Owner moves exist only in the memory client; submits never
+// Full CLI lifecycle through the real service: worker start then begin,
+// Build submit, Review PASS, receipt-bound approve, Deliver submit, Done
+// approval and explicit worker stop. Submits never
 // touch git. A second ticket covers Review FAIL back to Build Pending,
 // including a stale ended builder row that is replaced for the new work order.
 import { describe, expect, test } from "bun:test";
-import { memoryAddIssue, memoryAddLabel, ownerSetProgress, ownerSetState } from "../dispatch/fake-memory-linear.ts";
+import { memoryAddIssue, memoryAddLabel } from "../dispatch/fake-memory-linear.ts";
 import { latestValidReceipt, parseReceiptBlock } from "../dispatch/protocol.ts";
 import {
   E2E,
@@ -60,7 +60,7 @@ describe("e2e full lifecycle to Done", () => {
         labelIds: ["label-pending", feature.id],
       });
 
-      const begun = expectOk(await e2e.cli(["begin", "STA-10"]));
+      const begun = expectOk(await e2e.startStage("STA-10"));
       expect(begun.stdout).toContain("builder-sta-10");
       let issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Build");
@@ -82,13 +82,13 @@ describe("e2e full lifecycle to Done", () => {
       expect(issue.state.name).toBe("Build");
       expect(progressNames(issue.labels)).toEqual(["Complete", "Feature"]);
 
-      // The owner moves the first Build to Review; reconcile converges the handoff.
+      // The owner explicitly approves the first Build receipt.
       await ownerHandoff(e2e, "STA-10");
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Review");
       expect(progressNames(issue.labels)).toEqual(["Feature", "Pending"]);
 
-      expectOk(await e2e.cli(["begin", "STA-10"]));
+      expectOk(await e2e.startStage("STA-10"));
       expect(e2e.workspaces.promptsFor("reviewer-sta-10")).toHaveLength(1);
       const pass = expectOk(
         await e2e.cli(["submit", "STA-10", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }),
@@ -106,16 +106,15 @@ describe("e2e full lifecycle to Done", () => {
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Review");
 
-      // The owner approves in Linear only; reconcile converges the handoff.
-      ownerSetState(e2e.world, "STA-10", "Deliver");
-      ownerSetProgress(e2e.world, "STA-10", "Complete");
-      const approved = expectOk(await e2e.cli(["reconcile", "STA-10"]));
-      expect(approved.stdout).toContain("approved: Review+Complete → Deliver+Pending");
+      // Approval binds the current receipt instead of implicitly continuing.
+      const reviewStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-10", "--json"])).stdout) as { receipt: { id: string } };
+      const approved = expectOk(await e2e.cli(["approve", "STA-10", "--receipt", reviewStatus.receipt.id]));
+      expect(approved.stdout).toContain("review+complete → deliver+pending");
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Deliver");
       expect(progressNames(issue.labels)).toEqual(["Feature", "Pending"]);
 
-      expectOk(await e2e.cli(["begin", "STA-10"]));
+      expectOk(await e2e.startStage("STA-10"));
       expect(e2e.workspaces.promptsFor("deliverer-sta-10")).toHaveLength(1);
       // Deliver lands the branch with real git first, then submits the
       // approved checkpoint together with the landed commit.
@@ -129,12 +128,12 @@ describe("e2e full lifecycle to Done", () => {
       expect(mainHead(e2e.repoDir)).not.toBe(mainBefore);
       expect(git(["rev-parse", "feature/sta-10"], e2e.repoDir).stdout.trim()).toBe(head);
 
-      // The owner confirms the landing and moves to Done, then reconciles.
-      ownerSetState(e2e.world, "STA-10", "Done");
-      ownerSetProgress(e2e.world, "STA-10", "Complete");
-      const done = expectOk(await e2e.cli(["reconcile", "STA-10"]));
-      expect(done.stdout).toContain("done: Deliver+Complete → Done");
-      expect(done.stdout).toContain("checkout cleaned");
+      // Done approval leaves the checkout intact until explicit worker stop.
+      const deliverStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-10", "--json"])).stdout) as { receipt: { id: string } };
+      const done = expectOk(await e2e.cli(["approve", "STA-10", "--receipt", deliverStatus.receipt.id]));
+      expect(done.stdout).toContain("deliver+complete → done");
+      expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).toContain("worktrees/sta-10");
+      expectOk(await e2e.cli(["worker", "stop", "STA-10"]));
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Done");
       expect(progressNames(issue.labels)).toEqual(["Feature"]);
@@ -161,9 +160,9 @@ describe("e2e Review FAIL back to Build", () => {
         labelIds: ["label-pending", feature.id],
       });
 
-      expectOk(await e2e.cli(["begin", "STA-11"]));
+      expectOk(await e2e.startStage("STA-11"));
       const first = await buildAndHandoff(e2e, "STA-11");
-      expectOk(await e2e.cli(["begin", "STA-11"]));
+      expectOk(await e2e.startStage("STA-11"));
       const fail = expectOk(
         await e2e.cli(["submit", "STA-11", "--input", "-"], {
           stdin: JSON.stringify(commandEvidencePayload(first, "fail")),
@@ -178,8 +177,8 @@ describe("e2e Review FAIL back to Build", () => {
       // The old builder ended but its row lingers in the snapshot.
       e2e.workspaces.agents.find((a) => a.name === "builder-sta-11")!.agentStatus = "done";
       const startsBefore = e2e.workspaces.calls.filter((call) => call.method === "agent.start").length;
-      const again = expectOk(await e2e.cli(["begin", "STA-11"]));
-      expect(again.stdout).toContain("started STA-11: build worker");
+      const again = expectOk(await e2e.startStage("STA-11"));
+      expect(again.stdout).toContain("STA-11: build worker");
       issue = (await e2e.client.fetchIssue("STA-11"))!;
       expect(issue.state.name).toBe("Build");
       expect(progressNames(issue.labels)).toEqual(["Feature", "In progress"]);
@@ -198,8 +197,8 @@ describe("e2e Review FAIL back to Build", () => {
         await e2e.cli(["submit", "STA-11", "--input", "-"], { stdin: JSON.stringify(buildPayload(second)) }),
       );
       expect(corrected.stdout).toContain("→ Review+Pending");
-      const rebegin = expectOk(await e2e.cli(["begin", "STA-11"]));
-      expect(rebegin.stdout).toContain("work order redelivered");
+      const rebegin = expectOk(await e2e.startStage("STA-11"));
+      expect(rebegin.stdout).toContain("work order confirmed");
       const reviewerInbox = e2e.workspaces.promptsFor("reviewer-sta-11");
       expect(reviewerInbox[reviewerInbox.length - 1]).toContain(second);
       const pass = expectOk(
@@ -234,9 +233,9 @@ describe("e2e owner gates", () => {
       });
 
       // STA-12 through real submits to Review+Complete.
-      expectOk(await e2e.cli(["begin", "STA-12"]));
+      expectOk(await e2e.startStage("STA-12"));
       const head12 = await buildAndHandoff(e2e, "STA-12");
-      expectOk(await e2e.cli(["begin", "STA-12"]));
+      expectOk(await e2e.startStage("STA-12"));
       expectOk(
         await e2e.cli(["submit", "STA-12", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head12, "pass")) }),
       );
@@ -250,16 +249,15 @@ describe("e2e owner gates", () => {
       expect(e2e.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
 
       // STA-13 through real submits to Deliver+Complete.
-      expectOk(await e2e.cli(["begin", "STA-13"]));
+      expectOk(await e2e.startStage("STA-13"));
       const head13 = await buildAndHandoff(e2e, "STA-13");
-      expectOk(await e2e.cli(["begin", "STA-13"]));
+      expectOk(await e2e.startStage("STA-13"));
       expectOk(
         await e2e.cli(["submit", "STA-13", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head13, "pass")) }),
       );
-      ownerSetState(e2e.world, "STA-13", "Deliver");
-      ownerSetProgress(e2e.world, "STA-13", "Complete");
-      expectOk(await e2e.cli(["reconcile", "STA-13"]));
-      expectOk(await e2e.cli(["begin", "STA-13"]));
+      const reviewStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-13", "--json"])).stdout) as { receipt: { id: string } };
+      expectOk(await e2e.cli(["approve", "STA-13", "--receipt", reviewStatus.receipt.id]));
+      expectOk(await e2e.startStage("STA-13"));
       git(["merge", "feature/sta-13", "--no-ff", "-m", "land STA-13"], e2e.repoDir);
       expectOk(
         await e2e.cli(["submit", "STA-13", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head13)) }),

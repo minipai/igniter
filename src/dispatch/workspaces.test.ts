@@ -8,7 +8,6 @@ import {
   createHerdrWorkspaces,
   createSocketPathCache,
   extractRunningTickets,
-  pausedTickets,
   ticketFromAgentName,
   tokensByTicket,
   type WorkspaceSnapshot,
@@ -66,19 +65,18 @@ describe("extractRunningTickets", () => {
     expect(commanderName("STA-176")).toBe("commander-sta-176");
   });
 
-  test("tokensByTicket matches by label or ticket token, pausedTickets reads paused", () => {
+  test("tokensByTicket matches by label or ticket token", () => {
     const snapshot: WorkspaceSnapshot = {
       workspaces: [
-        { workspaceId: "w1", label: "STA-1", tokens: { ticket: "STA-1", paused: "1" } },
+        { workspaceId: "w1", label: "STA-1", tokens: { ticket: "STA-1" } },
         { workspaceId: "w2", label: "STA-2", tokens: { stage: "build" } },
       ],
       agents: [{ name: "commander-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2", session: null, revision: null }],
       panes: [],
     };
     const byTicket = tokensByTicket(snapshot);
-    expect(byTicket.get("STA-1")).toMatchObject({ paused: "1" });
+    expect(byTicket.get("STA-1")).toMatchObject({ ticket: "STA-1" });
     expect(byTicket.get("STA-2")).toMatchObject({ stage: "build" });
-    expect(pausedTickets(snapshot)).toEqual(new Set(["STA-1"]));
   });
 });
 

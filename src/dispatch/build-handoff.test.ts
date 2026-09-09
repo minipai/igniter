@@ -51,7 +51,7 @@ interface Harness {
 async function harness(maxRunning = 3): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -92,7 +92,11 @@ function wsIdOf(h: Harness, identifier: string): string {
   return workspace.workspaceId;
 }
 
-function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+async function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+  if (argv[0] === "begin") {
+    const started = await runCommand(["worker", "start", identifier], h.ctx);
+    if (!started.ok) return started;
+  }
   return runCommand(argv, h.ctx, { workspaceId: wsIdOf(h, identifier), input });
 }
 
@@ -145,6 +149,7 @@ function seedLineage(h: Harness, identifier: string, checkpoint = HEAD): void {
 /** Claim a ticket: Todo+Pending becomes Build+In progress. */
 async function claim(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
 }
 
@@ -196,7 +201,7 @@ describe("initial Build handoff", () => {
       expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false);
       expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
       const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
-      expect(state).toMatchObject({ status: "build", progress: "complete", next: [] });
+      expect(state).toMatchObject({ status: "build", progress: "complete", next: ["approve"] });
     } finally {
       h.stop();
     }
@@ -247,14 +252,11 @@ describe("initial Build handoff", () => {
       await claim(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({
-        status: "review",
-        progress: "pending",
-        checkpoint: HEAD,
-        receipt_kind: "build",
-      });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("status");
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
       // Ticket-targeted begin launches the Acceptance worker; the legacy
       // workspace begin only flips the label.
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
       expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(true);
@@ -292,7 +294,7 @@ describe("initial Build handoff", () => {
       expect(reconciled.text).toContain("Build+Complete → Review+Pending");
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(lines).toContainEqual(expect.stringContaining("STA-1 approved: Build+Complete → Review+Pending"));
+      expect(lines).toEqual([]);
       expect(receiptBodies(h, "STA-1")).toHaveLength(1);
     } finally {
       h.stop();
@@ -312,7 +314,7 @@ describe("initial Build handoff", () => {
       expect(reconciled.text).toContain("Build+Complete → Review+Pending");
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(h.lines).toContainEqual(expect.stringContaining("Linear converged without it"));
+      expect(h.workspaces.calls.some(call => call.method === "workspace.report_metadata" && call.params["status"] === "review")).toBe(false);
     } finally {
       h.stop();
     }

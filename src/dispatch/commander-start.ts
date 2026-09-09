@@ -17,9 +17,9 @@
 // completion markers, reads and validates each worker `result.md`, then
 // performs the ticket-targeted submit. Herdr idle/done is never completion
 // evidence. It launches and recovers stage workers itself with ticket-
-// targeted `igniter begin STA-X`, whose stage derives from Linear state.
-// `start` is Commander lifecycle and assignment; `begin` is stage-worker
-// lifecycle, so the two never recurse.
+// targeted `igniter worker start STA-X`, whose stage derives from Linear.
+// After confirmed delivery, `begin` records the stage start. `start` remains
+// Commander lifecycle and assignment, so these commands never recurse.
 //
 // Prompt delivery is always confirmed: Linear is never written here at all,
 // and a failed delivery leaves the Commander workspace and agent as they
@@ -104,14 +104,17 @@ export function buildCommanderWorkOrder(input: CommanderWorkOrderInput): string 
     `follow the configured project delivery instructions.\n` +
     `Ticket workspaces keep only the worktree, metadata, scratch, and the current stage worker.\n` +
     `Your tools are the ticket-targeted commands from the project workspace: ` +
-    `\`igniter status --json\`, \`igniter status <ticket> --json\`, \`igniter begin <ticket>\`, ` +
+    `\`igniter status --json\`, \`igniter status <ticket> --json\`, \`igniter worker start <ticket>\`, ` +
+    `\`igniter begin <ticket>\`, \`igniter approve <ticket> --receipt <id>\`, ` +
+    `\`igniter worker send|restart|stop|answer <ticket>\`, ` +
     `\`igniter submit <ticket> --input -\`, \`igniter block <ticket> --reason\`, ` +
     `\`igniter unblock <ticket>\`, \`igniter reconcile <ticket>\`.\n`;
   if (!input.assignment) {
     return (
       head +
       `\nPatrol now: run \`igniter status --json\`, then read each active ticket with ` +
-      `\`igniter status <ticket> --json\` and drive every Pending stage with \`igniter begin <ticket>\`. ` +
+      `\`igniter status <ticket> --json\`, run \`igniter worker start <ticket>\`, confirm initial work-order ` +
+      `delivery, then record each Pending stage start with \`igniter begin <ticket>\`. ` +
       `Supervise each ticket to completion: wait for its stage completion marker, read and validate ` +
       `its worker result file, then submit the validated report. Herdr idle or done is never completion evidence.\n`
     );
@@ -120,7 +123,8 @@ export function buildCommanderWorkOrder(input: CommanderWorkOrderInput): string 
     head +
     `\nAssigned ticket: ${input.assignment.identifier}: "${input.assignment.title}".\n` +
     `Supervise it to completion immediately: read \`igniter status ${input.assignment.identifier} --json\`, ` +
-    `launch its current stage worker with \`igniter begin ${input.assignment.identifier}\`, wait for the stage ` +
+    `launch its current stage worker with \`igniter worker start ${input.assignment.identifier}\`, ` +
+    `confirm initial work-order delivery, then record the start with \`igniter begin ${input.assignment.identifier}\`. Wait for the stage ` +
     `completion marker, read and validate the worker result file, then perform the ticket-targeted submit. ` +
     `Keep patrolling the rest of the queue beside it.\n`
   );

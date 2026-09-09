@@ -43,12 +43,14 @@ One ticket. A team of agents. A traceable path to delivery.
 ```mermaid
 flowchart LR
   Ticket[Linear ticket] --> Build
-  Build --> Acceptance[Independent acceptance]
+  Build --> BuildApproval[Your Build approval]
+  BuildApproval --> Acceptance[Independent acceptance]
   Acceptance -->|Needs fixes| Build
   Acceptance -->|Pass| Approval[Your approval]
   Approval --> Deliver[Pull request and CI]
   Deliver --> Merge[Automatic merge]
-  Merge --> Done[Linear Done]
+  Merge --> LandingApproval[Confirm landing]
+  LandingApproval --> Done[Linear Done]
 ```
 
 The Commander works from the project root. Build, Acceptance, and Deliver
@@ -154,15 +156,44 @@ Use `igniter status` for a queue overview or `igniter status ENG-123 --json`
 for a ticket's current state. To supervise the service separately or inspect
 startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
 
-After acceptance passes, review the evidence and move the ticket from Review
-to Deliver to approve landing. This repository's Deliver prompt lives at
-`.igniter/workflow/deliver.md`: it rebases the
-feature branch onto remote `main`, pushes it, opens a pull request, and watches
-the required `Check` through GitHub's native auto-merge. A rebase that only
-changes the SHA keeps the approval, while a change needed to fix CI returns to
-Build and acceptance. Linear's GitHub integration moves the issue to Done when
-the pull request merges; Igniter then records the merged commit and closes the
-local workspace.
+Linear transitions and worker execution are separate commands. The Commander
+reads `igniter status ENG-123 --json`, runs `igniter worker start ENG-123`,
+confirms the initial work order was delivered, then records the stage start
+with `igniter begin ENG-123`. Begin only validates and records Linear state;
+it never starts a worker or sends a prompt.
+
+Workers report to the Commander. The Commander validates their checkpoint,
+checks, and evidence before `igniter submit ENG-123 --input -`. The first Build
+waits at Build + Complete for your Diffwalk review. Your explicit approval
+allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
+from status, to move to Review + Pending. A PASS Review receipt similarly
+permits Deliver + Pending; a valid completed Deliver receipt permits Done.
+There is no `--to`: the completed stage determines the transition. Retrying
+with the same receipt ID cannot approve a later stage. Ordinary sync or
+continuation never grants approval. A correction Build returns automatically
+to Review + Pending under the existing handoff rules.
+
+After each approved transition, the Commander starts the next worker, confirms
+delivery, and records begin. `worker start` owns worktree/scratch setup, stable
+per-role identities, tabs, effective model, and confirmed initial work-order
+delivery. It returns the role, model, worker identity, and result path. Use
+`worker send`, `worker restart --model MODEL` (or `--profile fallback`),
+`worker stop`, and `worker answer ... y|n` for worker operations. Use
+`--role build|review|deliver` when targeting an earlier role or when several
+workers exist. Worker commands may read ticket context but never write Linear.
+A restart really replaces the selected worker and preserves existing work.
+
+`block`/`unblock`, `fail`, and `reconcile` operate Linear without hidden worker
+side effects. The Commander explicitly stops workers after handoffs and Done;
+Done cleanup keeps dirty, untracked, or unmerged work and pre-existing user tabs.
+An externally integrated Done still requires the Deliver report and explicit
+worker cleanup. Publication consent, receipt/checkpoint validation, and Git
+safety continue to apply at every handoff.
+
+This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
+rebases onto remote `main`, pushes, opens a pull request, and watches required
+checks through GitHub's native auto-merge. A rebase changing only the SHA keeps
+the approval; a product change needed to fix CI returns to Build and acceptance.
 
 ## Development
 
@@ -195,11 +226,11 @@ The named scenario groups cover:
 
 | Group | Coverage |
 | --- | --- |
-| Status and begin | Human and JSON status, Todo claim, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
+| Status and begin | Human and JSON status, explicit worker start and Todo stage recording, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
 | Lifecycle and owner gates | Build, Review PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
-| Begin and concurrency | Prompt consumption, Pending start recovery, live/missing/ended workers, slot limits, duplicate claim prevention, concurrent submit dedupe, and ticket isolation. |
-| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, CLI timeout with background completion, and deferred reconcile mirror/close recovery. |
-| Control commands | Existing `state`, pause/resume, block/unblock, fail, builder restart override, mixed-harness `answer y/n`, stdin, workspace context, and `start` with a fake foreground Commander. |
+| Worker start and concurrency | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate claim prevention, concurrent submit dedupe, and ticket isolation. |
+| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, CLI timeout with background completion, and explicit worker cleanup recovery. |
+| Control commands | Existing `state`, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, workspace context, and `start` with a fake foreground Commander. |
 | Refusal and Git safety | Malformed payloads, wrong stage, stale/HEAD/rebased checkpoints, owner-gate refusal, dirty/untracked/unmerged checkout retention, scratch symlink escape, and packed failure diagnostics. |
 
 All condition polling has a deadline. On failure, the harness reports recent CLI

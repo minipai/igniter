@@ -1,50 +1,17 @@
-// Ticket-targeted stage worker start (STA-225).
-//
-// The Global Commander runs outside Igniter from the project workspace and
-// starts one stage worker per ticket with `igniter begin <ticket>`. Igniter
-// derives the stage from Linear protocol state alone; the caller never names
-// a stage, so a repeated `begin` converges instead of forking a second run.
-// `igniter start` is Commander lifecycle and assignment; `igniter begin` is
-// stage-worker lifecycle, so the two never recurse.
-//
-// Flow per ticket:
-//   Todo+Pending      -> create or reuse the ticket workspace, prepare Build
-//   Build+Pending     -> prepare the Build worker
-//   Review+Pending    -> prepare the Acceptance worker
-//   Deliver+Pending   -> prepare the Deliver worker
-//
-// The worker is `builder-<ticket>`, `reviewer-<ticket>`, or
-// `deliverer-<ticket>` running the unified agent profile for its stage
-// (harness, model, effort) in the ticket worktree with its own scratch dir.
-// The stage prompt path is absolute. It names either a bundled fallback at
-// the install location or a complete project override under the target repo.
-// The work order carries the feature request, criteria,
-// repository instructions, checkpoint, and the worker's result path — and
-// nothing else: no Igniter CLI, no Linear mutation, no receipt publication,
-// no ticket-state operation.
-//
-// Linear moves only after the worker is ready and its prompt delivery is
-// confirmed: Todo becomes Build, Pending becomes In progress. A worker
-// creation, readiness, or delivery failure leaves the ticket in Pending.
-// Retries resend the byte-identical work order to the same-named worker and
-// never create a second worker, work order, or receipt.
+// Worker lifecycle only. Linear stage changes belong to begin/submit/approve.
 
 import { isAbsolute, join } from "node:path";
+import { lstat, rename } from "node:fs/promises";
 import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
 import { STAGE_AGENTS } from "./config.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { launchFor } from "./agents.ts";
 import type { LinearClientLike } from "./linear.ts";
 import {
-  deriveState,
   latestReceiptOf,
   latestValidReceipt,
-  moveStatus,
-  setProgress,
-  statusOf,
   type AuthoritativeState,
   type FullIssue,
-  type ProtocolDeps,
   type ProtocolProgress,
   type ProtocolStatus,
 } from "./protocol.ts";
@@ -160,7 +127,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     : `No delivery document is configured in \`.igniter/config.yaml\`. Read the repository's AGENTS.md (or equivalent) for how to run, check, and accept the project; do not invent project settings.\n`;
   return (
     `You are the ${STAGE_LABEL[input.stage]} worker for ticket ${input.identifier}: "${input.title}".\n` +
-    `The Global Commander began your stage for ${input.identifier} and will collect your report.\n` +
+    `The Global Commander is preparing your stage for ${input.identifier} and will record begin after delivery is confirmed.\n` +
     `\n` +
     `Read the stage prompt at ${input.promptPath} and run exactly that stage. ` +
     `Do not read any other stage prompt.\n` +
@@ -209,7 +176,7 @@ export interface StageStartDeps {
   promptDelivery?: PromptDeliveryPolicy;
   assets?: CommanderAssetPaths;
   /**
-   * Owner publication consents. `begin` stamps the current consent's
+   * Owner publication consents. `worker start` stamps the current consent's
    * lifecycle into the ticket workspace so the build submit can verify
    * it; without a grant nothing is stamped and the worker stays local.
    */
@@ -222,6 +189,10 @@ export interface StageStartResult {
   workspaceId?: string;
   worker?: string;
   stage?: CommanderStage;
+  role?: CommanderStage;
+  model?: string;
+  resultPath?: string;
+  confirmed?: boolean;
 }
 
 /** True when the identifier looks like a ticket (`STA-123`). */
@@ -232,12 +203,6 @@ export function isTicketArg(value: string | undefined): boolean {
 function stageAgentProfile(config: DispatchConfig, stage: CommanderStage) {
   const agent = STAGE_AGENTS[stage];
   return config.commander.agents[agent];
-}
-
-/** A pane in the workspace with no agent on it; null when every pane is busy. */
-function freePane(snapshot: WorkspaceSnapshot, workspaceId: string): string | null {
-  const busy = new Set(snapshot.agents.map((a) => a.paneId));
-  return snapshot.panes.find((p) => p.workspaceId === workspaceId && !busy.has(p.paneId))?.paneId ?? null;
 }
 
 function workerEnded(status: string): boolean {
@@ -261,8 +226,19 @@ export async function ensureStageWorkspace(
   }
   const snapshot = await deps.workspaces.snapshot();
   const existing = workspaceForTicket(snapshot, identifier);
-  if (existing && existing.tokens["ticket"] === identifier) {
-    await stampPublicationConsent(deps, identifier, existing.workspaceId);
+  const { recordStageProfiles, keptStageProfiles } = await import("./agents.ts");
+  const config = deps.config ?? deps.resolved.config;
+  const tokens = {
+    ticket: identifier,
+    scratch_builder: scratchFor(deps.repoRoot, identifier, "builder"),
+    scratch_reviewer: scratchFor(deps.repoRoot, identifier, "reviewer"),
+    scratch_deliverer: scratchFor(deps.repoRoot, identifier, "deliverer"),
+    ...recordStageProfiles(config),
+    ...keptStageProfiles(existing?.tokens ?? {}),
+    ...stampFor(deps, identifier),
+  };
+  if (existing && (existing.tokens["ticket"] === identifier || !existing.tokens["ticket"])) {
+    await deps.workspaces.reportMetadata(existing.workspaceId, tokens);
     return {
       workspaceId: existing.workspaceId,
       workspace: existing,
@@ -275,21 +251,9 @@ export async function ensureStageWorkspace(
     cwd: worktree.path,
     env: { IGNITER_SCRATCH_ROOT: scratchRoot },
   });
-  const scratch = {
-    scratch_builder: scratchFor(deps.repoRoot, identifier, "builder"),
-    scratch_reviewer: scratchFor(deps.repoRoot, identifier, "reviewer"),
-    scratch_deliverer: scratchFor(deps.repoRoot, identifier, "deliverer"),
-  };
-  const { recordStageProfiles } = await import("./agents.ts");
-  const config = deps.config ?? deps.resolved.config;
   // New workspaces freeze the run's stage-agent profiles, so a mid-run
   // config edit never drifts a retry or recovery.
-  await deps.workspaces.reportMetadata(created.workspaceId, {
-    ticket: identifier,
-    ...scratch,
-    ...recordStageProfiles(config),
-    ...stampFor(deps, identifier),
-  });
+  await deps.workspaces.reportMetadata(created.workspaceId, { ...tokens, worker_root_pane: created.rootPaneId });
   return { workspaceId: created.workspaceId, workspace: null, worktreePath: worktree.path, branch: worktree.branch };
 }
 
@@ -299,21 +263,10 @@ function stampFor(deps: StageStartDeps, identifier: string): Record<string, stri
   return consent ? stampPublicationTokens(consent) : {};
 }
 
-/** Stamp a reused workspace with the current consent before the worker starts. */
-async function stampPublicationConsent(deps: StageStartDeps, identifier: string, workspaceId: string): Promise<void> {
-  const stamp = stampFor(deps, identifier);
-  if (Object.keys(stamp).length > 0) {
-    await deps.workspaces.reportMetadata(workspaceId, stamp);
-  }
-}
-
 /**
  * Ensure the stage worker exists in the ticket workspace. A same-named live
- * worker is reused as is: no second worker is ever created. The caller
- * always (re)delivers the current work order to the returned worker with
- * confirmation, so a reused worker from an earlier round still receives the
- * new checkpoint. Otherwise
- * a free pane (or a fresh tab) starts the configured harness/model/effort.
+ * worker is reused as is. New workers get a dedicated titled tab, retaining
+ * the workspace's root shell when a worker is stopped or rebuilt.
  * Returns the worker name and whether it was newly created.
  */
 export async function ensureStageWorker(
@@ -337,280 +290,104 @@ export async function ensureStageWorker(
   if (existing && !workerEnded(existing.agentStatus)) {
     throw new WorkspaceSinkError(`${worker} is running in workspace ${existing.workspaceId}, not ${workspaceId}`);
   }
-  let paneId = freePane(snapshot, workspaceId);
+  if (existing) {
+    if (!deps.workspaces.stopAgent) throw new Error("worker stop is not configured");
+    await deps.workspaces.stopAgent(worker);
+  }
+  const paneToken = `worker_pane_${stage}`;
+  const recordedPane = snapshot.workspaces.find((w) => w.workspaceId === workspaceId)?.tokens[paneToken];
+  let paneId = snapshot.panes.find((p) => p.paneId === recordedPane && p.workspaceId === workspaceId && !snapshot.agents.some((a) => a.paneId === p.paneId))?.paneId;
   if (!paneId) {
     const worktree = ticketWorktree(deps.repoRoot, identifier);
-    await deps.workspaces.createTab({ workspaceId, cwd: worktree.path });
-    paneId = freePane(await deps.workspaces.snapshot(), workspaceId);
+    const before = new Set(snapshot.panes.map((p) => p.paneId));
+    await deps.workspaces.createTab({ workspaceId, cwd: worktree.path, title: `${identifier} ${stage}` });
+    paneId = (await deps.workspaces.snapshot()).panes.find((p) => p.workspaceId === workspaceId && !before.has(p.paneId))?.paneId;
+    if (paneId) await deps.workspaces.reportMetadata(workspaceId, { [paneToken]: paneId });
   }
   if (!paneId) throw new WorkspaceSinkError(`workspace ${workspaceId} has no pane available for ${worker}`);
   await deps.workspaces.startAgent({ paneId, kind, name: worker, ...(args.length > 0 ? { args } : {}) });
   return { worker, created: true };
 }
 
-/**
- * Start the current stage worker for a ticket. Derives the stage from Linear
- * alone (Todo/Build -> Build, Review -> Acceptance, Deliver -> Deliver) and
- * refuses anything else, including an explicit stage argument.
- *
- * - Pending stages launch their worker; Linear moves only after the worker
- *   is ready and its prompt delivery confirms (Todo -> Build, Pending -> In
- *   progress). Any worker or delivery failure leaves Linear in Pending.
- * - In progress with a live same-named worker reports already-running
- *   without duplicating. In progress with no live worker rebuilds the
- *   same-named worker (Global Commander takeover) with no Linear write.
- */
+/** Start or reuse one worker without writing Linear. The command service serializes tickets. */
 export async function startStageTicket(
   deps: StageStartDeps,
   full: FullIssue,
   state: AuthoritativeState,
+  options: { stage?: CommanderStage } = {},
 ): Promise<StageStartResult> {
-  const liveConfig = deps.config ?? deps.resolved.config;
-  const assets = deps.assets ?? commanderAssetPaths();
-  if (state.progress !== "pending" && state.progress !== "in_progress") {
-    return { ok: false, text: `begin refused: ${full.identifier} is ${state.status}+${state.progress ?? "no progress"}; begin only launches Pending stages` };
+  const stage = options.stage ?? stageForStatus(state.status);
+  if (!stage || (state.progress !== "pending" && state.progress !== "in_progress" && !(state.status === "todo" && state.progress === null))) {
+    return { ok: false, text: `worker start refused: ${full.identifier} is ${state.status}+${state.progress ?? "none"}; expected Pending or In progress` };
   }
-  const stage = stageForStatus(state.status);
-  if (!stage) {
-    return { ok: false, text: `begin refused: ticket is ${full.state.name}; begin only claims Todo+Pending and launches Build/Review/Deliver+Pending` };
+  if (stage !== stageForStatus(state.status)) {
+    return { ok: false, text: `worker start refused: --role ${stage} does not match the current ${state.status} stage` };
   }
-  // In progress recovery: a live same-named worker means already running;
-  // a missing one is rebuilt with no Linear write (receipt history carries
-  // the run's identity). This is how a rebuilt Global Commander session
-  // re-takes active tickets from Linear state plus workspace metadata. A
-  // lost workspace is recreated first; Linear still never moves here.
-  if (state.progress === "in_progress") {
-    let workspaceId: string | null = null;
-    try {
-      const snapshot = await deps.workspaces.snapshot();
-      workspaceId = workspaceForTicket(snapshot, full.identifier)?.workspaceId ?? null;
-    } catch (error) {
-      return { ok: false, text: `begin failed: herdr unreachable: ${(error as Error).message}` };
-    }
-    if (!workspaceId) {
-      try {
-        workspaceId = (await ensureStageWorkspace(deps, full.identifier)).workspaceId;
-      } catch (error) {
-        return { ok: false, text: `begin failed: ${(error as Error).message}` };
-      }
-    } else {
-      const snapshot = await deps.workspaces.snapshot().catch(() => null);
-      const worker = workerAgentName(stage, full.identifier);
-      const live = snapshot?.agents.find((a) => a.name === worker);
-      if (live && !workerEnded(live.agentStatus) && live.workspaceId === workspaceId) {
-        return { ok: false, text: `${full.identifier} is already running (${stage} worker ${worker})` };
-      }
-    }
-    const recovered = await recoverStageWorker(deps, liveConfig, assets, full, state, stage, workspaceId);
-    return recovered;
-  }
-  const worktree = ticketWorktree(deps.repoRoot, full.identifier);
-  const resultPath = resultPathFor(deps.repoRoot, full.identifier, stage);
-
-  let workspaceId: string;
-  let existingTokens: Record<string, string> = {};
   try {
     const ensured = await ensureStageWorkspace(deps, full.identifier);
-    workspaceId = ensured.workspaceId;
-    existingTokens = ensured.workspace?.tokens ?? {};
-  } catch (error) {
-    return { ok: false, text: `begin failed: ${(error as Error).message}` };
-  }
-
-  // The checkpoint reads after the workspace exists: a fresh claim has no
-  // worktree until ensureStageWorkspace creates it above.
-  const git = deps.git ?? bunGitRunner();
-  let head: string;
-  try {
-    head = (await git.run(["rev-parse", "HEAD"], worktree.path)).stdout.trim().split("\n")[0]?.trim() ?? "";
-  } catch {
-    head = "";
-  }
-  const linear = latestValidReceipt(full.comments);
-  const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
-  const checkpoint = approved?.receipt.checkpoint ?? (head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn"));
-
-  // The run's recorded profiles win over live config, so a mid-run config
-  // edit never drifts a retry or recovery.
-  const { commanderConfigForRun } = await import("./agents.ts");
-  const effective = commanderConfigForRun(liveConfig.commander, existingTokens);
-  const effectiveConfig = { ...liveConfig, commander: effective };
-  const profile = stageAgentProfile(effectiveConfig, stage);
-  const promptPath = promptPathForStage(assets, stage, effectiveConfig.commander);
-
-  // Idempotent worker: a same-named live worker is reused, never
-  // duplicated. The current work order is always (re)delivered with
-  // confirmation below — a reused worker from an earlier round (a builder
-  // that already ended, a stalled first attempt) must still receive the new
-  // checkpoint before Linear converges.
-  let worker: string;
-  let created: boolean;
-  try {
-    ({ worker, created } = await ensureStageWorker(deps, full.identifier, stage, workspaceId, profile));
-  } catch (error) {
-    await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
-    return { ok: false, text: `begin failed: ${(error as Error).message} (workspace ${workspaceId})` };
-  }
-
-  const order = buildStageWorkOrder({
-    identifier: full.identifier,
-    title: full.title,
-    description: full.description,
-    criteria: state.criteria,
-    worktreePath: worktree.path,
-    branch: worktree.branch,
-    checkpoint,
-    resultPath,
-    stage,
-    promptPath,
-    harness: profile.harness,
-    model: profile.model,
-    ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
-    ...(effectiveConfig.delivery !== undefined ? { delivery: effectiveConfig.delivery } : {}),
-  });
-  const role = stage === "build" ? "builder" : stage === "review" ? "reviewer" : "deliverer";
-  try {
-    await confirmPromptDelivery(
-      deps.workspaces,
-      {
-        project: effectiveConfig.project,
-        ticket: full.identifier,
-        role,
-        stage,
-        agent: worker,
-        workOrder: workOrderHash(order),
-      },
-      order,
-      deps.promptDelivery,
-    );
-  } catch (error) {
-    await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
-    return { ok: false, text: `start failed: ${(error as Error).message} (workspace ${workspaceId}); ticket stays ${state.status}+pending` };
-  }
-
-  if (!created) {
-    try {
-      await convergePending(deps, full, state);
-    } catch (error) {
-      return { ok: false, text: (error as Error).message };
-    }
-    await deps.decisions.record(full.identifier, `begin reused ${worker} in ${workspaceId} with a redelivered work order; Linear converged without a second worker`);
-    return { ok: true, text: `${full.identifier} already has ${stage} worker ${worker} in ${workspaceId}; work order redelivered`, workspaceId, worker, stage };
-  }
-
-  try {
-    await convergePending(deps, full, state);
-  } catch (error) {
-    return { ok: false, text: (error as Error).message };
-  }
-  const from = state.status === "todo" ? `Todo → Build` : `${state.status}+pending → ${state.status}+in_progress`;
-  await deps.decisions.record(full.identifier, `started ${stage} worker ${worker} in ${workspaceId} (${from})`);
-  return { ok: true, text: `started ${full.identifier}: ${stage} worker ${worker} in workspace ${workspaceId} (${from}); result → ${resultPath}`, workspaceId, worker, stage };
-}
-
-/**
- * Rebuild a missing stage worker for an In progress ticket with no Linear
- * write: the receipt history already carries the run's identity. Linear
- * stays exactly where it is; only the worker and its confirmed work order
- * are restored. A delivery failure leaves everything untouched for retry.
- */
-async function recoverStageWorker(
-  deps: StageStartDeps,
-  liveConfig: DispatchConfig,
-  assets: CommanderAssetPaths,
-  full: FullIssue,
-  state: AuthoritativeState,
-  stage: CommanderStage,
-  workspaceId: string,
-): Promise<StageStartResult> {
-  let tokens: Record<string, string> = {};
-  try {
+    const workspaceId = ensured.workspaceId;
     const snapshot = await deps.workspaces.snapshot();
-    tokens = workspaceForTicket(snapshot, full.identifier)?.tokens ?? {};
-  } catch {
-    tokens = {};
-  }
-  const { commanderConfigForRun } = await import("./agents.ts");
-  const effective = commanderConfigForRun(liveConfig.commander, tokens);
-  const effectiveConfig = { ...liveConfig, commander: effective };
-  const profile = stageAgentProfile(effectiveConfig, stage);
-  let worker: string;
-  try {
-    ({ worker } = await ensureStageWorker(deps, full.identifier, stage, workspaceId, profile));
+    const tokens = snapshot.workspaces.find((w) => w.workspaceId === workspaceId)?.tokens ?? {};
+    const { commanderConfigForRun } = await import("./agents.ts");
+    const config = deps.config ?? deps.resolved.config;
+    const effective = commanderConfigForRun(config.commander, tokens);
+    const profile = effective.agents[STAGE_AGENTS[stage]];
+    const worker = workerAgentName(stage, full.identifier);
+    const resultPath = resultPathFor(deps.repoRoot, full.identifier, stage);
+    const receipt = latestValidReceipt(full.comments);
+    const run = `${stage}:${receipt?.receipt.submission ?? "initial"}:${JSON.stringify(profile)}`;
+    const recordPath = join(scratchFor(deps.repoRoot, full.identifier, workerForStage(stage)), "work-order.json");
+    let saved: { run: string; order: string; confirmedPane?: string; confirmedSession?: string | null } | null = null;
+    const recordStat = await lstat(recordPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (recordStat?.isSymbolicLink()) throw new Error("worker work-order record cannot be a symlink");
+    const file = Bun.file(recordPath);
+    if (await file.exists()) saved = await file.json();
+    let order = saved?.run === run ? saved.order : undefined;
+    if (order === undefined) {
+      const git = deps.git ?? bunGitRunner();
+      const head = (await git.run(["rev-parse", "HEAD"], ensured.worktreePath)).stdout.trim().split("\n")[0]?.trim();
+      const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
+      const checkpoint = approved?.receipt.checkpoint ?? head;
+      if (!checkpoint) throw new Error("worktree checkpoint is missing");
+      order = buildStageWorkOrder({
+        identifier: full.identifier, title: full.title, description: full.description,
+        criteria: state.criteria, worktreePath: ensured.worktreePath, branch: ensured.branch,
+        checkpoint, resultPath, stage,
+        promptPath: promptPathForStage(deps.assets ?? commanderAssetPaths(), stage, effective),
+        harness: profile.harness, model: profile.model,
+        ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+        ...(config.delivery !== undefined ? { delivery: config.delivery } : {}),
+      });
+      saved = { run, order };
+      await saveWorkOrder(recordPath, saved);
+    }
+    const { created } = await ensureStageWorker(deps, full.identifier, stage, workspaceId, profile);
+    const live = (await deps.workspaces.snapshot()).agents.find((a) => a.name === worker && a.workspaceId === workspaceId);
+    if (!live) throw new Error(`${worker} was not found after start`);
+    if (created || saved?.confirmedPane !== live.paneId || saved?.confirmedSession !== live.session) {
+      const delivered = await confirmPromptDelivery(deps.workspaces, {
+        project: config.project, ticket: full.identifier, role: workerForStage(stage), stage,
+        agent: worker, workOrder: workOrderHash(order),
+      }, order, deps.promptDelivery);
+      await saveWorkOrder(recordPath, { run, order, confirmedPane: live.paneId, confirmedSession: delivered.observed.session });
+    }
+    return {
+      ok: true, text: `${full.identifier}: ${stage} worker ${worker}; model ${profile.model}; work order confirmed; result → ${resultPath}`,
+      workspaceId, worker, stage, role: stage, model: profile.model, resultPath, confirmed: true,
+    };
   } catch (error) {
-    await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
-    return { ok: false, text: `start failed: ${(error as Error).message} (workspace ${workspaceId}); Linear kept at ${state.status}+in_progress` };
+    return { ok: false, text: `worker start failed: ${(error as Error).message}; Linear unchanged` };
   }
-  const worktree = ticketWorktree(deps.repoRoot, full.identifier);
-  const linear = latestValidReceipt(full.comments);
-  const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
-  const git = deps.git ?? bunGitRunner();
-  let head = "";
-  try {
-    head = (await git.run(["rev-parse", "HEAD"], worktree.path)).stdout.trim().split("\n")[0]?.trim() ?? "";
-  } catch {
-    head = "";
-  }
-  const order = buildStageWorkOrder({
-    identifier: full.identifier,
-    title: full.title,
-    description: full.description,
-    criteria: state.criteria,
-    worktreePath: worktree.path,
-    branch: worktree.branch,
-    checkpoint: approved?.receipt.checkpoint ?? (head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn")),
-    resultPath: resultPathFor(deps.repoRoot, full.identifier, stage),
-    stage,
-    promptPath: promptPathForStage(assets, stage, effectiveConfig.commander),
-    harness: profile.harness,
-    model: profile.model,
-    ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
-    ...(effectiveConfig.delivery !== undefined ? { delivery: effectiveConfig.delivery } : {}),
-  });
-  const role = stage === "build" ? "builder" : stage === "review" ? "reviewer" : "deliverer";
-  try {
-    await confirmPromptDelivery(
-      deps.workspaces,
-      {
-        project: effectiveConfig.project,
-        ticket: full.identifier,
-        role,
-        stage,
-        agent: worker,
-        workOrder: workOrderHash(order),
-      },
-      order,
-      deps.promptDelivery,
-    );
-  } catch (error) {
-    await deps.decisions.record(full.identifier, `begin failed: ${(error as Error).message} (workspace ${workspaceId})`);
-    return { ok: false, text: `start failed: ${(error as Error).message} (workspace ${workspaceId}); Linear kept at ${state.status}+in_progress` };
-  }
-  await deps.decisions.record(full.identifier, `recovered ${stage} worker ${worker} in ${workspaceId} at ${state.status}+in_progress (Linear kept)`);
-  return { ok: true, text: `recovered ${full.identifier}: ${stage} worker ${worker} in workspace ${workspaceId} at ${state.status}+in_progress (Linear kept)`, workspaceId, worker, stage };
 }
 
-async function convergePending(deps: StageStartDeps, full: FullIssue, state: AuthoritativeState): Promise<void> {  const protocolDeps: ProtocolDeps = {
-    client: deps.client,
-    resolved: deps.resolved,
-    workspaces: deps.workspaces,
-    decisions: deps.decisions,
-    git: deps.git ?? bunGitRunner(),
-    repoRoot: deps.repoRoot,
-  };
-  if (state.status === "todo") {
-    const status = statusOf(deps.resolved, full.state.id);
-    if (status !== "todo") throw new Error(`begin failed: ${full.identifier} left Todo while beginning; retry`);
-    await moveStatus(protocolDeps, full, "build", "in_progress");
-    return;
-  }
-  await setProgress(protocolDeps, full, "in_progress");
-  const reread = await deps.client.fetchIssue(full.id);
-  if (!reread) throw new Error(`begin failed: Linear lost ${full.identifier} mid-begin; retry`);
-  const restate = deriveState(deps.resolved, reread as FullIssue);
-  if (restate.status !== state.status || restate.progress !== "in_progress") {
-    throw new Error(`begin failed: Linear did not converge on ${state.status}+in_progress; retry`);
-  }
+/** Replace the retry record atomically; an interrupted write preserves the last complete order. */
+async function saveWorkOrder(path: string, record: object): Promise<void> {
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+  await Bun.write(temporary, JSON.stringify(record));
+  await rename(temporary, path);
 }
 
 /** Workspace identity for a ticket-targeted mutation: the ticket workspace must exist. */
@@ -628,7 +405,7 @@ export async function requireTicketWorkspace(
   const workspace = workspaceForTicket(snapshot, ticket)
     ?? snapshot.workspaces.find((w) => (w.tokens["ticket"] ?? "").toUpperCase() === ticket);
   if (!workspace || (workspace.tokens["ticket"] ?? "").toUpperCase() !== ticket) {
-    throw new Error(`no workspace for ${ticket}; run \`igniter begin ${ticket}\` first`);
+    throw new Error(`no workspace for ${ticket}; run \`igniter worker start ${ticket}\` first`);
   }
   return workspace.workspaceId;
 }
