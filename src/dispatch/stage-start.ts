@@ -16,8 +16,9 @@
 // The worker is `builder-<ticket>`, `reviewer-<ticket>`, or
 // `deliverer-<ticket>` running the unified agent profile for its stage
 // (harness, model, effort) in the ticket worktree with its own scratch dir.
-// The bundled stage prompt path is absolute (install location, never the
-// target repo). The work order carries the feature request, criteria,
+// The stage prompt path is absolute. It names either a bundled fallback at
+// the install location or a complete project override under the target repo.
+// The work order carries the feature request, criteria,
 // repository instructions, checkpoint, and the worker's result path — and
 // nothing else: no Igniter CLI, no Linear mutation, no receipt publication,
 // no ticket-state operation.
@@ -28,8 +29,8 @@
 // Retries resend the byte-identical work order to the same-named worker and
 // never create a second worker, work order, or receipt.
 
-import { join } from "node:path";
-import type { CommanderStage, DispatchConfig } from "./config.ts";
+import { isAbsolute, join } from "node:path";
+import type { CommanderConfig, CommanderStage, DispatchConfig } from "./config.ts";
 import { STAGE_AGENTS } from "./config.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/assets.ts";
 import { launchFor } from "./agents.ts";
@@ -97,9 +98,14 @@ export function workerAgentName(stage: CommanderStage, identifier: string): stri
   return stageWorkerName(stage, identifier);
 }
 
-/** Absolute bundled stage prompt path for one stage. */
-export function promptPathForStage(assets: CommanderAssetPaths, stage: CommanderStage): string {
-  return assets.prompts[stage];
+/** Absolute configured stage prompt, falling back to the bundled asset. */
+export function promptPathForStage(
+  assets: CommanderAssetPaths,
+  stage: CommanderStage,
+  commander?: CommanderConfig,
+): string {
+  const configured = commander?.stages[stage].prompt;
+  return configured !== undefined && isAbsolute(configured) ? configured : assets.prompts[stage];
 }
 
 /** The worker's result path: its own scratch dir plus `result.md`. */
@@ -138,7 +144,7 @@ const STAGE_MARKER: Record<CommanderStage, string> = {
 };
 
 /**
- * The stage worker's first and only prompt. It names the absolute bundled
+ * The stage worker's first and only prompt. It names the absolute configured
  * prompt, the feature request and criteria, the repository instructions, the
  * checkpoint, and the result path. It forbids Igniter CLI use, Linear calls,
  * receipt publication, and ticket-state operations: the worker reports only
@@ -156,7 +162,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `You are the ${STAGE_LABEL[input.stage]} worker for ticket ${input.identifier}: "${input.title}".\n` +
     `The Global Commander began your stage for ${input.identifier} and will collect your report.\n` +
     `\n` +
-    `Read the bundled stage prompt at ${input.promptPath} and run exactly that stage. ` +
+    `Read the stage prompt at ${input.promptPath} and run exactly that stage. ` +
     `Do not read any other stage prompt.\n` +
     `\n` +
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
@@ -183,7 +189,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `publication happens on the host after the owner's one-time consent, never from this worker. ` +
     `Your only output is the result file at \`${input.resultPath}\` plus your final report.\n` +
     `\n` +
-    `Write the stage result as structured Markdown covering exactly what the bundled prompt asks for, ` +
+    `Write the stage result as structured Markdown covering exactly what the stage prompt asks for, ` +
     `then end the complete report with:\n` +
     `\n` +
     `\`\`\`text\n` +
@@ -430,7 +436,7 @@ export async function startStageTicket(
   const effective = commanderConfigForRun(liveConfig.commander, existingTokens);
   const effectiveConfig = { ...liveConfig, commander: effective };
   const profile = stageAgentProfile(effectiveConfig, stage);
-  const promptPath = promptPathForStage(assets, stage);
+  const promptPath = promptPathForStage(assets, stage, effectiveConfig.commander);
 
   // Idempotent worker: a same-named live worker is reused, never
   // duplicated. The current work order is always (re)delivered with
@@ -555,7 +561,7 @@ async function recoverStageWorker(
     checkpoint: approved?.receipt.checkpoint ?? (head !== "" ? head : (linear?.receipt.checkpoint ?? "unborn")),
     resultPath: resultPathFor(deps.repoRoot, full.identifier, stage),
     stage,
-    promptPath: promptPathForStage(assets, stage),
+    promptPath: promptPathForStage(assets, stage, effectiveConfig.commander),
     harness: profile.harness,
     model: profile.model,
     ...(profile.effort !== undefined ? { effort: profile.effort } : {}),

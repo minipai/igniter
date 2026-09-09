@@ -45,16 +45,16 @@ stage begins with `igniter begin <ticket>`, without stealing focus.
 
 ## Project settings
 
-Read the project instructions named by the `delivery` field of
-`.igniter/config.yaml`. The path is relative to the repository root. When it is
-configured, read that file directly without searching, regenerating, or
-overwriting it.
+The stage prompts come from `.igniter/config.yaml`. When its `stages` map is
+present, it completely replaces the bundled Build, Review, and Deliver
+prompts; all three entries are required and each prompt path is relative to
+the repository root. Without that map, Igniter uses its bundled prompts.
 
-When the field is absent, search the repository for instructions covering how
-to run, check, and accept the project. Use found sections and fall back to the
-defaults below for anything absent. Record the discovered path in
-`.igniter/config.yaml` as a separate commit and name it in the completion
-report.
+The optional `delivery` field names an additional project-instruction document
+relative to the repository root. When configured, read it directly without
+searching, regenerating, or overwriting it. When it is absent, use the stage
+prompt plus repository instructions such as AGENTS.md or an equivalent; do not
+invent another project-settings file.
 
 Unknown acceptance methods, model ids, or stage steps require owner direction;
 never guess.
@@ -86,9 +86,8 @@ cross-harness reasoning/thinking effort: the launch translates it into the
 harness's native option, and a harness with no such option refuses the
 configuration instead of ignoring it.
 
-When no project instruction file exists, proceed with defaults. After the first
-successful acceptance, write `.igniter/delivery.md` with the stage-specific
-settings actually used and record its path in the config as separate commits.
+When no additional project instruction file exists, proceed with the stage
+prompt and repository instructions.
 
 ## Select the feature
 
@@ -141,8 +140,11 @@ call Linear directly or through MCP, or publish receipts.
 The owner reviews the first Build's Diffwalk while the ticket waits at Build +
 Complete, then moves it to Review to approve the first acceptance run. The
 owner moves Review + Complete to Deliver to approve delivery, or back to
-Build to request changes. The owner moves Deliver + Complete to Done only after
-the change has landed. After an owner move, the Global Commander runs
+Build to request changes. When repository integration has not already done so,
+the owner moves Deliver + Complete to Done only after the change has landed.
+If integration moves the ticket to Done first, the Commander still submits the
+Deliver report to record the landed commit, clear Progress, and close the
+workspace. After an owner move, the Global Commander runs
 `igniter reconcile <ticket>` to normalize Progress and workspace state for that
 ticket. Repeated reconciles never move Build + Complete on their own: without
 the owner's move to Review there is no handoff, no repeated comment, and no
@@ -169,14 +171,14 @@ Create each worker only when its stage begins, without stealing focus. Retain
 the IDs of workflow-created tabs and close them during cleanup.
 
 Dispatch reads the bundled Commander defaults at the Igniter install
-location, applies agent overrides from `.igniter/config.yaml`, and puts the
-effective stage and agent settings in the work order. Use those effective
-values. Stage prompt paths are absolute bundled paths from that install
-location; a repository cannot override them.
+location, applies agent and complete-stage overrides from
+`.igniter/config.yaml`, and puts the effective stage and agent settings in the
+work order. Use those effective values. Stage prompt paths are absolute and
+name either a repository prompt or a bundled fallback.
 
 Pass the worker:
 
-- its absolute bundled stage prompt path;
+- its absolute configured stage prompt path;
 - the feature request and criteria;
 - only the ticket, checkpoint, repository, project-setting, and runbook facts
   listed by that prompt;
@@ -184,7 +186,7 @@ Pass the worker:
 - an instruction to read and follow repository rules.
 
 The Commander does not read stage prompts into its own context. It passes the
-absolute bundled path from the work order for the worker to read directly.
+absolute configured path from the work order for the worker to read directly.
 
 Use `builder-<ticket>` for Build, `reviewer-<ticket>` for Review, and
 `deliverer-<ticket>` for Deliver. The Deliver name may remain unassociated on
@@ -202,8 +204,8 @@ ticket with the concrete reason.
 The feature request pre-authorizes read-only access to the repository, its
 instructions, and source paths within the task, plus read/write inside the
 ticket worktree and the worker's own igniter scratch (named in the work
-order). The bundled Commander assets named by absolute path in the work order
-(rules and stage prompts) are Igniter-owned and pre-authorized read-only too.
+order). The Commander assets and repository stage prompts named by absolute
+path in the work order are pre-authorized read-only too.
 Launch each worker normally in the ticket worktree. Do not invent or translate
 generic permission flags: harnesses do not share one permission UI. Never
 start a Claude stage worker with `--remote-control`; Herdr owns its pane and
@@ -319,10 +321,12 @@ checks, completes any required pull request and merge, and reports both the
 approved checkpoint and the landed commit. A rebase that only changes the SHA
 never invalidates the approval and never needs re-acceptance; the Deliver
 submit records the two identities side by side and requires that the landed
-commit read back from the configured target branch. When landing needs a code
-change beyond the rebase, the agent stops reusing the old approval and returns
-the ticket to acceptance or the owner for a new decision, starting from a new
-Build submit.
+commit read back from the configured target branch. A conflict resolution may
+stay in Deliver only when it preserves the accepted behavior while reconciling
+the patch with the current target. When landing needs a product-behavior change,
+the agent stops reusing the old approval and returns the ticket to acceptance
+or the owner for a new decision, starting from a new Build submit. Build and
+Review do not push; only a newly approved Deliver updates the remote branch.
 
 Require the Deliver agent to finish the repository's delivery instructions;
 preparing a merge, opening a pull request without following its checks, or

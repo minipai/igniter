@@ -1,8 +1,10 @@
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { realpath, stat } from "node:fs/promises";
 import commanderDefaultsYaml from "../commander/config.yaml";
 
 // Dispatch settings from `.igniter/config.yaml`. Commander defaults come from
-// `src/commander/config.yaml`; repositories may override agent profiles.
+// `src/commander/config.yaml`; repositories may override agent profiles and
+// replace the complete stage prompt map.
 // File-level loading and validation only; Linear-backed checks (status names,
 // project existence) live in claims.ts so they can fail startup with context.
 
@@ -272,7 +274,40 @@ export const DEFAULT_COMMANDER_CONFIG = parseBundledCommanderConfig(commanderDef
 const AGENT_NAMES = ["commander", "builder", "reviewer", "deliverer"] as const;
 type AgentName = (typeof AGENT_NAMES)[number];
 
-function parseAgents(raw: unknown): CommanderConfig {
+function parseStages(raw: unknown): Record<CommanderStage, CommanderStageConfig> {
+  if (raw === undefined || raw === null) {
+    return Object.fromEntries(
+      COMMANDER_STAGES.map((stage) => [stage, { ...DEFAULT_COMMANDER_CONFIG.stages[stage] }]),
+    ) as Record<CommanderStage, CommanderStageConfig>;
+  }
+  if (!isRecord(raw)) fail(`"stages" must be a map`);
+  for (const name of Object.keys(raw)) {
+    if (!(COMMANDER_STAGES as readonly string[]).includes(name)) {
+      fail(`unknown stage "${name}" (known: build, review, deliver)`);
+    }
+  }
+  const stages = {} as Record<CommanderStage, CommanderStageConfig>;
+  for (const stage of COMMANDER_STAGES) {
+    const value = raw[stage];
+    if (!isRecord(value)) {
+      fail(`stages."${stage}" is required when "stages" overrides the bundled workflow`);
+    }
+    for (const key of Object.keys(value)) {
+      if (key !== "prompt" && key !== "agent") {
+        fail(`unknown stages."${stage}" setting "${key}"`);
+      }
+    }
+    const prompt = requiredText(value, "prompt");
+    const agent = requiredText(value, "agent");
+    if (agent !== STAGE_AGENTS[stage]) {
+      fail(`stages."${stage}" must run on "${STAGE_AGENTS[stage]}" (got "${agent}")`);
+    }
+    stages[stage] = { prompt, agent };
+  }
+  return stages;
+}
+
+function parseCommander(agentsRaw: unknown, stagesRaw: unknown): CommanderConfig {
   const agents: CommanderConfig["agents"] = {
     commander: { ...DEFAULT_COMMANDER_CONFIG.agents.commander },
     builder: {
@@ -282,12 +317,10 @@ function parseAgents(raw: unknown): CommanderConfig {
     reviewer: { ...DEFAULT_COMMANDER_CONFIG.agents.reviewer },
     deliverer: { ...DEFAULT_COMMANDER_CONFIG.agents.deliverer },
   };
-  const stages = Object.fromEntries(
-    COMMANDER_STAGES.map((stage) => [stage, { ...DEFAULT_COMMANDER_CONFIG.stages[stage] }]),
-  ) as Record<CommanderStage, CommanderStageConfig>;
-  if (raw === undefined || raw === null) return { agents, stages };
-  if (!isRecord(raw)) fail(`"agents" must be a map`);
-  for (const [name, value] of Object.entries(raw)) {
+  const stages = parseStages(stagesRaw);
+  if (agentsRaw === undefined || agentsRaw === null) return { agents, stages };
+  if (!isRecord(agentsRaw)) fail(`"agents" must be a map`);
+  for (const [name, value] of Object.entries(agentsRaw)) {
     if (!(AGENT_NAMES as readonly string[]).includes(name)) {
       fail(`unknown agent "${name}" (known: commander, builder, reviewer, deliverer)`);
     }
@@ -329,9 +362,6 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (raw["models"] !== undefined) {
     fail(`"models" was replaced by "agents"; move each model under its agent profile`);
   }
-  if (raw["stages"] !== undefined) {
-    fail(`"stages" is bundled with Igniter and cannot be overridden; bundled prompt paths always win`);
-  }
   // Review publication consent is an explicit owner act on the CLI, never a
   // repository setting: a repository-controlled file must not grant it.
   for (const key of ["publish_review", "publish-review", "publishReview", "publication", "publications"]) {
@@ -355,7 +385,7 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     progress,
     targetBranch: optionalText(raw, "target_branch") ?? DEFAULT_TARGET_BRANCH,
     herdrRemote: optionalText(raw, "herdr_remote"),
-    commander: parseAgents(raw["agents"]),
+    commander: parseCommander(raw["agents"], raw["stages"]),
     delivery: optionalText(raw, "delivery"),
   };
 }
@@ -374,6 +404,35 @@ export async function loadDispatchConfig(repoRoot: string): Promise<DispatchConf
     fail(`.igniter/config.yaml is not valid YAML: ${(error as Error).message}`);
   }
   const config = parseDispatchConfig(raw);
+  if (isRecord(raw) && raw["stages"] !== undefined) {
+    const physicalRoot = await realpath(repoRoot);
+    for (const stage of COMMANDER_STAGES) {
+      const configured = config.commander.stages[stage].prompt;
+      if (isAbsolute(configured)) {
+        fail(`stages."${stage}"."prompt" must be relative to the repo root`);
+      }
+      const candidate = resolve(repoRoot, configured);
+      const fromRoot = relative(resolve(repoRoot), candidate);
+      if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
+        fail(`stages."${stage}"."prompt" names "${configured}" outside ${repoRoot}`);
+      }
+      let physicalPrompt: string;
+      try {
+        physicalPrompt = await realpath(candidate);
+      } catch {
+        fail(`stages."${stage}"."prompt" names "${configured}" which is missing or empty under ${repoRoot}`);
+      }
+      const fromPhysicalRoot = relative(physicalRoot, physicalPrompt);
+      if (fromPhysicalRoot === ".." || fromPhysicalRoot.startsWith(`..${sep}`)) {
+        fail(`stages."${stage}"."prompt" names "${configured}" outside ${repoRoot} through a symbolic link`);
+      }
+      const info = await stat(physicalPrompt);
+      if (!info.isFile() || (await Bun.file(physicalPrompt).text()).trim() === "") {
+        fail(`stages."${stage}"."prompt" names "${configured}" which is missing or empty under ${repoRoot}`);
+      }
+      config.commander.stages[stage].prompt = physicalPrompt;
+    }
+  }
   if (config.delivery !== undefined) {
     const candidate = `${repoRoot.replace(/\/+$/, "")}/${config.delivery}`;
     if (!(await Bun.file(candidate).exists())) {
@@ -388,8 +447,7 @@ export async function loadDispatchConfig(repoRoot: string): Promise<DispatchConf
  * `.igniter/config.yaml`. Returns that project root. Throws a clear error
  * naming the search start when no ancestor (up to the filesystem root)
  * holds a config. `igniter start` uses this so a subdirectory launch serves
- * the enclosing project; bundled Commander prompts still resolve from the
- * Igniter install, never from the project.
+ * the enclosing project.
  */
 export async function findProjectRoot(startDir: string): Promise<string> {
   const start = resolve(startDir);

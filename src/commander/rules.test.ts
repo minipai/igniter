@@ -28,15 +28,16 @@ describe("Commander delivery protocol", () => {
     const linkedRules = await Bun.file(new URL(rulesLink![1]!, globalUrl)).text();
     expect(linkedRules).toBe(commonRules);
     expect(global).toContain("Before any ticket action");
-    expect(linkedRules).toContain("The owner moves Deliver + Complete to Done only after");
+    expect(linkedRules).toContain("the owner moves Deliver + Complete to Done only after");
+    expect(linkedRules).toContain("If integration moves the ticket to Done first");
     expect(linkedRules).toContain("the change has landed");
   });
 
   test("passes one prompt to each stage worker", () => {
     expect(commonRules).toContain("bundled Commander defaults");
-    expect(commonRules).toContain("absolute bundled path");
-    expect(commonRules).toContain("a repository cannot override them");
-    expect(commonRules).toContain("Igniter-owned and pre-authorized read-only");
+    expect(commonRules).toContain("completely replaces the bundled Build, Review, and Deliver");
+    expect(commonRules).toContain("absolute configured path");
+    expect(commonRules).toContain("repository stage prompts named by absolute");
     expect(commonRules).not.toContain("src/commander/config.yaml");
     expect(commanderConfig.stages.build.prompt).toBe("stages/build.md");
     expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
@@ -81,9 +82,7 @@ describe("Commander delivery protocol", () => {
     ]) {
       expect(commonRules).toContain(command);
     }
-    expect(stageRules[0]).toContain("Do not operate Igniter or Linear; report only to the Commander.");
-    expect(stageRules[1]).toContain("Report only to the Commander.");
-    expect(stageRules[2]).toContain("Do not operate Igniter or Linear; report only to the Commander.");
+    expect(commonRules).toContain("Workers never run Igniter commands");
     for (const prompt of stageRules) {
       expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock)/);
     }
@@ -91,17 +90,20 @@ describe("Commander delivery protocol", () => {
 
   test("uses independent black-box acceptance instead of code review", () => {
     expect(stageRules[1]).toContain("This is black-box acceptance, not code review.");
-    expect(stageRules[1]).toContain("Do not inspect source files, git\nhistory, or git diff.");
-    expect(stageRules[1]).toContain("Report exactly one\nresult for every observable criterion.");
+    expect(stageRules[1]).toContain("Do not inspect source files, git history, or diffs.");
+    expect(stageRules[1]).toContain("Report one PASS or FAIL for every observable acceptance criterion.");
     expect(commonRules).toContain("There is no code audit by\ndefault.");
   });
 
   test("requires complete reports instead of trusting Herdr state", () => {
-    expect(stageRules[0]).toContain("BUILD_HANDOFF_COMPLETE");
-    expect(stageRules[0]).toContain("Do not start a\n  second code-review pass.");
+    expect(commonRules).toContain("BUILD_HANDOFF_COMPLETE");
+    expect(stageRules[0]).toContain("review the final diff once");
     expect(commonRules).toContain("one-pass code-review result");
-    expect(stageRules[1]).toContain("ACCEPTANCE_COMPLETE");
-    expect(stageRules[2]).toContain("DELIVERY_COMPLETE");
+    expect(commonRules).toContain("ACCEPTANCE_COMPLETE");
+    expect(commonRules).toContain("DELIVERY_COMPLETE");
+    for (const prompt of stageRules) {
+      expect(prompt).not.toMatch(/(?:BUILD_HANDOFF|ACCEPTANCE|DELIVERY)_COMPLETE/);
+    }
     expect(commonRules).toContain("A Herdr lifecycle state is not a result.");
     expect(commonRules).toContain("Never infer success from `done`");
   });
@@ -114,15 +116,13 @@ describe("Commander delivery protocol", () => {
     expect(stageRules[0]).toContain("`diffwalk inspect`");
     expect(stageRules[0]).toContain("`diffwalk check`");
     expect(stageRules[0]).toContain("artifact identity");
-    expect(stageRules[0]).toContain("Do not run\n`diffwalk publish`");
-    expect(stageRules[0]).toContain("never from this worker");
+    expect(stageRules[0]).toContain("Do not run `diffwalk publish`");
     expect(stageRules[0]).not.toContain("then run `diffwalk publish` and retain the printed link");
     expect(commonRules).toContain("It never publishes");
     expect(commonRules).toContain("one-time consent");
     expect(commonRules).toContain("`igniter start <ticket> --publish-review`");
     expect(stageRules[2]).not.toContain("diffwalk");
-    expect(stageRules[2]).toContain("Complete the repository's configured delivery");
-    expect(stageRules[2]).toContain("Do not stop\n  after preparing the merge, opening the pull request");
+    expect(stageRules[2]).toContain("Complete the configured landing procedure");
     expect(stageRules[2]).not.toContain("required delivery artifact");
   });
 
@@ -139,7 +139,7 @@ describe("Commander delivery protocol", () => {
 
   test("keeps Linear publication with the Commander", () => {
     expect(commonRules).toContain("call Linear directly or through MCP");
-    expect(stageRules[1]).toContain("Report only to the Commander.");
+    expect(commonRules).toContain("The only process allowed to move its Igniter and Linear state.");
   });
 
   test("never references the old stage protocol", () => {

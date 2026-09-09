@@ -18,6 +18,7 @@
 // igniter never judges: commands only carry out what Linear and the caller
 // say. Judgments belong to the Global Commander outside Igniter.
 
+import { isAbsolute } from "node:path";
 import {
   ensureAcceptanceCriteria,
   WorkspaceSinkError,
@@ -1476,8 +1477,7 @@ export interface WorkOrderInput {
   commanderConfig: CommanderConfig;
   /** A per-run model override from `igniter restart --builder` (the old `start --builder` flag is gone). */
   builderModel?: string;
-  /** Delivery document path relative to the repo root. Absent means the
-   *  Commander must search the repository for the document itself. */
+  /** Optional delivery document path relative to the repo root. */
   delivery?: string;
   /** Bundled Commander asset paths. Defaults to the install location
    *  derived from the running Igniter module, never the target repo. */
@@ -1502,7 +1502,7 @@ export function scratchBlock(input: WorkOrderInput): string {
     `- Acceptance: \`${scratch.reviewer}\` (harness \`${reviewerHarness}\`)`,
     `- Deliver: \`${scratch.deliverer}\` (harness \`${delivererHarness}\`)`,
     `- Builder fallback: harness \`${fallbackHarness}\`; scratch \`${scratch.builder}\``,
-    `Pre-authorized scope is the ticket worktree, bundled read-only assets, and your own scratch only. ` +
+    `Pre-authorized scope is the ticket worktree, configured read-only prompts, and your own scratch only. ` +
       `Do not invent generic permission flags; use the configured harness normally and inspect its actual dialogs. ` +
       `Home configs, credentials, system locations, remote hosts, and out-of-scope network always escalate to the owner. ` +
       `Reread the exact pane and revision immediately before answering any permission dialog; a changed dialog refuses the send.`,
@@ -1521,11 +1521,12 @@ export function buildWorkOrder(input: WorkOrderInput): string {
   const stageLines = (["build", "review", "deliver"] as const).map((stage) => {
     const stageConfig = input.commanderConfig.stages[stage];
     const agent = input.commanderConfig.agents[stageConfig.agent];
+    const prompt = isAbsolute(stageConfig.prompt) ? stageConfig.prompt : assets.prompts[stage];
     const model = stageConfig.agent === "builder" && input.builderModel
       ? input.builderModel
       : agent.model;
     const effort = agent.effort !== undefined ? `; effort \`${agent.effort}\`` : "";
-    return `- ${stageName[stage]}: prompt \`${assets.prompts[stage]}\`; agent \`${stageConfig.agent}\`; ` +
+    return `- ${stageName[stage]}: prompt \`${prompt}\`; agent \`${stageConfig.agent}\`; ` +
       `harness \`${agent.harness}\`; model \`${model}\`${effort}`;
   }).join("\n");
   const fallback = input.commanderConfig.agents.builder.fallback;
@@ -1536,11 +1537,8 @@ export function buildWorkOrder(input: WorkOrderInput): string {
       ? `Project settings: read \`${input.delivery}\` (relative to the repo root) as the delivery document. ` +
         `Do not search for another one.\n`
       : `No delivery document is configured in \`.igniter/config.yaml\`. ` +
-        `Search the repository for the document that describes how to run the project, ` +
-        `which checks to run, and how to accept ` +
-        `(any filename, any location, e.g. CONTRIBUTING.md, docs/DEVELOPING.md, a README section). ` +
-        `Follow the Project settings section of the Commander rules for what to do next ` +
-        `(write the path back / generate a draft), and name the document you used in the completion report.\n`;
+        `Use the configured stage prompts and repository instructions such as AGENTS.md; ` +
+        `do not invent another project-settings file.\n`;
   return (
     `You are the Commander for ticket ${input.identifier}: "${input.title}".\n` +
     `Issue: ${input.issueUrl} (for people; machine state comes from \`igniter state --json\`, never from Linear directly).\n` +

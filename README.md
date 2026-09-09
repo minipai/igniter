@@ -136,15 +136,27 @@ igniter start ENG-123
 ```
 
 `start` opens the configured Commander in the current terminal and starts the
-command service in the background when needed. The prompts load from Igniter's
-installation, so the same installation can serve your different projects.
+command service in the background when needed. Projects may replace all three
+stage prompts through the `stages` map in `.igniter/config.yaml`; otherwise the
+short bundled prompts apply.
+
+```yaml
+stages:
+  build: { prompt: .igniter/workflow/build.md, agent: builder }
+  review: { prompt: .igniter/workflow/review.md, agent: reviewer }
+  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }
+```
+
+An override is complete: all three entries and non-empty prompt files under
+the repository root are required.
 
 Use `igniter status` for a queue overview or `igniter status ENG-123 --json`
 for a ticket's current state. To supervise the service separately or inspect
 startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
 
 After acceptance passes, review the evidence and move the ticket from Review
-to Deliver to approve landing. Delivery follows `delivery.md`: it rebases the
+to Deliver to approve landing. This repository's Deliver prompt lives at
+`.igniter/workflow/deliver.md`: it rebases the
 feature branch onto remote `main`, pushes it, opens a pull request, and watches
 the required `Check` through GitHub's native auto-merge. A rebase that only
 changes the SHA keeps the approval, while a change needed to fix CI returns to
