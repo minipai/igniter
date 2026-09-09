@@ -41,6 +41,7 @@ import {
   describeState,
   incompleteStatusText,
   latestValidReceipt,
+  mergedDeliveryState,
   normalizeBareTodo,
   normalizeOwnerMove,
   statusOf,
@@ -300,7 +301,7 @@ async function resolveWorkspace(ctx: CommandContext, workspaceId: string): Promi
     throw new ProtocolError(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
   }
   // Pure derivation: no writes happen here, so a refusal costs nothing.
-  const state = deriveState(resolved, full);
+  const state = mergedDeliveryState(resolved, full) ?? deriveState(resolved, full);
   return { workspace, full, state, meta: { ...workspace.tokens }, snapshot };
 }
 
@@ -539,6 +540,12 @@ async function ticketStatusCommand(identifier: string, ctx: CommandContext): Pro
     if (bare) {
       state = bare;
     } else {
+      const merged = mergedDeliveryState(ctx.resolved, full);
+      if (merged) {
+        state = merged;
+        const data = describeState(full, meta, state);
+        return { ok: true, text: JSON.stringify(data, null, 2), data };
+      }
       const incomplete = incompleteStatusText(ctx.resolved, full);
       if (incomplete) return fail(incomplete);
       return fail((error as Error).message);
@@ -1356,7 +1363,7 @@ async function submitForTicket(ctx: CommandContext, identifier: string, payload:
     throw new ProtocolError(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
   const workspaceId = await requireTicketWorkspace(ctx.workspaces, full.identifier);
-  const state = deriveState(ctx.resolved, full);
+  const state = mergedDeliveryState(ctx.resolved, full) ?? deriveState(ctx.resolved, full);
   return submitMutation(depsOf(ctx), workspaceId, full, state, payload);
 }
 

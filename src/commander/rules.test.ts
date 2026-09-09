@@ -121,8 +121,8 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("one-time consent");
     expect(commonRules).toContain("`igniter start <ticket> --publish-review`");
     expect(stageRules[2]).not.toContain("diffwalk");
-    expect(stageRules[2]).toContain("Merge the rebased branch into the repository's local `main` branch");
-    expect(stageRules[2]).toContain("Do not stop after preparing the merge");
+    expect(stageRules[2]).toContain("Complete the repository's configured delivery");
+    expect(stageRules[2]).toContain("Do not stop\n  after preparing the merge, opening the pull request");
     expect(stageRules[2]).not.toContain("required delivery artifact");
   });
 

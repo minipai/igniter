@@ -33,8 +33,9 @@ Repository-specific engineering rules come from the target repository.
   or API without inspecting source code or diffs. It never modifies product
   code: every finding returns to the original Build agent for the fix,
   however small the correction looks.
-- **Deliver agent:** merges the accepted checkpoint into local `main` and
-  reports its lineage and remaining owner actions.
+- **Deliver agent:** completes the repository's configured delivery for the
+  accepted checkpoint and reports its landed target, lineage, and remaining
+  owner actions.
 - **Owner:** accepts the evidence, authorizes delivery, and confirms landing.
 
 Build, Acceptance, and Deliver each run as one stage worker
@@ -237,8 +238,8 @@ covers the required fields and ends with its completion marker.
   and unresolved concerns.
 - **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
   with expected, actual, evidence, and environment details.
-- **Deliver — `DELIVERY_COMPLETE`:** checkpoint, local `main` commit, commit
-  lineage, merge result, and remaining owner steps.
+- **Deliver — `DELIVERY_COMPLETE`:** checkpoint, landed target-branch commit,
+  commit lineage, merge result, and remaining owner steps.
 
 Validate the report against the checkpoint and the submit schema from
 `igniter status <ticket> --json`. The Commander converts the report to JSON and runs
@@ -312,22 +313,23 @@ The owner's move from Review + Complete to Deliver is the delivery approval.
 Run `igniter begin <ticket>`, create the configured Deliver agent, and pass it the
 accepted checkpoint plus repository landing instructions.
 
-The Deliver agent owns the landing: it rebases the feature branch onto the
-current local `main`, runs the repository's required integration checks, merges
-the result into local `main`, and reports both the approved checkpoint and the
-landed commit. A rebase that only changes the SHA never invalidates the
-approval and never needs re-acceptance; the Deliver submit records the two
-identities side by side and only requires that the landed commit already read
-back from local `main`. When landing needs a code change beyond the rebase,
-the agent stops reusing the old approval and returns the ticket to acceptance
-or the owner for a new decision, starting from a new Build submit.
+The Deliver agent owns the configured landing: it rebases the feature branch
+onto the current target branch, runs the repository's required integration
+checks, completes any required pull request and merge, and reports both the
+approved checkpoint and the landed commit. A rebase that only changes the SHA
+never invalidates the approval and never needs re-acceptance; the Deliver
+submit records the two identities side by side and requires that the landed
+commit read back from the configured target branch. When landing needs a code
+change beyond the rebase, the agent stops reusing the old approval and returns
+the ticket to acceptance or the owner for a new decision, starting from a new
+Build submit.
 
-Require the Deliver agent to merge the accepted change into the
-repository's local `main`; preparing a merge, rebasing only the feature branch,
-or returning commands for the owner is incomplete. Validate that local `main`
-contains the landed commit, its lineage, and remaining owner steps before
-submitting the Deliver report. Do not push or rewrite history unless the owner
-requested it or the repository instructions require it.
+Require the Deliver agent to finish the repository's delivery instructions;
+preparing a merge, opening a pull request without following its checks, or
+returning commands for the owner is incomplete. Validate that the configured
+target branch contains the landed commit, its lineage, and remaining owner
+steps before submitting the Deliver report. Do not deploy unless the owner
+requested it; push only when the repository instructions require it.
 
 This is a process trust boundary, not a proof: the program checks that a valid
 Review PASS receipt binds the approved checkpoint, that the owner moved the
@@ -335,9 +337,10 @@ ticket to Deliver, and that the reported landed commit exists on local `main`.
 It performs no patch-id, replay, or content/tree-equivalence comparison and
 never claims it can detect unaccepted content on its own.
 
-After Deliver + Complete, wait for the owner to confirm the actual push or
-deployment by moving the ticket to Done. That move clears Progress and closes
-the run.
+After a repository-integrated pull request moves Linear to Done, the Deliver
+submit records the merged commit, clears Progress, and closes the run. Without
+that integration, Deliver + Complete waits for the owner to confirm the landing
+by moving the ticket to Done.
 
 ## Run limits
 

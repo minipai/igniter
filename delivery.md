@@ -20,12 +20,11 @@ delivery; do not stop after opening the pull request.
   specifies.
 - Open or update one pull request from `feature/<ticket>` to `main`. Put the
   ticket identifier in its title and describe the accepted user benefit.
-- The GitHub `Check` workflow is the authoritative integration check. The
-  `Auto Merge` workflow merges only a same-repository `feature/STA-N` pull
-  request whose successful Check head and base SHAs are still current.
-- Watch the pull request and both workflows until GitHub reports the pull
-  request merged. Inspect failed job logs instead of merely reporting a red
-  status.
+- The GitHub `Check` workflow is the authoritative integration check. Enable
+  GitHub's native rebase auto-merge with `gh pr merge --auto --rebase`; branch
+  protection keeps the merge blocked until Check succeeds.
+- Watch the pull request and Check until GitHub reports the pull request
+  merged. Inspect failed job logs instead of merely reporting a red status.
 - Retry a confirmed transient or infrastructure failure safely. If fixing a
   failure changes product code or the accepted commit contents, stop: the new
   checkpoint requires Build and Review before this pull request may merge.
@@ -36,22 +35,23 @@ delivery; do not stop after opening the pull request.
 
 - After merge, verify the remote `main` commit and record the pull request URL,
   successful Check run, accepted checkpoint, and landed commit.
-- Report the landed commit to the Global Commander. The Commander publishes
-  the delivery receipt, which moves Linear to `Deliver + Complete`.
-- The post-merge GitHub job waits for that receipt state, then moves the issue
-  to Done while retaining the Complete label. The Commander must read back
-  Done and run reconciliation so Igniter verifies the receipt and safely
-  removes the local worktree and Progress label.
-- If the post-merge Linear job fails, keep monitoring it and provide its run
-  URL and exact error. The job is idempotent and may be rerun after correcting
-  an external or configuration failure.
+- Report the landed commit to the Global Commander. From the clean project
+  workspace, the Commander fetches `origin/main` and fast-forwards local
+  `main` before publishing the delivery receipt.
+- Linear's GitHub integration normally moves the issue to Done when the pull
+  request merges. Done + In progress with the matching review-pass receipt is
+  still eligible for the Deliver submit: Igniter records the landed commit,
+  clears Progress, and closes the workspace.
+- If Linear does not move to Done, the Deliver submit lands in Deliver +
+  Complete and reports the remaining owner action. GitHub automation never
+  holds a Linear token or changes Linear state.
 
 Do not deploy unless the owner separately authorizes it.
 
 ## Report
 
 Return the accepted checkpoint, rebased checkpoint when different, pull request
-URL, Check and Auto Merge run results, landed commit on remote `main`, final
+URL, Check and native auto-merge results, landed commit on remote `main`, final
 lineage, working-tree state, remaining owner actions, and blockers or `none`.
 
 End the complete report with:

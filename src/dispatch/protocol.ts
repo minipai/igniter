@@ -174,6 +174,34 @@ export function bareTodoState(resolved: ResolvedDispatch, full: FullIssue): Auth
   return { status: "todo", progress: null, criteria: parseAcceptanceCriteria(full.description) };
 }
 
+/**
+ * Linear's GitHub integration can move a ticket to Done as soon as its pull
+ * request merges, before the Commander records the delivery receipt. Expose
+ * only that receipt-proven gap as an in-progress Deliver submit. Every other
+ * Done + Progress combination keeps failing closed through deriveState.
+ */
+export function mergedDeliveryState(
+  resolved: ResolvedDispatch,
+  full: FullIssue,
+): AuthoritativeState | null {
+  if (statusOf(resolved, full.state.id) !== "done") return null;
+  const progresses = (full.labels ?? [])
+    .map((label) => progressOf(resolved, label.id))
+    .filter((progress): progress is ProtocolProgress => progress !== undefined);
+  if (progresses.length !== 1) return null;
+  const latest = latestValidReceipt(full.comments);
+  const resumable =
+    (latest?.receipt.kind === "review-pass" && progresses[0] === "in_progress") ||
+    (latest?.receipt.kind === "deliver" &&
+      (progresses[0] === "in_progress" || progresses[0] === "complete"));
+  if (!resumable) return null;
+  return {
+    status: "deliver",
+    progress: "in_progress",
+    criteria: parseAcceptanceCriteria(full.description),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Receipts and submission identity
 // ---------------------------------------------------------------------------
@@ -1416,9 +1444,10 @@ export async function submitMutation(
   state: AuthoritativeState,
   raw: unknown,
 ): Promise<string> {
+  const mergedDone = statusOf(deps.resolved, full.state.id) === "done";
   const resumed = await resumeWrittenTransition(deps, workspaceId, full, state, raw);
   if (resumed) return resumed;
-  const repeated = completedSubmission(full, state, raw);
+  const repeated = mergedDone ? null : completedSubmission(full, state, raw);
   if (repeated) return repeated;
   if (state.progress !== "in_progress") {
     throw new ProtocolError(
@@ -1470,7 +1499,9 @@ export async function submitMutation(
       );
     }
     checkNotSuperseded(full, payload.checkpoint);
-    return submitDeliver(deps, workspaceId, full, payload);
+    return mergedDone
+      ? submitMergedDelivery(deps, workspaceId, full, payload)
+      : submitDeliver(deps, workspaceId, full, payload);
   }
   throw new ProtocolError(
     `refused: submit applies to Build, Review, or Deliver; ${full.identifier} is ${state.status}`,
@@ -1874,6 +1905,55 @@ async function submitDeliver(
   await moveStatus(deps, full, "deliver", "complete");
   await mirror(deps, workspaceId, { status: "deliver", progress: "complete" });
   const text = `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Deliver+Complete (receipt ${commentId})`;
+  await deps.decisions.record(full.identifier, text);
+  return text;
+}
+
+/** Record a delivery after Linear's GitHub integration already moved Done. */
+async function submitMergedDelivery(
+  deps: ProtocolDeps,
+  workspaceId: string,
+  full: FullIssue,
+  payload: DeliverSubmit,
+): Promise<string> {
+  if (!/^[0-9a-f]{7,64}$/.test(payload.landed)) {
+    throw new ProtocolError(
+      `refused: landed commit ${JSON.stringify(payload.landed)} is not a Git hash; submit the landed commit SHA, not a branch or revision expression`,
+    );
+  }
+  const target = deps.resolved.config.targetBranch;
+  try {
+    await deps.git.run(["merge-base", "--is-ancestor", payload.landed, target], deps.repoRoot);
+  } catch (error) {
+    throw new ProtocolError(
+      `refused: landed commit ${payload.landed} is not on local ${target} ` +
+        `(${(error as Error).message}); update the local target after the pull request merges, then submit its SHA as "landed"`,
+    );
+  }
+  const submission = submissionId({ ticket: full.identifier, ...payload });
+  const body = deliverReceiptBody(payload, submission);
+  const commentId = await publishReceipt(deps, full.id, "deliver", submission, body);
+  await verifyReceipt(deps, full.id, "deliver", submission);
+  await mirror(deps, workspaceId, {
+    status: "done",
+    progress: "in_progress",
+    checkpoint: payload.checkpoint,
+    landed: payload.landed,
+    receipt_id: commentId,
+    receipt_kind: "deliver",
+    submission,
+  });
+  const fresh = await readback(deps, full.id);
+  const receipt = findReceipt(fresh.comments, "deliver", submission);
+  if (!receipt) throw new ProtocolError(`Linear lost the delivery receipt mid-protocol; retry the command`);
+  const landed = await landDone(
+    deps,
+    fresh,
+    receipt,
+    `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Done`,
+  );
+  const text = landed.result?.text ??
+    `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Done`;
   await deps.decisions.record(full.identifier, text);
   return text;
 }
@@ -2546,6 +2626,7 @@ async function landDone(
   deps: ProtocolDeps,
   full: FullIssue,
   latest: FoundReceipt,
+  headline = "done: Deliver+Complete → Done",
 ): Promise<OwnerMoveOutcome> {
   const { checkpoint, submission } = latest.receipt;
   // Done cleanup verifies the landed commit, not the approved checkpoint: a
@@ -2598,7 +2679,7 @@ async function landDone(
     await guardRecord(deps, full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
   }
   const text =
-    `done: Deliver+Complete → Done (delivery receipt ${submission} binds approved ${checkpoint} landed ${landed}); ` +
+    `${headline} (delivery receipt ${submission} binds approved ${checkpoint} landed ${landed}); ` +
     `${closeNote}; ${cleanupNote}`;
   return { result: { ok: true, text }, followUp: null, closeDue };
 }

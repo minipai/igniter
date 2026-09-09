@@ -74,14 +74,14 @@ the service responds to commands without polling Linear in the background.
 
 ### Install
 
-The first npm release is being prepared. Once published:
-
 ```bash
-bun add --global @minipai/igniter
+npm install --global @minipai/igniter
 ```
 
-The installed command is `igniter`. It runs in Bun and includes its Commander
-instructions and stage prompts.
+The package is published on
+[`npm`](https://www.npmjs.com/package/@minipai/igniter). The installed command
+is `igniter`; it runs in Bun and includes its Commander instructions and stage
+prompts.
 
 ### Connect a project
 
@@ -146,11 +146,11 @@ startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
 After acceptance passes, review the evidence and move the ticket from Review
 to Deliver to approve landing. Delivery follows `delivery.md`: it rebases the
 feature branch onto remote `main`, pushes it, opens a pull request, and watches
-the `Check` and `Auto Merge` workflows through the final merge. A rebase that
-only changes the SHA keeps the approval, while a change needed to fix CI
-returns to Build and acceptance. After Igniter records the merged commit, the
-GitHub workflow moves the Linear issue to Done and the Commander reconciles
-the local workspace.
+the required `Check` through GitHub's native auto-merge. A rebase that only
+changes the SHA keeps the approval, while a change needed to fix CI returns to
+Build and acceptance. Linear's GitHub integration moves the issue to Done when
+the pull request merges; Igniter then records the merged commit and closes the
+local workspace.
 
 ## Development
 

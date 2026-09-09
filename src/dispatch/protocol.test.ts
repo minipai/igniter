@@ -821,6 +821,50 @@ describe("submit", () => {
     }
   });
 
+  test("deliver submit finishes a ticket Linear's GitHub integration already moved to Done", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      issueOf(h, "STA-1").stateId = DONE;
+      issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+      issueOf(h, "STA-1").comments.push({
+        id: "comment-pass",
+        body: `Agent acceptance: PASS\n\n${receiptBlock("review-pass", HEAD, "abc123abc123abc1")}\n`,
+        createdAt: "2026-09-04T00:00:00.000001Z",
+      });
+      seedLineage(h, "STA-1");
+
+      const status = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      expect(status.ok).toBe(true);
+      expect(status.data).toMatchObject({ status: "deliver", progress: "in_progress", next: ["submit", "block"] });
+
+      const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()));
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("→ Done");
+      expect(issueOf(h, "STA-1").stateId).toBe(DONE);
+      expect(issueOf(h, "STA-1").labelIds).toEqual([]);
+      expectYamlReceipt(issueOf(h, "STA-1").comments.at(-1)!.body, "deliver", HEAD);
+      expect(h.workspaces.workspaces.find((workspace) => workspace.label === "STA-1")?.closed).toBe(true);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("Done with Progress still refuses without a review-pass delivery handoff", async () => {
+    const h = await harness();
+    try {
+      await claim(h, "STA-1");
+      issueOf(h, "STA-1").stateId = DONE;
+      issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
+      const status = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      expect(status.ok).toBe(false);
+      expect(status.text).toContain("Done but still carries Progress");
+      expect(issueOf(h, "STA-1").comments).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
   test("deliver submit accepts a rebased HEAD when the approval still binds", async () => {
     const h = await harness();
     try {

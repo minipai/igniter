@@ -100,7 +100,8 @@ export function buildCommanderWorkOrder(input: CommanderWorkOrderInput): string 
     `Read the bundled Global Commander instructions at ${input.globalMd} and run exactly what they say. ` +
     `Do not read stage-worker prompts; each worker reads its own.\n` +
     `\n` +
-    `Project workspace: ${input.repoRoot} (deliveries land on local \`${input.targetBranch}\`).\n` +
+    `Project workspace: ${input.repoRoot}. Delivery target branch: \`${input.targetBranch}\`; ` +
+    `follow the configured project delivery instructions.\n` +
     `Ticket workspaces keep only the worktree, metadata, scratch, and the current stage worker.\n` +
     `Your tools are the ticket-targeted commands from the project workspace: ` +
     `\`igniter status --json\`, \`igniter status <ticket> --json\`, \`igniter begin <ticket>\`, ` +
@@ -135,7 +136,7 @@ export function buildCommanderLaunchPrompt(input: CommanderWorkOrderInput): stri
   const context =
     `Run the Igniter Global Commander workflow documented at ${input.globalMd}.\n` +
     `Project: ${input.project} (team ${input.team}). Workspace: ${input.repoRoot}. ` +
-    `Deliveries land on local \`${input.targetBranch}\`.\n`;
+    `Delivery target branch: \`${input.targetBranch}\`; follow the configured project delivery instructions.\n`;
   if (input.assignment) {
     return (
       context +

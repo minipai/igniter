@@ -131,6 +131,8 @@ describe("singleton lifecycle", () => {
       ]);
       expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
       expect(launch.command.at(-1)).toContain(commanderAssetPaths().global);
+      expect(launch.command.at(-1)).toContain("follow the configured project delivery instructions");
+      expect(launch.command.at(-1)).not.toContain("deliveries land on local");
       expect(launch.command.at(-1)).not.toContain("Do not read any other prompt");
       expect(launch.command.at(-1)).not.toContain("You are the Global Commander");
       expect(h.workspaces.calls).toEqual([]);
