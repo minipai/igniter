@@ -150,14 +150,15 @@ const HOME_CONFIG_RE = /(^|\/)\.(ssh|aws|gnupg|pki|docker|config|local|cache|npm
 const CRED_FILE_RE = /(\.pem$|\.p12$|\.pfx$|\.key$|credentials\.json$|^id_rsa$|^id_ed25519$)/i;
 const SYSTEM_RE = /^(\/etc|\/usr|\/bin|\/sbin|\/System|\/Library|\/private|\/var|\/boot|\/proc|\/sys|\/dev)(\/|$)/;
 
-function macAlias(path: string): string {
+export function platformPath(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "darwin") return path;
   if (path === "/var" || path.startsWith("/var/")) return `/private${path}`;
   if (path === "/tmp" || path.startsWith("/tmp")) return path.replace(/^\/tmp/, "/private/tmp");
   return path;
 }
 
 function lexicalCanonical(raw: string): string {
-  return macAlias(resolve(raw));
+  return platformPath(resolve(raw));
 }
 
 function defaultResolveLink(path: string): string {
@@ -185,7 +186,7 @@ function existingTarget(lexical: string): string {
   }
   let target: string;
   try {
-    target = macAlias(realpathSync(cursor));
+    target = platformPath(realpathSync(cursor));
   } catch {
     return lexical;
   }

@@ -16,6 +16,7 @@ import {
   dialogStillCurrent,
   ensureScratchDir,
   formatApprovalLog,
+  platformPath,
   removeScratchDir,
   repairScratchDir,
   scratchFor,
@@ -36,6 +37,13 @@ function scopeIn(dir: string): { scope: WorkerScope; worktree: string; scratch: 
 }
 
 describe("scratch layout", () => {
+  test("only macOS maps its tmp and var aliases through private", () => {
+    expect(platformPath("/tmp/igniter", "darwin")).toBe("/private/tmp/igniter");
+    expect(platformPath("/var/tmp/igniter", "darwin")).toBe("/private/var/tmp/igniter");
+    expect(platformPath("/tmp/igniter", "linux")).toBe("/tmp/igniter");
+    expect(platformPath("/var/tmp/igniter", "linux")).toBe("/var/tmp/igniter");
+  });
+
   test("one deterministic dir per worker under repo-local runtime data", () => {
     const root = mkdtempSync(join(tmpdir(), "igniter-scope-"));
     expect(scratchRootFor(root, "STA-189")).toBe(
