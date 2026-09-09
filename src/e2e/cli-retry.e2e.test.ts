@@ -46,7 +46,7 @@ function receiptCount(e2e: E2E, identifier: string): number {
 
 async function beginAndCommit(e2e: E2E, identifier: string): Promise<string> {
   addTodo(e2e, identifier);
-  expectOk(await e2e.cli(["begin", identifier]));
+  expectOk(await e2e.startStage(identifier));
   return commitWorktreeFile(e2e.repoDir, identifier, "work.txt", `${identifier}\n`, `${identifier} work`);
 }
 
@@ -89,7 +89,7 @@ describe("e2e safe submit retries", () => {
       const build = JSON.stringify(buildPayload(head));
       expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: build }));
       await ownerHandoff(e2e, "STA-220");
-      expectOk(await e2e.cli(["begin", "STA-220"]));
+      expectOk(await e2e.startStage("STA-220"));
 
       const oldBuild = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: build }));
       expect(oldBuild.stdout).toContain("already submitted build");
@@ -99,7 +99,7 @@ describe("e2e safe submit retries", () => {
 
       const failedReview = JSON.stringify(commandEvidencePayload(head, "fail"));
       expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedReview }));
-      expectOk(await e2e.cli(["begin", "STA-220"]));
+      expectOk(await e2e.startStage("STA-220"));
       const oldFail = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedReview }));
       expect(oldFail.stdout).toContain("already submitted review FAIL");
       issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-220")!;
@@ -170,7 +170,7 @@ describe("e2e safe submit retries", () => {
         stdin: JSON.stringify(buildPayload(head)),
       }));
       await ownerHandoff(e2e, "STA-24");
-      expectOk(await e2e.cli(["begin", "STA-24"]));
+      expectOk(await e2e.startStage("STA-24"));
       const payload = JSON.stringify(reviewPayload(head, "pass", "https://example.com/e2e/retry-proof"));
       e2e.client.failNextReads("listAttachments", 1, 502, "attachment readback unavailable");
       expectFail(
@@ -213,15 +213,15 @@ describe("e2e safe submit retries", () => {
   });
 });
 
-describe("e2e reconcile follow-up retries", () => {
-  test("a failed post-transition workspace mirror is retained and converges on retry", async () => {
+describe("e2e separate Linear reconciliation and worker cleanup", () => {
+  test("reconcile ignores worker metadata failures and performs no worker follow-up", async () => {
     await withE2E(async (e2e) => {
       const head = await beginAndCommit(e2e, "STA-26");
       expectOk(await e2e.cli(["submit", "STA-26", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(head)),
       }));
       await ownerHandoff(e2e, "STA-26");
-      expectOk(await e2e.cli(["begin", "STA-26"]));
+      expectOk(await e2e.startStage("STA-26"));
       expectOk(await e2e.cli(["submit", "STA-26", "--input", "-"], {
         stdin: JSON.stringify(reviewPayload(head, "pass")),
       }));
@@ -229,40 +229,42 @@ describe("e2e reconcile follow-up retries", () => {
       ownerSetProgress(e2e.world, "STA-26", "Complete");
       e2e.workspaces.failNext("workspace.report_metadata");
 
-      expectFail(await e2e.cli(["reconcile", "STA-26"]), "workspace follow-up did not finish");
+      const workerCalls = e2e.workspaces.calls.length;
+      expectOk(await e2e.cli(["reconcile", "STA-26"]));
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-26")!;
       expect(issue.stateId).toBe("st-deliver");
       expect(issue.labelIds).toContain("label-pending");
       const retry = expectOk(await e2e.cli(["reconcile", "STA-26"]));
-      expect(retry.stdout).toContain("workspace mirror and wake-up completed on retry");
-      expect(e2e.workspaces.tokensFor("STA-26")).toMatchObject({ status: "deliver", progress: "pending" });
+      expect(retry.stdout).toContain("no owner transition to reconcile");
+      expect(e2e.workspaces.calls).toHaveLength(workerCalls);
       expect(receiptCount(e2e, "STA-26")).toBe(2);
       expect(e2e.world.issues.find((candidate) => candidate.identifier === "STA-26")?.attachments).toHaveLength(1);
     });
   });
 
-  test("a failed Done workspace close is retained and closes on retry", async () => {
+  test("Done reconcile leaves workers alone and explicit worker stop retries a failed close", async () => {
     await withE2E(async (e2e) => {
       const head = await beginAndCommit(e2e, "STA-29");
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(buildPayload(head)) }));
       await ownerHandoff(e2e, "STA-29");
-      expectOk(await e2e.cli(["begin", "STA-29"]));
+      expectOk(await e2e.startStage("STA-29"));
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }));
       ownerSetState(e2e.world, "STA-29", "Deliver");
       ownerSetProgress(e2e.world, "STA-29", "Complete");
       expectOk(await e2e.cli(["reconcile", "STA-29"]));
-      expectOk(await e2e.cli(["begin", "STA-29"]));
+      expectOk(await e2e.startStage("STA-29"));
       git(["merge", "feature/sta-29", "--no-ff", "-m", "land STA-29"], e2e.repoDir);
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head)) }));
       ownerSetState(e2e.world, "STA-29", "Done");
       ownerSetProgress(e2e.world, "STA-29", "Complete");
       e2e.workspaces.failNext("workspace.close");
 
-      expectFail(await e2e.cli(["reconcile", "STA-29"]), "workspace follow-up did not finish");
+      expectOk(await e2e.cli(["reconcile", "STA-29"]));
+      expectFail(await e2e.cli(["worker", "stop", "STA-29"]), "fake herdr exploded");
       expect(e2e.world.issues.find((issue) => issue.identifier === "STA-29")?.labelIds).not.toContain("label-complete");
       expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-29")?.closed).toBe(false);
-      const retry = expectOk(await e2e.cli(["reconcile", "STA-29"]));
-      expect(retry.stdout).toContain("workspace close completed on retry");
+      const retry = expectOk(await e2e.cli(["worker", "stop", "STA-29"]));
+      expect(retry.stdout).toContain("workers stopped");
       expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-29")?.closed).toBe(true);
     });
   });

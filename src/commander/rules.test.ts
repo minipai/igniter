@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { buildCommanderWorkOrder } from "../dispatch/commander-start.ts";
 
 const commonRules = await Bun.file(new URL("./rules.md", import.meta.url)).text();
 const commanderConfig = Bun.YAML.parse(
@@ -20,6 +21,18 @@ const stageRules = await Promise.all(
 const rules = [commonRules, ...stageRules].join("\n");
 
 describe("Commander delivery protocol", () => {
+  test.each([undefined, { identifier: "STA-1", title: "Build a feature" }])("startup work orders require worker delivery before begin: %j", (assignment) => {
+    const order = buildCommanderWorkOrder({
+      project: "fixture", team: "STA", repoRoot: "/fixture", targetBranch: "main",
+      globalMd: "/fixture/global.md", commanderHarness: "codex", commanderModel: "test-model",
+      assignment,
+    });
+    expect(order).toContain("igniter worker start");
+    expect(order).toMatch(/confirm initial work-order delivery/);
+    expect(order).toContain("igniter approve <ticket> --receipt <id>");
+    expect(order).not.toMatch(/launch[^\n]*worker with `igniter begin/);
+  });
+
   test("the startup document loads complete Commander rules", async () => {
     const globalUrl = new URL("./global.md", import.meta.url);
     const global = await Bun.file(globalUrl).text();
@@ -28,7 +41,7 @@ describe("Commander delivery protocol", () => {
     const linkedRules = await Bun.file(new URL(rulesLink![1]!, globalUrl)).text();
     expect(linkedRules).toBe(commonRules);
     expect(global).toContain("Before any ticket action");
-    expect(linkedRules).toContain("the owner moves Deliver + Complete to Done only after");
+    expect(linkedRules).toContain("Deliver + Complete to Done only after");
     expect(linkedRules).toContain("If integration moves the ticket to Done first");
     expect(linkedRules).toContain("the change has landed");
   });
@@ -76,6 +89,8 @@ describe("Commander delivery protocol", () => {
       "`igniter status <ticket> --json`",
       "`igniter begin <ticket>`",
       "`igniter submit <ticket> --input -`",
+      "`igniter approve <ticket> --receipt <id>`",
+      "`igniter worker start <ticket>`",
       "`igniter block <ticket> --reason",
       "`igniter unblock <ticket>`",
       "`igniter reconcile <ticket>`",
@@ -85,6 +100,27 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Workers never run Igniter commands");
     for (const prompt of stageRules) {
       expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock)/);
+    }
+  });
+
+  test("separates worker delivery, Linear start, and explicit approval", async () => {
+    const global = await Bun.file(new URL("./global.md", import.meta.url)).text();
+    expect(commonRules).toContain("status -> worker start -> confirmed -> begin");
+    expect(commonRules).toContain("owner approval -> approve -> worker start -> confirmed -> begin");
+    expect(commonRules).toContain("only validates and records the current stage start");
+    expect(commonRules).toContain("Worker commands may read ticket context but never write Linear");
+    expect(global).toContain("do not create or prompt another worker");
+    expect(global).toContain("retry only with the original receipt identity");
+    expect(global).toContain("explicitly stop workers for safe");
+    expect(commonRules).toContain("Ordinary sync, status,");
+    expect(commonRules).toContain("or a request to continue is not approval");
+    for (const text of [commonRules, global]) {
+      expect(text).not.toMatch(/igniter (?:pause|resume|restart|answer)\b/);
+      expect(text).not.toContain("begin <ticket>` launches");
+      expect(text).toContain("--receipt <id>");
+      for (const action of ["start", "send", "restart", "stop", "answer"]) {
+        expect(text).toContain(`igniter worker ${action} <ticket>`);
+      }
     }
   });
 

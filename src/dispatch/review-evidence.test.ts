@@ -41,7 +41,7 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),
@@ -77,7 +77,11 @@ function workspaceIdOf(h: Harness, identifier: string): string {
   return workspace.workspaceId;
 }
 
-function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+async function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+  if (argv[0] === "begin") {
+    const started = await runCommand(["worker", "start", identifier], h.ctx);
+    if (!started.ok) return started;
+  }
   return runCommand(argv, h.ctx, { workspaceId: workspaceIdOf(h, identifier), input });
 }
 
@@ -102,6 +106,7 @@ function buildPayload() {
 /** Reach Review+In progress, ready for a review submit: first Build, owner handoff, begin. */
 async function toReview(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
   expect(issueOf(h, identifier).stateId).toBe(BUILD);

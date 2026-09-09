@@ -215,7 +215,7 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),
@@ -255,19 +255,17 @@ describe("stage start", () => {
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
-      // The stall diagnosis is written out through the activity channel
-      // with project, ticket, role, stage, agent, and failure reason.
+      // The command returns project, ticket, role, stage, agent, and failure reason.
       const diagnosis = ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"];
       for (const part of diagnosis) {
         expect(out.text).toContain(part);
-        expect(h.lines.join("\n")).toContain(part);
       }
       // Protocol state is untouched: Linear keeps Todo+Pending.
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
-      expect(h.lines.join("\n")).toContain("stalled");
+      expect(h.lines).toEqual([]);
     } finally {
       h.stop();
     }
@@ -278,16 +276,15 @@ describe("stage start", () => {
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(false);
       // The STA-197 observation: the agent sits idle with an empty context.
       h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.agentStatus = "idle";
       // The nudge lands the prompt: the retry redelivers the byte-identical
-      // work order to the same worker and converges Linear without a second
-      // worker, work order, or receipt.
+      // work order to the same worker. Only the subsequent begin writes Linear.
       h.workspaces.promptMode = "consumed";
-      const retry = await runCommand(["begin", "STA-1"], h.ctx);
+      const retry = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(retry.ok).toBe(true);
-      expect(retry.text).toContain("work order redelivered");
+      expect(retry.text).toContain("work order confirmed");
       expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
       expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
       const inbox = h.workspaces.promptsFor("builder-sta-1");
@@ -295,6 +292,8 @@ describe("stage start", () => {
       // every send carries the byte-identical work order to the same worker.
       expect(inbox).toHaveLength(3);
       expect(new Set(inbox).size).toBe(1);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
@@ -302,12 +301,14 @@ describe("stage start", () => {
     }
   });
 
-  test("a consumed prompt moves Linear to Build+In progress with proof", async () => {
+  test("a consumed prompt confirms delivery before begin moves Linear", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       // The pane moved past the pre-send baseline: the prompt landed.
@@ -330,7 +331,7 @@ describe("in-progress recovery", () => {
     try {
       seedActive(h);
       h.workspaces.promptMode = "input-buffer";
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(out.ok).toBe(false);
       for (const part of ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"]) {
         expect(out.text).toContain(part);
@@ -346,9 +347,9 @@ describe("in-progress recovery", () => {
     const h = await harness();
     try {
       seedActive(h);
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("Linear kept");
+      expect(out.text).toContain("confirmed");
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);

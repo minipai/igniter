@@ -69,6 +69,21 @@ describe("cli --version", () => {
     expect(result.stderr).toContain("--version");
   });
 
+  test("usage separates Linear transitions from worker operations", async () => {
+    const result = await runCli([]);
+    expect(result.stderr).toContain("approve <ticket>");
+    for (const action of ["start", "send", "restart", "stop", "answer"]) {
+      expect(result.stderr).toContain(`worker ${action} <ticket>`);
+    }
+    expect(result.stderr).not.toMatch(/pause|resume|--builder|--to/);
+  });
+
+  test.each(["pause", "resume", "restart", "answer"])("removed top-level %s command is rejected", async (command) => {
+    const result = await runCli([command, "STA-1"], tmpdir());
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("usage: igniter");
+  });
+
   test("the removed Web UI dev command is rejected", async () => {
     const result = await runCli(["dev"]);
     expect(result.code).toBe(1);
@@ -136,13 +151,13 @@ describe("cli dispatch forwarding", () => {
   test("dispatch argv reaches the server verbatim", async () => {
     const fake = startFakeDispatch(() => ({ ok: true, text: "answered y for STA-1" }));
     try {
-      const result = await runCliFull(["answer", "STA-1", "y"], {
+      const result = await runCliFull(["worker", "answer", "STA-1", "y"], {
         cwd: repoPointingAt(fake.port),
         env: outsideWorkspaceEnv(),
       });
       expect(result.code).toBe(0);
       expect(result.stdout).toContain("answered y for STA-1");
-      expect(fake.seen).toEqual([{ argv: ["answer", "STA-1", "y"] }]);
+      expect(fake.seen).toEqual([{ argv: ["worker", "answer", "STA-1", "y"] }]);
     } finally {
       fake.stop();
     }
@@ -346,10 +361,12 @@ describe("cli command coverage", () => {
         ["block", "STA-1", "--reason", "waiting"],
         ["unblock", "STA-1"],
         ["reconcile", "STA-1"],
-        ["pause", "STA-1"],
-        ["resume", "STA-1"],
+        ["approve", "STA-1", "--receipt", "receipt-build-1"],
+        ["worker", "start", "STA-1", "--role", "build"],
+        ["worker", "send", "STA-1", "--role", "review", "check the result"],
+        ["worker", "stop", "STA-1", "--role", "deliver"],
         ["fail", "STA-1", "--reason", "wedged"],
-        ["restart", "STA-1", "--builder", "m"],
+        ["worker", "restart", "STA-1", "--model", "m"],
       ];
       for (const argv of cases) {
         const result = await runCliFull(argv, {

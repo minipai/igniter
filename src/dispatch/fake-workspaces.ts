@@ -1,5 +1,5 @@
 // In-memory fake of the Herdr side of dispatch: workspaces, agents, panes,
-// and metadata tokens. Tests drive building/pause/resume/fail/restart flows
+// and metadata tokens. Tests drive worker lifecycle flows
 // here with no daemon, no socket, and no real panes.
 
 import {
@@ -107,7 +107,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
     if (workspace) workspace.closed = true;
   }
 
-  async createTab(input: { workspaceId: string; cwd?: string }): Promise<{ tabId: string }> {
+  async createTab(input: { workspaceId: string; cwd?: string; title?: string }): Promise<{ tabId: string }> {
     this.calls.push({ method: "tab.create", params: { ...input } });
     this.failWhen("tab.create");
     const workspace = this.workspaces.find((w) => w.workspaceId === input.workspaceId && !w.closed);
@@ -140,6 +140,15 @@ export class FakeWorkspaces implements CommandWorkspaces {
       revision: null,
       inbox: [],
     });
+  }
+
+  async stopAgent(agentName: string): Promise<void> {
+    this.calls.push({ method: "agent.stop", params: { target: agentName } });
+    this.failWhen("agent.stop");
+    const agent = this.agents.find((a) => a.name === agentName);
+    if (!agent) return;
+    this.agents = this.agents.filter((a) => a.name !== agentName);
+    for (const workspace of this.workspaces) workspace.panes = workspace.panes.filter((p) => p !== agent.paneId);
   }
 
   async prompt(agentName: string, text: string): Promise<void> {

@@ -50,7 +50,7 @@ interface Harness {
 async function harness(maxRunning = 3): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -181,13 +181,18 @@ function wsIdOf(h: Harness, identifier: string): string {
   return workspace.workspaceId;
 }
 
-function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+async function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+  if (argv[0] === "begin") {
+    const started = await runCommand(["worker", "start", identifier], h.ctx);
+    if (!started.ok) return started;
+  }
   return runCommand(argv, h.ctx, { workspaceId: wsIdOf(h, identifier), input });
 }
 
 /** Claim through `start`, submit the first Build, and hand it to Review: the owner moves Build+Complete to Review and an explicit reconcile converges it. */
 async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
   expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
@@ -488,7 +493,7 @@ describe("mirror failures never block convergence", () => {
       expect(h.lines).toContainEqual(expect.stringContaining("STA-1 approved: Review+Complete → Deliver+Pending"));
       expect(h.lines).toContainEqual(expect.stringContaining("workspace mirror failed"));
       // The failed mirror left the stale tokens behind.
-      expect(h.workspaces.tokensFor("STA-1")).toMatchObject({ status: "review", progress: "complete" });
+      expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("status");
       // Herdr recovers: the next poll heals the mirror without touching Linear.
       h.workspaces.failMethods.clear();
       const at = h.lines.length;
@@ -625,6 +630,7 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       const realAdd = h.client.addComment.bind(h.client);
       let calls = 0;
@@ -653,6 +659,7 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       // The comment lands, then the write result is lost: the retry must
       // read it back and adopt it instead of publishing a second receipt.
@@ -687,6 +694,7 @@ describe("multi-receipt tickets read newest-first", () => {
   /** Build, hand to Review, fail the review, rebuild at a new checkpoint, pass the review. */
   async function toSecondPass(h: Harness, identifier: string): Promise<void> {
     addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+    expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
     expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
     expect((await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
     seedLineage(h, identifier);
@@ -888,6 +896,7 @@ describe("owner-move guards", () => {  async function outcomeOf(h: Harness, iden
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
       expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
       seedLineage(h, "STA-1");

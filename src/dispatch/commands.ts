@@ -2,15 +2,17 @@
 //
 // Both the web page and the CLI go through `POST /api/command` with
 // `{ argv, workspaceId?, input? }`, and land here. Each command takes argv,
-// does its Linear and Herdr work through the injected context, records its
+// does its permitted Linear or worker work through the injected context, records its
 // activity lines through the DecisionLog, and returns `{ ok, text, data? }`
 // — text for an agent, data for the web page.
 //
-// Two families share this door and never collide:
-// - Dispatch commands (`status`, `start`, `begin`, `submit`, `block`,
-//   `unblock`, `pause`, `resume`, `fail`, `restart`, `answer`, `reconcile`)
-//   name a ticket and run from the project workspace; only `serve` holds the
-//   Linear key. The Global Commander drives every ticket from outside.
+// Linear and worker commands share this door with explicit boundaries:
+// - `status`, `begin`, `submit`, `approve`, `block`, `unblock`, `fail`, and
+//   `reconcile` operate ticket protocol state without worker lifecycle effects.
+// - `worker start|send|restart|stop|answer` may read ticket context but never
+//   write Linear. `start` remains Global Commander lifecycle and assignment.
+// The Global Commander invokes them from the project workspace; only `serve`
+// holds the Linear key.
 // - Legacy workspace commands (`state`, plus bare `begin` with no ticket)
 //   name no ticket: the CLI forwards the Herdr workspace id, and the ticket
 //   comes from that workspace's igniter metadata only.
@@ -20,7 +22,7 @@
 
 import { isAbsolute } from "node:path";
 import {
-  ensureAcceptanceCriteria,
+  createClaimLock,
   WorkspaceSinkError,
   type ClaimedTicket,
   type ClaimSink,
@@ -35,7 +37,7 @@ import { commanderAssetPaths, type CommanderAssetPaths } from "../commander/asse
 import type { LinearClientLike } from "./linear.ts";
 import {
   bareTodoState,
-  beginMutation,
+  moveStatus,
   blockMutation,
   countBuildSlots,
   deriveState,
@@ -43,8 +45,8 @@ import {
   incompleteStatusText,
   latestValidReceipt,
   mergedDeliveryState,
-  normalizeBareTodo,
   normalizeOwnerMove,
+  normalizeBareTodo,
   statusOf,
   submitMutation,
   unblockMutation,
@@ -53,7 +55,6 @@ import {
   type ProtocolDeps,
   type ProtocolProgress,
   type ProtocolStatus,
-  type OwnerMoveFollowUp,
   type WorkspaceMeta,
 } from "./protocol.ts";
 import {
@@ -122,15 +123,10 @@ export interface CommandContext {
     consents: PublicationConsentStore;
     publisher: ReviewPublisher;
   };
-  /** Deferred Herdr work from an explicit reconcile, retained by the service. */
-  reconcilePending?: Map<string, {
-    followUp: OwnerMoveFollowUp | null;
-    closeDue: { workspaceId: string | null; checkpoint: string } | null;
-  }>;
 }
 
 const TOP_USAGE =
-  "usage: igniter <status [--json|<ticket> --json]|start [<ticket> [--publish-review]]|begin <ticket>|reconcile <ticket>|pause <ticket>|resume <ticket>|fail <ticket> --reason TEXT|restart <ticket> --builder MODEL|answer <ticket> y|n|submit <ticket> --input -|block <ticket> --reason TEXT|unblock <ticket>|state --json>";
+  "usage: igniter <status|start|begin|submit|approve|block|unblock|fail|reconcile|worker <start|send|restart|stop|answer>|state>";
 
 function usage(command: string): string {
   switch (command) {
@@ -140,16 +136,10 @@ function usage(command: string): string {
       return "usage: igniter start [<ticket> [--publish-review]]";
     case "reconcile":
       return "usage: igniter reconcile <ticket>";
-    case "pause":
-      return "usage: igniter pause <ticket>";
-    case "resume":
-      return "usage: igniter resume <ticket>";
+    case "approve":
+      return "usage: igniter approve <ticket> --receipt <id>";
     case "fail":
       return "usage: igniter fail <ticket> --reason TEXT";
-    case "restart":
-      return "usage: igniter restart <ticket> --builder <model>";
-    case "answer":
-      return "usage: igniter answer <ticket> y|n";
     case "state":
       return "usage: igniter state --json";
     case "begin":
@@ -187,10 +177,27 @@ function takeFlag(args: string[], name: string): { value?: string; rest: string[
   return { value, rest };
 }
 
-const DISPATCH_COMMANDS = new Set(["status", "start", "begin", "reconcile", "pause", "resume", "fail", "restart", "answer", "submit", "block", "unblock"]);
+const DISPATCH_COMMANDS = new Set(["status", "start", "begin", "reconcile", "fail", "submit", "approve", "worker", "block", "unblock"]);
 const WORKSPACE_COMMANDS = new Set(["state"]);
 
+// All callers, including in-process clients, share the same mutation lock.
+// The service owns one Linear client; locks never depend on a transient ctx.
+const commandLocks = new WeakMap<LinearClientLike, ReturnType<typeof createClaimLock>>();
+
 export function runCommand(
+  argv: string[],
+  ctx: CommandContext,
+  options: CommandCallOptions = {},
+): Promise<CommandResult> {
+  let lock = commandLocks.get(ctx.client);
+  if (!lock) {
+    lock = createClaimLock();
+    commandLocks.set(ctx.client, lock);
+  }
+  return lock(() => dispatchCommand(argv, ctx, options));
+}
+
+function dispatchCommand(
   argv: string[],
   ctx: CommandContext,
   options: CommandCallOptions = {},
@@ -207,16 +214,12 @@ export function runCommand(
         return beginCommand(args, ctx, options.workspaceId);
       case "reconcile":
         return reconcileCommand(args, ctx);
-      case "pause":
-        return pauseCommand(args, ctx);
-      case "resume":
-        return resumeCommand(args, ctx);
       case "fail":
         return failCommand(args, ctx);
-      case "restart":
-        return restartCommand(args, ctx);
-      case "answer":
-        return answerCommand(args, ctx);
+      case "worker":
+        return import("./worker-commands.ts").then(({ workerCommand }) => workerCommand(args, ctx));
+      case "approve":
+        return approveCommand(args, ctx);
       case "submit":
         return submitCommand(args, ctx, options.workspaceId, options.input);
       case "block":
@@ -241,6 +244,7 @@ export function runCommand(
 
 function depsOf(ctx: CommandContext): ProtocolDeps & { sink: ClaimSink; host: string } {
   return {
+    linearOnly: true,
     client: ctx.client,
     resolved: ctx.resolved,
     workspaces: ctx.workspaces,
@@ -336,7 +340,6 @@ export interface StatusTicketData {
   commander: string;
   /** Current stage worker (`builder|reviewer|deliverer-<ticket>`) status, or missing. */
   worker: string;
-  paused: boolean;
   blocked: boolean;
   stalled: boolean;
   overBudget: boolean;
@@ -436,7 +439,6 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
       over: false,
       commander: agentStatus(issue.identifier),
       worker: workerStatus(issue.identifier, status),
-      paused: tk["paused"] === "1",
       blocked: progress === "blocked",
       stalled: tk["stalled"] === "1",
       overBudget: false,
@@ -466,7 +468,6 @@ async function statusCommand(args: string[], ctx: CommandContext): Promise<Comma
           hasWorkspace: t.hasWorkspace,
           stage: t.stage,
           worker: t.worker,
-          paused: t.paused,
           blocked: t.blocked,
         })),
         ...(herdrNote ? { herdrNote } : {}),
@@ -489,7 +490,6 @@ async function statusCommand(args: string[], ctx: CommandContext): Promise<Comma
       const checkpoint = ticket.checkpoint ? ` checkpoint ${ticket.checkpoint.slice(0, 12)}` : "";
       const receipt = ticket.receipt ? ` receipt ${ticket.receipt}` : "";
       const flags = [
-        ticket.paused ? "paused" : "",
         ticket.blocked ? "blocked" : "",
       ].filter(Boolean).join(" · ");
       const tail = flags ? ` · ${flags}` : "";
@@ -533,7 +533,7 @@ async function ticketStatusCommand(identifier: string, ctx: CommandContext): Pro
   } catch (error) {
     // A bare Todo is the one incomplete state this read reports instead of
     // refusing: the JSON names it and offers the actionable next step
-    // (`begin`), with no background dispatch reference. Incomplete active
+    // (`worker start`, then `begin`), with no background dispatch reference. Incomplete active
     // stages fail closed without writes: the text names the pair and points
     // at `reconcile`. Other tickets are unaffected — this command names
     // exactly one ticket.
@@ -582,26 +582,7 @@ async function reconcileCommand(args: string[], ctx: CommandContext): Promise<Co
     await ctx.decisions.record(full.identifier, `reconcile failed: not in project "${ctx.resolved.config.project}"`);
     return fail(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
-  const pending = ctx.reconcilePending?.get(full.identifier);
-  if (pending) {
-    try {
-      const finished = await retryReconcilePending(ctx, full, pending);
-      ctx.reconcilePending?.delete(full.identifier);
-      return { ok: true, text: `${full.identifier}: ${finished}` };
-    } catch (error) {
-      return fail(`${full.identifier}: workspace follow-up still pending — ${(error as Error).message}`);
-    }
-  }
-  const outcome = await normalizeOwnerMove(depsOf(ctx), full);
-  if (outcome.result) await ctx.decisions.record(full.identifier, outcome.result.text);
-  if (outcome.followUp || outcome.closeDue) {
-    ctx.reconcilePending?.set(full.identifier, {
-      followUp: outcome.followUp,
-      closeDue: outcome.closeDue,
-    });
-    const applied = outcome.result?.text ?? `${full.identifier} Linear state converged`;
-    return fail(`${applied}; workspace follow-up did not finish — inspect it, then run reconcile again`);
-  }
+  const outcome = await normalizeOwnerMove({ ...depsOf(ctx), linearOnly: true }, full);
   if (outcome.result) return outcome.result;
   const state = deriveState(ctx.resolved, full);
   return {
@@ -610,109 +591,9 @@ async function reconcileCommand(args: string[], ctx: CommandContext): Promise<Co
   };
 }
 
-async function retryReconcilePending(
-  ctx: CommandContext,
-  full: FullIssue,
-  pending: {
-    followUp: OwnerMoveFollowUp | null;
-    closeDue: { workspaceId: string | null; checkpoint: string } | null;
-  },
-): Promise<string> {
-  const state = deriveState(ctx.resolved, full);
-  if (pending.followUp) {
-    const due = pending.followUp;
-    if (state.status !== due.tokens["status"] || state.progress !== due.tokens["progress"]) {
-      throw new ProtocolError(`Linear moved to ${state.status}+${state.progress ?? "no progress"}; deferred mirror was not applied`);
-    }
-    const snapshot = await ctx.workspaces.snapshot();
-    const workspace = due.workspaceId
-      ? snapshot.workspaces.find((w) => w.workspaceId === due.workspaceId)
-      : workspaceForTicket(snapshot, full.identifier);
-    if (!workspace || workspace.tokens["ticket"] !== full.identifier) {
-      throw new Error(`no workspace for ${full.identifier}`);
-    }
-    await ctx.workspaces.reportMetadata(workspace.workspaceId, due.tokens);
-    const commander = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
-    if (commander) await ctx.workspaces.prompt(commander.name, due.wakeText);
-  }
-  if (pending.closeDue) {
-    if (state.status !== "done") {
-      throw new ProtocolError(`Linear moved to ${state.status}; deferred workspace close was not applied`);
-    }
-    const snapshot = await ctx.workspaces.snapshot();
-    const workspace = pending.closeDue.workspaceId
-      ? snapshot.workspaces.find((w) => w.workspaceId === pending.closeDue?.workspaceId)
-      : workspaceForTicket(snapshot, full.identifier);
-    if (workspace) await ctx.workspaces.close(workspace.workspaceId);
-  }
-  return pending.followUp && pending.closeDue
-    ? "workspace mirror, wake-up, and close completed on retry"
-    : pending.followUp
-      ? "workspace mirror and wake-up completed on retry"
-      : "workspace close completed on retry";
-}
-
 // ---------------------------------------------------------------------------
 // answer
 // ---------------------------------------------------------------------------
-
-async function answerCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const { client, resolved, decisions } = ctx;
-  if (args.length !== 2 || !args[0] || args[0].startsWith("--") || (args[1] !== "y" && args[1] !== "n")) {
-    return fail(usage("answer"));
-  }
-  const identifier = args[0] as string;
-  const key = args[1] as string;
-  const full = await client.fetchIssue(identifier);
-  if (!full) {
-    await decisions.record(identifier, `answer failed: ticket "${identifier}" was not found in Linear`);
-    return fail(`ticket "${identifier}" was not found in Linear`);
-  }
-  if (full.projectId !== resolved.projectId) {
-    await decisions.record(full.identifier, `answer failed: not in project "${resolved.config.project}"`);
-    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
-  }
-  let snapshot: WorkspaceSnapshot;
-  try {
-    snapshot = await ctx.workspaces.snapshot();
-  } catch (error) {
-    await decisions.record(full.identifier, "answer failed: herdr unreachable");
-    return fail(`herdr unreachable: ${(error as Error).message}`);
-  }
-  const workspace = findWorkspace(snapshot, full.identifier);
-  if (!workspace) {
-    await decisions.record(full.identifier, "answer failed: no workspace");
-    return fail(`no workspace for ${full.identifier}`);
-  }
-  let status: ProtocolStatus;
-  try {
-    status = deriveState(resolved, full as FullIssue).status;
-  } catch (error) {
-    return refuse(ctx, full.identifier, error);
-  }
-  const stage = status === "review" ? "review" : status === "deliver" ? "deliver" : status === "build" ? "build" : null;
-  const workerName = stage
-    ? stageWorkerName(stage, full.identifier)
-    : snapshot.agents.find((a) => a.name === commanderName(full.identifier))?.name ?? null;
-  const workerRow = workerName ? snapshot.agents.find((a) => a.name === workerName) : undefined;
-  if (!workerRow) {
-    await decisions.record(full.identifier, "answer failed: no live stage worker");
-    return fail(`no live stage worker for ${full.identifier}`);
-  }
-  const harness = stage
-    ? ctx.resolved.config.commander.agents[stage === "build" ? "builder" : stage === "review" ? "reviewer" : "deliverer"].harness
-    : ctx.resolved.config.commander.agents.commander.harness;
-  try {
-    await ctx.workspaces.sendKeys(workerRow.paneId, answerKeysFor(harness, key));
-  } catch (error) {
-    await decisions.record(full.identifier, `answer failed: ${(error as Error).message}`);
-    return fail(`answer failed: ${(error as Error).message}`);
-  }
-  const verdict = key === "y" ? "allowed once" : "denied";
-  const sent = answerKeysFor(harness, key).join("+");
-  await decisions.record(full.identifier, `answered ${key} (${verdict}, sent ${sent})`);
-  return { ok: true, text: `answered ${key} for ${full.identifier} (${verdict}, sent ${sent}); worker pane received the key` };
-}
 
 // ---------------------------------------------------------------------------
 // start
@@ -736,7 +617,8 @@ export function answerKeysFor(kind: string | undefined, key: string): string[] {
  * that same singleton and assigns STA-X to it immediately. Repeated calls,
  * and calls for different tickets, always reuse the one Commander: never
  * `commander-<ticket>`. `start` is Commander lifecycle and assignment; the
- * Commander itself launches stage workers with ticket-targeted `begin`.
+ * Commander launches workers with `worker start`, confirms delivery, and
+ * records each stage start separately with ticket-targeted `begin`.
  */
 async function startCommand(
   args: string[],
@@ -784,14 +666,14 @@ async function startCommand(
       repository: ctx.repoRoot,
       ...(ctx.now ? { now: ctx.now } : {}),
     });
-    // Stamp a live workspace at once; `begin` stamps the workspace it
+    // Stamp a live workspace at once; `worker start` stamps the workspace it
     // ensures, so a grant before any workspace still lands on submit.
     try {
       const snapshot = await ctx.workspaces.snapshot();
       const open = snapshot.workspaces.find((w) => w.tokens["ticket"] === assignment.identifier);
       if (open) await ctx.workspaces.reportMetadata(open.workspaceId, stampPublicationTokens(consent));
     } catch {
-      // Stamping is best-effort here: `begin` stamps before submit.
+      // Stamping is best-effort here: `worker start` stamps before submit.
     }
     await decisions.record(
       assignment.identifier,
@@ -844,10 +726,10 @@ async function startCommand(
 }
 
 /**
- * `igniter begin STA-X` launches or recovers the ticket's current stage
- * worker, derived from Linear state (Todo/Build to Build, Review to
- * Acceptance, Deliver to Deliver). The Commander runs this itself; `start`
- * never launches workers, so the two never recurse. The legacy bare
+ * `igniter begin STA-X` validates and records the ticket's current stage
+ * start, derived from Linear state. It never prepares worktrees, launches
+ * workers, or sends prompts; the Commander confirms `worker start` first.
+ * The legacy bare
  * `begin` inside a ticket workspace keeps the Pending to In progress
  * transition for compatibility.
  */
@@ -869,172 +751,62 @@ async function beginCommand(
     return { ok: false, text: error instanceof Error ? error.message : String(error) };
   }
   try {
-    await beginMutation(depsOf(ctx), resolved.workspace.workspaceId, resolved.full, resolved.state);
-    return { ok: true, text: `began ${resolved.full.identifier}: ${resolved.state.status}+in_progress` };
+    return await beginTicket(ctx, resolved.full.identifier);
   } catch (error) {
     return refuse(ctx, resolved.full.identifier, error);
   }
 }
 
 async function beginTicket(ctx: CommandContext, identifier: string): Promise<CommandResult> {
-  const { client, resolved, decisions } = ctx;
-  let full = (await client.fetchIssue(identifier)) as FullIssue | null;
-  if (!full) {
-    await decisions.record(identifier, `begin failed: ticket "${identifier}" was not found in Linear`);
-    return fail(`ticket "${identifier}" was not found in Linear`);
-  }
-  if (full.projectId !== resolved.projectId) {
-    await decisions.record(full.identifier, `begin failed: not in project "${resolved.config.project}"`);
-    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
-  }
-  if (full.state.type === "completed" || full.state.type === "canceled") {
-    await decisions.record(full.identifier, `begin refused: ticket is ${full.state.name}`);
-    return fail(`begin refused: ticket is ${full.state.name}`);
-  }
-
-  const status = statusOf(resolved, full.state.id);
-  if (status !== "todo" && status !== "build" && status !== "review" && status !== "deliver") {
-    await decisions.record(full.identifier, `begin refused: ticket is ${full.state.name}; begin only launches Todo/Build/Review/Deliver Pending stages`);
-    return fail(`begin refused: ticket is ${full.state.name}; begin only launches Todo/Build/Review/Deliver Pending stages`);
-  }
-  let state;
   try {
-    state = deriveState(resolved, full);
-  } catch (error) {
-    // A bare Todo (no Progress label) is the one incomplete state
-    // ticket-targeted begin normalizes itself: criteria first, then Pending
-    // through the shared claim/serialization boundary, then the normal Todo
-    // claim below. Unknown or conflicting Progress combinations and
-    // incomplete active states keep failing closed before any workspace or
-    // worker exists.
-    const bare = bareTodoState(resolved, full);
-    if (!bare) {
-      const incomplete = incompleteStatusText(resolved, full);
-      if (incomplete) return refuse(ctx, full.identifier, new ProtocolError(incomplete));
-      return refuse(ctx, full.identifier, error);
+    let full = await ticketIssue(ctx, identifier);
+    const deps = depsOf(ctx);
+    const bare = bareTodoState(ctx.resolved, full);
+    const state = bare ?? deriveState(ctx.resolved, full);
+    if (state.progress === "in_progress" && state.status !== "todo") {
+      return { ok: true, text: `already began ${full.identifier}: ${state.status}+in_progress` };
     }
-    if (!(await ensureAcceptanceCriteria(client, resolved, full, decisions))) {
-      return fail(`ticket "${full.identifier}" has no acceptance-criteria checklist and was not claimed; a comment was left on the issue`);
+    if (!["todo", "build", "review", "deliver"].includes(state.status) || (!bare && state.progress !== "pending")) {
+      throw new ProtocolError(`begin needs Todo, Build, Review, or Deliver + Pending; ${state.status}+${state.progress}`);
     }
-    try {
-      full = await normalizeBareTodo(depsOf(ctx), full);
-    } catch (error2) {
-      return refuse(ctx, full.identifier, error2);
+    if (state.criteria.length === 0) throw new ProtocolError("begin requires acceptance criteria");
+    if (state.status === "todo") {
+      if (await countBuildSlots(ctx.client, ctx.resolved) >= ctx.resolved.config.maxRunning) {
+        throw new ProtocolError(`at max_running (${ctx.resolved.config.maxRunning})`);
+      }
     }
-    await decisions.record(full.identifier, `normalized: Todo → Todo+${resolved.config.progress.pending}`);
-    state = deriveState(resolved, full);
+    if (bare) full = await normalizeBareTodo(deps, full);
+    const target = state.status === "todo" ? "build" : state.status;
+    const { recordStageStart } = await import("./protocol.ts");
+    full = await recordStageStart(deps, full, target);
+    await moveStatus(deps, full, target, "in_progress");
+    await ctx.decisions.record(full.identifier, `begin: ${state.status}+pending → ${target}+in_progress`);
+    return { ok: true, text: `began ${full.identifier}: ${target}+in_progress` };
+  } catch (error) { return refuse(ctx, identifier, error); }
+}
+
+async function ticketIssue(ctx: CommandContext, identifier: string): Promise<FullIssue> {
+  const full = await ctx.client.fetchIssue(identifier.toUpperCase()) as FullIssue | null;
+  if (!full) throw new ProtocolError(`ticket "${identifier}" was not found in Linear`);
+  if (full.projectId !== ctx.resolved.projectId) throw new ProtocolError(`ticket "${identifier}" is not in project "${ctx.resolved.config.project}"`);
+  return full;
+}
+
+async function approveCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
+  const receipt = takeFlag(args, "receipt");
+  if (receipt.rest.length !== 1 || !receipt.rest[0] || receipt.rest[0].startsWith("-") || !receipt.value?.trim()) {
+    return fail(`${usage("approve")}; bind the receipt.id from status so a stale retry cannot approve another stage`);
   }
-  if (state.status === "todo") {
-    if (!(await ensureAcceptanceCriteria(client, resolved, full, decisions))) {
-      return fail(`ticket "${full.identifier}" has no acceptance-criteria checklist and was not claimed; a comment was left on the issue`);
-    }
-    if (state.progress !== "pending") {
-      return refuse(ctx, full.identifier, new ProtocolError(
-        `refused: begin needs Todo+Pending; ${full.identifier} is ${state.status}+${state.progress ?? "no progress"}`,
-      ));
-    }
-    const used = await countBuildSlots(client, resolved);
-    // A half-written Todo claim reuses its workspace and never counts twice,
-    // but a fresh claim still needs a free Build slot.
-    let needsSlot = true;
-    try {
-      const snapshot = await ctx.workspaces.snapshot();
-      const open = findWorkspace(snapshot, full.identifier);
-      if (open && open.tokens["ticket"] === full.identifier) needsSlot = false;
-    } catch {
-      needsSlot = true;
-    }
-    if (needsSlot && used >= resolved.config.maxRunning) {
-      await decisions.record(full.identifier, `begin refused: at max_running (${resolved.config.maxRunning})`);
-      return fail(`at max_running (${resolved.config.maxRunning})`);
-    }
-  }
-  const { startStageTicket } = await import("./stage-start.ts");
-  const out = await startStageTicket(
-    {
-      client,
-      resolved,
-      workspaces: ctx.workspaces,
-      decisions,
-      git: ctx.git,
-      repoRoot: ctx.repoRoot,
-      promptDelivery: ctx.promptDelivery,
-      ...(ctx.publication ? { publication: { consents: ctx.publication.consents } } : {}),
-    },
-    full,
-    state,
-  );
-  if (!out.ok) {
-    if (!out.text.includes("already running") && !out.text.includes("begin refused")) {
-      const diagnosis = out.text.startsWith("begin failed: ") ? out.text : `begin failed: ${out.text}`;
-      await decisions.record(full.identifier, diagnosis);
-    } else if (out.text.includes("already running")) {
-      await decisions.record(full.identifier, "begin refused: already running");
-    }
-    return fail(out.text);
-  }
-  return { ok: true, text: out.text };
+  try {
+    const { approveTicket } = await import("./approval.ts");
+    return await approveTicket(depsOf(ctx), await ticketIssue(ctx, receipt.rest[0]), receipt.value);
+  } catch (error) { return refuse(ctx, receipt.rest[0], error); }
 }
 
 // ---------------------------------------------------------------------------
-// pause
+// legacy workspace identity
 // ---------------------------------------------------------------------------
 
-export const PAUSE_PROMPT =
-  "igniter: the owner paused this ticket. Finish the current tool call, do not start the next step, and wait.";
-
-async function pauseCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const { client, resolved, decisions } = ctx;
-  if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("pause"));
-  const identifier = args[0] as string;
-  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
-  if (!full) {
-    await decisions.record(identifier, `pause failed: ticket "${identifier}" was not found in Linear`);
-    return fail(`ticket "${identifier}" was not found in Linear`);
-  }
-  if (full.projectId !== resolved.projectId) {
-    await decisions.record(full.identifier, `pause failed: not in project "${resolved.config.project}"`);
-    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
-  }
-  let snapshot: WorkspaceSnapshot;
-  try {
-    snapshot = await ctx.workspaces.snapshot();
-  } catch (error) {
-    await decisions.record(full.identifier, `pause failed: herdr unreachable`);
-    return fail(`herdr unreachable: ${(error as Error).message}`);
-  }
-  const workspace = findWorkspace(snapshot, full.identifier);
-  if (!workspace) {
-    await decisions.record(full.identifier, "pause failed: no workspace");
-    return fail(`no workspace for ${full.identifier}`);
-  }
-  const deps = depsOf(ctx);
-  try {
-    // Pause shares the block transition (status kept, Progress Blocked,
-    // Build slot freed) and adds the paused token on top.
-    const state = deriveState(resolved, full);
-    if (state.progress !== "blocked") {
-      await blockMutation(deps, workspace.workspaceId, full, state, "owner pause");
-    }
-    await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: "1" });
-  } catch (error) {
-    return refuse(ctx, full.identifier, error);
-  }
-  await decisions.record(full.identifier, "paused by command");
-  const worker = stageWorkerForTicket(snapshot, full.identifier)
-    ?? snapshot.agents.find((a) => a.name === commanderName(full.identifier))?.name ?? null;
-  if (!worker) {
-    return { ok: true, text: `paused ${full.identifier} (no stage worker; paused=1 recorded)` };
-  }
-  try {
-    await ctx.workspaces.prompt(worker, PAUSE_PROMPT);
-  } catch (error) {
-    return { ok: true, text: `paused ${full.identifier}; worker prompt failed: ${(error as Error).message}` };
-  }
-  return { ok: true, text: `paused ${full.identifier}; worker prompted to stop` };
-}
-
-/** The live stage worker for a ticket, if any: builder/reviewer/deliverer-<ticket>. */
 export function stageWorkerForTicket(snapshot: WorkspaceSnapshot, identifier: string): string | null {
   const lowered = identifier.toLowerCase();
   const found = snapshot.agents.find((a) =>
@@ -1044,15 +816,13 @@ export function stageWorkerForTicket(snapshot: WorkspaceSnapshot, identifier: st
 }
 
 // ---------------------------------------------------------------------------
-// resume
+// legacy Commander recovery
 // ---------------------------------------------------------------------------
 
 /**
  * The slice of dispatch context the recovery path needs: Herdr,
- * decisions, the repo root, and validated dispatch. `igniter resume` clears
- * paused/blocked state without starting agents; the Review wake-up rebuild
- * path reuses the same scope. Stage workers always start through
- * `igniter begin <ticket>` (the Commander runs it itself).
+ * decisions, the repo root, and validated dispatch. Stage workers start
+ * through `igniter worker start <ticket>`.
  */
 export interface RecoveryScope {
   workspaces: CommandWorkspaces;
@@ -1106,102 +876,6 @@ export async function startCommander(
   return name;
 }
 
-async function resumeCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const { client, resolved, decisions } = ctx;
-  if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("resume"));
-  const identifier = args[0] as string;
-  const full = (await client.fetchIssue(identifier)) as FullIssue | null;
-  if (!full) {
-    await decisions.record(identifier, `resume failed: ticket "${identifier}" was not found in Linear`);
-    return fail(`ticket "${identifier}" was not found in Linear`);
-  }
-  if (full.projectId !== resolved.projectId) {
-    await decisions.record(full.identifier, `resume failed: not in project "${resolved.config.project}"`);
-    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
-  }
-  let snapshot: WorkspaceSnapshot;
-  try {
-    snapshot = await ctx.workspaces.snapshot();
-  } catch (error) {
-    await decisions.record(full.identifier, "resume failed: herdr unreachable");
-    return fail(`herdr unreachable: ${(error as Error).message}`);
-  }
-  const workspace = findWorkspace(snapshot, full.identifier);
-  if (!workspace) {
-    await decisions.record(full.identifier, "resume failed: no workspace");
-    return fail(`no workspace for ${full.identifier}; use \`igniter begin ${full.identifier}\``);
-  }
-  const paused = workspace.tokens["paused"] === "1";
-  let state;
-  try {
-    state = deriveState(resolved, full);
-  } catch (error) {
-    return refuse(ctx, full.identifier, error);
-  }
-  const agent = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
-  const worker = stageWorkerForTicket(snapshot, full.identifier);
-  const isActiveStage = state.status === "build" || state.status === "review" || state.status === "deliver";
-  // An active ticket whose worker is gone keeps its Linear state: Igniter
-  // never rebuilds agents. The Global Commander re-takes the ticket with
-  // `igniter begin <ticket>`, which reuses the workspace idempotently.
-  if (state.progress !== "blocked" && !paused) {
-    if (!isActiveStage) {
-      await decisions.record(full.identifier, "resume refused: not paused or blocked");
-      return fail(`${full.identifier} is not paused or blocked; nothing to resume`);
-    }
-    if (agent ?? worker) {
-      const running = worker ?? agent!.name;
-      await decisions.record(
-        full.identifier,
-        `resume: worker already running (${state.status}+${state.progress ?? "no progress"}, ${running}); nothing to rebuild`,
-      );
-      return {
-        ok: true,
-        text: `${full.identifier} is already running (${state.status}+${state.progress ?? "no progress"}, worker ${running}); nothing to rebuild`,
-      };
-    }
-    await decisions.record(
-      full.identifier,
-      `resumed by command (no worker; run \`igniter begin ${full.identifier}\` to launch the Pending stage worker)`,
-    );
-    return { ok: true, text: `resumed ${full.identifier}; no worker running — run \`igniter begin ${full.identifier}\` to launch the ${state.status}+${state.progress ?? "no progress"} worker` };
-  }
-  // Resuming back into Build needs a free slot, like a fresh claim. The
-  // ticket itself never counts against its own resume: a Blocked ticket
-  // holds no slot, a merely paused one holds one.
-  if (state.status === "build") {
-    const used = (await countBuildSlots(client, resolved)) - (state.progress === "blocked" ? 0 : 1);
-    if (used >= resolved.config.maxRunning) {
-      await decisions.record(full.identifier, `resume refused: at max_running (${resolved.config.maxRunning})`);
-      return fail(`at max_running (${resolved.config.maxRunning})`);
-    }
-  }
-  const deps = depsOf(ctx);
-  try {
-    // Resume shares the unblock transition (Blocked back to Pending, never
-    // straight to In progress) and clears the paused token on top.
-    if (state.progress === "blocked") {
-      await unblockMutation(deps, workspace.workspaceId, full, state);
-      await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: null });
-    } else {
-      await ctx.workspaces.reportMetadata(workspace.workspaceId, { paused: null });
-      await decisions.record(full.identifier, "resumed by command");
-    }
-  } catch (error) {
-    return refuse(ctx, full.identifier, error);
-  }
-  const unblockedMeta = { ...workspace.tokens };
-  delete unblockedMeta["paused"];
-  // Igniter never starts agents on resume. The ticket is back to Pending;
-  // the Global Commander launches its worker with `igniter begin`.
-  await decisions.record(full.identifier, "resumed by command");
-  return { ok: true, text: `resumed ${full.identifier}; back to pending — run \`igniter begin ${full.identifier}\` to launch the worker` };
-}
-
-// ---------------------------------------------------------------------------
-// fail
-// ---------------------------------------------------------------------------
-
 async function failCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
   const reasonFlag = takeFlag(args, "reason");
@@ -1220,74 +894,13 @@ async function failCommand(args: string[], ctx: CommandContext): Promise<Command
     return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
   }
 
-  let snapshot: WorkspaceSnapshot | null = null;
-  try {
-    snapshot = await ctx.workspaces.snapshot();
-  } catch {
-    snapshot = null;
-  }
   const deps: FailureDeps = { client, resolved, workspaces: ctx.workspaces, decisions };
-  return failTicket(deps, full, reason, snapshot);
+  return failTicket(deps, full, reason, null);
 }
 
 // ---------------------------------------------------------------------------
 // restart
 // ---------------------------------------------------------------------------
-
-export function buildRestartPrompt(model: string): string {
-  return (
-    `igniter: restart the Builder with model ${model}. ` +
-    `Close the current Builder tab and open a new one with this model. ` +
-    `The work tree may be half-changed and uncommitted: the new Builder's work order must say so ` +
-    `and tell it to read \`git diff\` first (see 'Build' in the bundled Commander rules).`
-  );
-}
-
-async function restartCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const { resolved, decisions } = ctx;
-  const builderFlag = takeFlag(args, "builder");
-  const rest = builderFlag.rest;
-  if (rest.length !== 1 || !rest[0] || rest[0].startsWith("--")) return fail(usage("restart"));
-  const model = builderFlag.value?.trim();
-  if (!model) return fail(usage("restart"));
-  const identifier = rest[0] as string;
-  const full = await ctx.client.fetchIssue(identifier);
-  if (!full) {
-    await decisions.record(identifier, `restart failed: ticket "${identifier}" was not found in Linear`);
-    return fail(`ticket "${identifier}" was not found in Linear`);
-  }
-  if (full.projectId !== resolved.projectId) {
-    await decisions.record(full.identifier, `restart failed: not in project "${resolved.config.project}"`);
-    return fail(`ticket "${full.identifier}" is not in project "${resolved.config.project}"`);
-  }
-  let snapshot: WorkspaceSnapshot;
-  try {
-    snapshot = await ctx.workspaces.snapshot();
-  } catch (error) {
-    await decisions.record(full.identifier, "restart failed: herdr unreachable");
-    return fail(`herdr unreachable: ${(error as Error).message}`);
-  }
-  const workspace = findWorkspace(snapshot, full.identifier);
-  if (!workspace) {
-    await decisions.record(full.identifier, "restart failed: no workspace");
-    return fail(`no workspace for ${full.identifier}; use \`igniter begin ${full.identifier}\``);
-  }
-  const worker = stageWorkerForTicket(snapshot, full.identifier)
-    ?? snapshot.agents.find((a) => a.name === commanderName(full.identifier))?.name ?? null;
-  if (!worker) {
-    await decisions.record(full.identifier, "restart failed: no live stage worker");
-    return fail(`no live stage worker for ${full.identifier}; use \`igniter begin ${full.identifier}\` first`);
-  }
-  try {
-    await ctx.workspaces.reportMetadata(workspace.workspaceId, { builder: model });
-    await ctx.workspaces.prompt(worker, buildRestartPrompt(model));
-  } catch (error) {
-    await decisions.record(full.identifier, `restart failed: ${(error as Error).message}`);
-    return fail(`restart failed: ${(error as Error).message}`);
-  }
-  await decisions.record(full.identifier, `restarted with builder ${model} by command`);
-  return { ok: true, text: `restarted ${full.identifier} with builder ${model}; worker prompted` };
-}
 
 // ---------------------------------------------------------------------------
 // workspace commands
@@ -1356,16 +969,14 @@ async function submitCommand(
  * the state, criteria, and checkpoint come from the freshly fetched issue.
  */
 async function submitForTicket(ctx: CommandContext, identifier: string, payload: unknown): Promise<string> {
-  const { requireTicketWorkspace } = await import("./stage-start.ts");
   const ticket = identifier.toUpperCase();
   const full = (await ctx.client.fetchIssue(ticket)) as FullIssue | null;
   if (!full) throw new ProtocolError(`ticket "${ticket}" was not found in Linear`);
   if (full.projectId !== ctx.resolved.projectId) {
     throw new ProtocolError(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
-  const workspaceId = await requireTicketWorkspace(ctx.workspaces, full.identifier);
   const state = mergedDeliveryState(ctx.resolved, full) ?? deriveState(ctx.resolved, full);
-  return submitMutation(depsOf(ctx), workspaceId, full, state, payload);
+  return submitMutation(depsOf(ctx), "", full, state, payload);
 }
 
 async function blockCommand(args: string[], ctx: CommandContext, workspaceId: string | undefined): Promise<CommandResult> {
@@ -1397,16 +1008,14 @@ async function blockCommand(args: string[], ctx: CommandContext, workspaceId: st
 }
 
 async function blockForTicket(ctx: CommandContext, identifier: string, reason: string): Promise<string> {
-  const { requireTicketWorkspace } = await import("./stage-start.ts");
   const ticket = identifier.toUpperCase();
   const full = (await ctx.client.fetchIssue(ticket)) as FullIssue | null;
   if (!full) throw new ProtocolError(`ticket "${ticket}" was not found in Linear`);
   if (full.projectId !== ctx.resolved.projectId) {
     throw new ProtocolError(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
-  const workspaceId = await requireTicketWorkspace(ctx.workspaces, full.identifier);
   const state = deriveState(ctx.resolved, full);
-  await blockMutation(depsOf(ctx), workspaceId, full, state, reason);
+  await blockMutation(depsOf(ctx), "", full, state, reason);
   return `blocked ${full.identifier}: ${reason}`;
 }
 
@@ -1437,16 +1046,14 @@ async function unblockCommand(args: string[], ctx: CommandContext, workspaceId: 
 }
 
 async function unblockForTicket(ctx: CommandContext, identifier: string): Promise<string> {
-  const { requireTicketWorkspace } = await import("./stage-start.ts");
   const ticket = identifier.toUpperCase();
   const full = (await ctx.client.fetchIssue(ticket)) as FullIssue | null;
   if (!full) throw new ProtocolError(`ticket "${ticket}" was not found in Linear`);
   if (full.projectId !== ctx.resolved.projectId) {
     throw new ProtocolError(`ticket "${full.identifier}" is not in project "${ctx.resolved.config.project}"`);
   }
-  const workspaceId = await requireTicketWorkspace(ctx.workspaces, full.identifier);
   const state = deriveState(ctx.resolved, full);
-  await unblockMutation(depsOf(ctx), workspaceId, full, state);
+  await unblockMutation(depsOf(ctx), "", full, state);
   return `unblocked ${full.identifier}: back to pending; run \`igniter begin ${full.identifier}\``;
 }
 
@@ -1475,7 +1082,7 @@ export interface WorkOrderInput {
   worktreePath: string;
   branch: string;
   commanderConfig: CommanderConfig;
-  /** A per-run model override from `igniter restart --builder` (the old `start --builder` flag is gone). */
+  /** Recorded Build model used by a resumed Commander work order. */
   builderModel?: string;
   /** Optional delivery document path relative to the repo root. */
   delivery?: string;
@@ -1540,11 +1147,11 @@ export function buildWorkOrder(input: WorkOrderInput): string {
         `Use the configured stage prompts and repository instructions such as AGENTS.md; ` +
         `do not invent another project-settings file.\n`;
   return (
-    `You are the Commander for ticket ${input.identifier}: "${input.title}".\n` +
-    `Issue: ${input.issueUrl} (for people; machine state comes from \`igniter state --json\`, never from Linear directly).\n` +
+    `You are the Global Commander supervising ticket ${input.identifier}: "${input.title}".\n` +
+    `Issue: ${input.issueUrl} (for people; machine state comes from \`igniter status ${input.identifier} --json\`, never from Linear directly).\n` +
     `Workspace: a git worktree at ${input.worktreePath} on branch ${input.branch} (base main), ` +
-    `created by igniter. Work there; do not create another branch. ` +
-    `Install dependencies first as the repository instructs (bun install).\n` +
+    `created by worker start. Stage workers work there; do not create another branch. ` +
+    `Supervise from the project workspace and preserve all existing work.\n` +
     `\n` +
     `Read the repository's AGENTS.md and follow it. Then read the bundled Commander rules at ${assets.rules} ` +
     `and run this delivery exactly as it says.\n` +
@@ -1557,14 +1164,23 @@ export function buildWorkOrder(input: WorkOrderInput): string {
     `\n` +
     delivery +
     `\n` +
-    `Your tools for this run are the workspace commands. They reach the dispatch ` +
+    `Your tools for this run are explicit ticket commands from the project workspace. They reach the dispatch ` +
     `server; never call Linear directly, never use MCP, and never write a Linear receipt by hand:\n` +
-    `- \`igniter state --json\`: read the ticket, criteria, status, Progress, checkpoint, receipt, next step, and submit schema.\n` +
-    `- \`igniter begin\`: move Pending to In progress (Build, Review, Deliver).\n` +
-    `- \`igniter submit --input -\`: submit versioned JSON on stdin; the server picks the schema from the Linear status.\n` +
-    `- \`igniter block --reason "<phrase>"\` / \`igniter unblock\`: park on an external condition and resume to Pending.\n` +
+    `- \`igniter status ${input.identifier} --json\`: read criteria, status, Progress, checkpoint, receipt identity, next step, and submit schema.\n` +
+    `- \`igniter worker start ${input.identifier}\`: prepare or reuse the role's worktree, scratch, worker, and initial work order. Require confirmed delivery.\n` +
+    `- \`igniter begin ${input.identifier}\`: only validate and record Pending to In progress; never launch workers or send prompts.\n` +
+    `- \`igniter submit ${input.identifier} --input -\`: submit versioned JSON only after validating the worker's complete report and checkpoint.\n` +
+    `- \`igniter approve ${input.identifier} --receipt <id>\`: record explicit owner approval of the named current receipt; Build Complete to Review Pending, Review PASS Complete to Deliver Pending, Deliver Complete to Done. No --to; ordinary continue is not approval.\n` +
+    `- \`igniter block ${input.identifier} --reason "<phrase>"\` / \`igniter unblock ${input.identifier}\`: record an external blocker or return to Pending without worker effects.\n` +
+    `- \`igniter fail ${input.identifier} --reason TEXT\` / \`igniter reconcile ${input.identifier}\`: update Linear protocol state only; never stop or rebuild workers.\n` +
+    `- \`igniter worker send|restart|stop|answer ${input.identifier}\`: operate workers only, never write Linear. Target an explicit --role when several roles exist; restart with an effective --model or --profile while preserving work.\n` +
+    `Use status -> worker start -> confirmed delivery -> begin. After owner approval: approve -> worker start -> confirmed delivery -> begin. ` +
+    `After a worker report: validate -> submit. Correction Build returns automatically to Review Pending. ` +
+    `Retry uncertain approval only with its original receipt identity, never a later stage's receipt. ` +
+    `Stop obsolete workers explicitly, and after Done use worker stop for guarded cleanup without discarding work. ` +
+    `Preserve publication consent, checkpoint/receipt validation, and repository Git safety rules.\n` +
     `\n` +
-    `Your first action is \`igniter state --json\`.\n`
+    `Your first action is \`igniter status ${input.identifier} --json\`.\n`
   );
 }
 
@@ -1596,7 +1212,7 @@ export function resumedWorkOrder(
       delivery: ctx.resolved.config.delivery,
       scratch: scratchPathsFor(ctx.repoRoot, full.identifier),
     }) +
-    `\nThis is a resumed run. Run \`igniter state --json\` first and continue from ` +
+    `\nThis is a resumed run. Run \`igniter status ${full.identifier} --json\` first and continue from ` +
     `status ${status} progress ${progress} checkpoint ${checkpoint}; do not restart. ` +
     `Checkpoint commits are on the ticket branch.\n`
   );
@@ -1615,7 +1231,7 @@ export interface WorkspaceSinkOptions {
  * The claim sink: prepares the ticket's worktree, opens or reuses the
  * ticket workspace, and records identity plus scratch paths. It starts no
  * agent and sends no prompt: the Global Commander launches each stage
- * worker itself with `igniter begin <ticket>`, and Igniter never maintains
+ * worker itself with `igniter worker start <ticket>`, and Igniter never maintains
  * a resident commander-ticket agent. A failure after the workspace exists
  * throws WorkspaceSinkError carrying the id so a person can clean it up;
  * there is no rollback.

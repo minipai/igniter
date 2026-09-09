@@ -39,6 +39,8 @@ export function statusNeedsProgress(status: ProtocolStatus): boolean {
 }
 
 export interface ProtocolDeps {
+  /** Explicit Linear commands never wake, stop, or clean workers. */
+  linearOnly?: boolean;
   client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
@@ -1037,6 +1039,7 @@ export async function mirror(
   workspaceId: string,
   tokens: Record<string, string | null>,
 ): Promise<void> {
+  if (deps.linearOnly) return;
   await deps.workspaces.reportMetadata(workspaceId, tokens);
 }
 
@@ -1109,26 +1112,25 @@ function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unk
 }
 
 function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { next: string[]; note: string | null } {
-  if (status === "backlog" || status === "done") {
-    return { next: [], note: `no workspace command applies in ${status}; dispatch owns this state` };
-  }
+  if (status === "backlog") return { next: [], note: "Backlog has no pending stage action" };
+  if (status === "done") return { next: ["worker stop"], note: "run worker stop for guarded cleanup; validate the Deliver receipt and preserve uncommitted or unmerged work" };
   if (status === "todo") {
-    if (progress === null) return { next: ["begin"], note: "bare Todo (no Progress label): begin normalizes it to Todo+Pending and launches Build" };
-    if (progress === "pending") return { next: ["begin"], note: null };
+    if (progress === null) return { next: ["worker start", "begin"], note: "bare Todo (no Progress label): confirm worker start delivery before begin records Build+In progress" };
+    if (progress === "pending") return { next: ["worker start", "begin"], note: "confirm worker start delivery before begin" };
     if (progress === "blocked") return { next: ["unblock"], note: null };
     return { next: [], note: `unexpected Todo+${progress}; begin refuses it` };
   }
-  if (progress === "pending") return { next: ["begin", "block"], note: null };
+  if (progress === "pending") return { next: ["worker start", "begin", "block"], note: "confirm worker start delivery before begin" };
   if (progress === "in_progress") return { next: ["submit", "block"], note: null };
   if (progress === "blocked") return { next: ["unblock"], note: null };
   if (status === "build" && progress === "complete") {
-    return { next: [], note: "waiting for the owner to review the Diffwalk and move the ticket to Review in Linear" };
+    return { next: ["approve"], note: "after owner Diffwalk approval: approve <ticket> --receipt <receipt.id>" };
   }
   if (status === "review" && progress === "complete") {
-    return { next: [], note: "waiting for the owner to approve (Deliver) or send back (Build) in Linear" };
+    return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>; owner may send back to Build" };
   }
   if (status === "deliver" && progress === "complete") {
-    return { next: [], note: "waiting for the owner to confirm landing and move to Done in Linear" };
+    return { next: ["approve"], note: "after owner confirms landing: approve <ticket> --receipt <receipt.id>" };
   }
   return { next: [], note: `unexpected ${status}+${progress}; dispatch normalizes it` };
 }
@@ -1409,7 +1411,7 @@ export async function finishClaim(
 /** Pending becomes In progress; the status never changes here. */
 export async function beginMutation(
   deps: ProtocolDeps,
-  workspaceId: string,
+  _workspaceId: string,
   full: FullIssue,
   state: AuthoritativeState,
 ): Promise<void> {
@@ -1420,17 +1422,71 @@ export async function beginMutation(
         `${full.identifier} is ${state.status}+${state.progress ?? "no progress"}`,
     );
   }
+  full = await recordStageStart(deps, full, state.status);
   await setProgress(deps, full, "in_progress");
   const verified = await readback(deps, full.id);
   const restate = deriveState(resolved, verified);
   if (restate.status !== state.status || restate.progress !== "in_progress") {
     throw new ProtocolError(`Linear did not converge on ${state.status}+in_progress; retry the command`);
   }
-  await mirror(deps, workspaceId, { status: state.status, progress: "in_progress" });
+
   await deps.decisions.record(
     full.identifier,
     `begin: ${state.status}+pending → ${state.status}+in_progress`,
   );
+}
+
+/** A durable start boundary prevents an old submit from rewinding a newer round. */
+export async function recordStageStart(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  stage: ProtocolStatus,
+): Promise<FullIssue> {
+  const after = latestValidReceipt(full.comments)?.receipt.submission ?? null;
+  const body = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: full.identifier, stage, after })} -->\n` +
+    `Stage started: ${stage}; preceding receipt ${after ?? "none"}.`;
+  const expectedProgress = deriveState(deps.resolved, full).progress;
+  const before = await readback(deps, full.id);
+  if ((latestValidReceipt(before.comments)?.receipt.submission ?? null) !== after || before.state.id !== full.state.id ||
+      deriveState(deps.resolved, before).progress !== expectedProgress) {
+    throw new ProtocolError("ticket moved while recording begin; read status before retrying");
+  }
+  if (!before.comments.some((comment) => comment.body === body)) {
+    try {
+      await deps.client.addComment(full.id, body);
+    } catch (error) {
+      if (!isTransientLinearError(error)) throw error;
+      const read = await readback(deps, full.id);
+      if (!read.comments.some((comment) => comment.body === body)) throw error;
+    }
+  }
+  const verified = await readback(deps, full.id);
+  if (!verified.comments.some((comment) => comment.body === body)) {
+    throw new ProtocolError("stage start did not read back from Linear; retry begin");
+  }
+  if ((latestValidReceipt(verified.comments)?.receipt.submission ?? null) !== after || verified.state.id !== full.state.id ||
+      deriveState(deps.resolved, verified).progress !== expectedProgress) {
+    throw new ProtocolError("ticket moved while recording begin; read status before retrying");
+  }
+  return verified;
+}
+
+export function stageStartedAfterReceipt(full: FullIssue, submission: string, stage?: ProtocolStatus): boolean {
+  let seen = false;
+  for (const comment of full.comments) {
+    try {
+      if (parseReceiptBlock(comment.body)?.submission === submission) seen = true;
+    } catch { /* An unrelated malformed comment cannot authorize a retry. */ }
+    if (!seen) continue;
+    const match = /^<!-- igniter:begin (\{[^\n]+\}) -->\n/.exec(comment.body);
+    if (!match) continue;
+    try {
+      const record: unknown = JSON.parse(match[1]!);
+      if (isRecord(record) && record["v"] === 1 && record["ticket"] === full.identifier &&
+          ["build", "review", "deliver"].includes(String(record["stage"])) && (!stage || record["stage"] === stage)) return true;
+    } catch { /* Only valid stage-start records establish the boundary. */ }
+  }
+  return false;
 }
 
 /**
@@ -1517,6 +1573,9 @@ async function resumeWrittenTransition(
   raw: unknown,
 ): Promise<string | null> {
   if (!isRecord(raw)) return null;
+  // Complete/Pending already reached the target. Linear-only callers have
+  // no workspace mirror to heal and use the ordinary duplicate acknowledgement.
+  if (deps.linearOnly && state.progress !== "in_progress") return null;
   if (raw["kind"] === "build" && state.status === "build" && state.progress === "complete") {
     // Initial-build partial: the receipt landed and Linear converged on
     // Build+Complete, but the mirror still names the pre-submit
@@ -1526,7 +1585,7 @@ async function resumeWrittenTransition(
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "build", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
     await mirror(deps, workspaceId, {
       status: "build",
       progress: "complete",
@@ -1549,7 +1608,7 @@ async function resumeWrittenTransition(
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "build", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
     const prior = latestValidReceiptExcluding(full.comments, submission);
     if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
     await mirror(deps, workspaceId, {
@@ -1568,7 +1627,9 @@ async function resumeWrittenTransition(
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "build", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, "build", submission))) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
+    const prior = latestValidReceiptExcluding(full.comments, submission);
+    if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
     await moveStatus(deps, full, "review", "pending");
     await mirror(deps, workspaceId, {
       status: "review",
@@ -1587,7 +1648,7 @@ async function resumeWrittenTransition(
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "review-fail", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, "review", submission))) return null;
+    if (!(await partialSubmissionMarked(deps, workspaceId, full, "review", submission))) return null;
     await moveStatus(deps, full, "build", "pending");
     await mirror(deps, workspaceId, {
       status: "build",
@@ -1603,17 +1664,20 @@ async function resumeWrittenTransition(
 }
 
 /**
- * Before a cross-status write, submit mirrors its source stage and exact
- * receipt identity. A retry may finish that write only while this marker is
- * still present; a later begin replaces it, so an old payload cannot rewind a
- * new round to Pending.
+ * Linear-only retries require the latest receipt and no later stage start.
+ * Legacy protocol callers retain their source-stage workspace mirror check.
  */
 async function partialSubmissionMarked(
   deps: ProtocolDeps,
   workspaceId: string,
+  full: FullIssue,
   source: "build" | "review",
   submission: string,
 ): Promise<boolean> {
+  if (stageStartedAfterReceipt(full, submission)) return false;
+  if (deps.linearOnly) {
+    return latestValidReceipt(full.comments)?.receipt.submission === submission;
+  }
   const snapshot = await deps.workspaces.snapshot();
   const workspace = snapshot.workspaces.find((candidate) => candidate.workspaceId === workspaceId);
   return workspace?.tokens["status"] === source
@@ -1634,29 +1698,31 @@ function completedSubmission(
   raw: unknown,
 ): string | null {
   if (!isRecord(raw) || typeof raw["kind"] !== "string") return null;
+  const canAcknowledge = (submission: string) =>
+    latestValidReceipt(full.comments)?.receipt.submission !== submission || stageStartedAfterReceipt(full, submission);
   try {
-    if (raw["kind"] === "build" && !(state.status === "build" && state.progress === "in_progress")) {
+    if (raw["kind"] === "build") {
       const payload = parseBuildSubmit(raw, state.criteria);
       const submission = submissionId({ ticket: full.identifier, ...payload });
       const receipt = findReceipt(full.comments, "build", submission);
-      if (receipt?.id) {
+      if (receipt?.id && (!(state.status === "build" && state.progress === "in_progress") || canAcknowledge(submission))) {
         return `already submitted build ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
-    if (raw["kind"] === "review" && !(state.status === "review" && state.progress === "in_progress")) {
+    if (raw["kind"] === "review") {
       const payload = parseReviewSubmit(raw, state.criteria);
       const kind: ReceiptKind = payload.verdict === "pass" ? "review-pass" : "review-fail";
       const submission = submissionId({ ticket: full.identifier, ...payload });
       const receipt = findReceipt(full.comments, kind, submission);
-      if (receipt?.id) {
+      if (receipt?.id && (!(state.status === "review" && state.progress === "in_progress") || canAcknowledge(submission))) {
         return `already submitted review ${payload.verdict.toUpperCase()} ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
-    if (raw["kind"] === "deliver" && !(state.status === "deliver" && state.progress === "in_progress")) {
+    if (raw["kind"] === "deliver") {
       const payload = parseDeliverSubmit(raw);
       const submission = submissionId({ ticket: full.identifier, ...payload });
       const receipt = findReceipt(full.comments, "deliver", submission);
-      if (receipt?.id) {
+      if (receipt?.id && (!(state.status === "deliver" && state.progress === "in_progress") || canAcknowledge(submission))) {
         return `already submitted deliver approved ${payload.checkpoint} landed ${payload.landed}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
@@ -1793,9 +1859,9 @@ async function workspaceTokensOf(
   } catch (error) {
     throw new ProtocolError(`herdr unreachable while verifying publication consent: ${(error as Error).message}`);
   }
-  const workspace = snapshot.workspaces.find((candidate) => candidate.workspaceId === workspaceId);
+  const workspace = snapshot.workspaces.find((candidate) => workspaceId ? candidate.workspaceId === workspaceId : candidate.tokens["ticket"] === identifier);
   if (!workspace) {
-    throw new ProtocolError(`no workspace for ${identifier}; run \`igniter begin ${identifier}\` first`);
+    throw new ProtocolError(`no workspace for ${identifier}; run \`igniter worker start ${identifier}\` first`);
   }
   return { ...workspace.tokens };
 }
@@ -2571,6 +2637,7 @@ async function mirrorAndWake(
   tokens: Record<string, string | null>,
   wakeText: string,
 ): Promise<OwnerMoveFollowUp | null> {
+  if (deps.linearOnly) return null;
   let snapshot;
   try {
     snapshot = await deps.workspaces.snapshot();
@@ -2638,6 +2705,9 @@ async function landDone(
   const restate = deriveState(deps.resolved, verified);
   if (restate.status !== "done" || restate.progress !== null) {
     throw new ProtocolError(`Linear did not converge on done; the next poll retries`);
+  }
+  if (deps.linearOnly) {
+    return { result: { ok: true, text: `${headline}; run worker stop ${full.identifier} for guarded Done cleanup` }, followUp: null, closeDue: null };
   }
   let closeDue: { workspaceId: string | null; checkpoint: string } | null = null;
   let closeNote = "no workspace to close";

@@ -49,7 +49,7 @@ interface Setup {
 async function setup(maxRunning = 3): Promise<Setup> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: maxRunning }),
@@ -176,7 +176,7 @@ describe("validateStartup", () => {
     world.failFirst = 2;
     const fake = startFakeLinear(world);
     try {
-      const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+      const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
       const config = parseDispatchConfig({ project: "igniter", team: "Starcoder" });
       let retries = 0;
       const resolved = await validateWithRetry(() => validateStartup(client, config), {

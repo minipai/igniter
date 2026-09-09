@@ -38,9 +38,9 @@ describe("e2e status/begin vertical slice", () => {
         labelIds: ["label-pending"],
       });
 
-      const begun = expectOk(await e2e.cli(["begin", "STA-1"]));
+      const begun = expectOk(await e2e.startStage("STA-1"));
       expect(begun.stdout).toContain("builder-sta-1");
-      expect(begun.stdout).toContain("Todo → Build");
+      expect(begun.stdout).toContain("build+in_progress");
 
       const issue = (await e2e.client.fetchIssue("STA-1"))!;
       expect(issue.state.name).toBe("Build");
@@ -63,7 +63,7 @@ describe("e2e status/begin vertical slice", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-1"]));
+      expectOk(await e2e.startStage("STA-1"));
 
       const json = expectOk(await e2e.cli(["status", "STA-1", "--json"]));
       const payload = JSON.parse(json.stdout) as {
@@ -99,9 +99,9 @@ describe("e2e status/begin vertical slice", () => {
         description: CRITERIA,
         labelIds: [],
       });
-      const begun = expectOk(await e2e.cli(["begin", "STA-2"]));
+      const begun = expectOk(await e2e.startStage("STA-2"));
       expect(begun.stdout).toContain("builder-sta-2");
-      expect(begun.stdout).toContain("Todo → Build");
+      expect(begun.stdout).toContain("build+in_progress");
       const issue = (await e2e.client.fetchIssue("STA-2"))!;
       expect(issue.state.name).toBe("Build");
       expect((issue.labels ?? []).map((l) => l.name)).toEqual(["In progress"]);
@@ -127,8 +127,9 @@ describe("e2e status/begin vertical slice", () => {
       };
       expect(payload.status).toBe("todo");
       expect(payload.progress).toBeNull();
-      expect(payload.next).toEqual(["begin"]);
+      expect(payload.next).toEqual(["worker start", "begin"]);
       expect(payload.note).toContain("bare Todo");
+      expect(payload.note).toContain("confirm worker start delivery before begin");
       const issue = (await e2e.client.fetchIssue("STA-3"))!;
       expect(issue.state.name).toBe("Todo");
       expect(issue.labels ?? []).toEqual([]);

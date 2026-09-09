@@ -37,7 +37,7 @@ async function assemble(seed?: (world: ReturnType<typeof standardWorld>) => void
   const handle = await startDispatchServe({
     repoRoot,
     config: parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 2 }),
-    client: new LinearClient({ apiKey: "test-key", endpoint: fake.url }),
+    client: new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl }),
     workspaces,
     git,
     port: 0,
@@ -104,7 +104,7 @@ describe("command-driven dispatch serve", () => {
         stateId: TODO,
         labelIds: [PENDING],
       });
-      expect(assembly.workspaces.workspaces.map((workspace) => workspace.label)).toEqual(["STA-1"]);
+      expect(assembly.workspaces.workspaces).toEqual([]);
     } finally {
       await assembly.stop();
     }

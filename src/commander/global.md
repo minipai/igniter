@@ -38,89 +38,85 @@ There is no resident commander-ticket agent and no resident pane.
   checkpoint, latest receipt, legal next commands, and the submit
   schema. Read this before every action. The `--json` flag is required
   on the per-ticket form; bare `status` stays the human queue view.
-- `igniter begin <ticket>`: launch or recover the ticket's current stage
-  worker. The stage derives from Linear; never pass a stage name.
-  (`start` is your own lifecycle and assignment; `begin` is stage-worker
-  lifecycle, so the two never recurse.)
-  - Todo+Pending creates or reuses the ticket workspace and prepares Build.
-  - Build+Pending prepares the Build worker (`builder-<ticket>`).
-  - Review+Pending prepares the Acceptance worker (`reviewer-<ticket>`).
-  - Deliver+Pending prepares the Deliver worker (`deliverer-<ticket>`).
-  - The worker runs the unified agent profile for its stage (harness,
-    model, effort) in the ticket worktree with its own scratch dir.
-  - Linear moves only after the worker is ready and its prompt delivery
-    confirms (Todo becomes Build, Pending becomes In progress). A worker,
-    readiness, or delivery failure leaves the ticket in Pending: fix the
-    cause and run `begin` again. Retries reuse the same-named worker and
-    the byte-identical work order; never create a second worker.
-  - In progress with a live same-named worker answers already-running.
-    In progress with no live worker rebuilds the same-named worker with
-    no Linear write (takeover after your own session restart).
-- `igniter submit <ticket> --input -`: submit the worker's validated
-  report as JSON on stdin using the schema from `status <ticket> --json`.
-  - The first Build lands in Build+Complete and waits for the owner's
-    Diffwalk review; a correction Build lands in Review+Pending.
-  - Review PASS lands in Review+Complete; Review FAIL lands in Build+Pending.
-  - Deliver lands in Deliver+Complete.
-  - Submission is idempotent on (ticket, stage, checkpoint, payload):
-    retrying the identical payload reuses the receipt, never duplicates,
-    and never changes the initial/correction classification.
-- `igniter block <ticket> --reason "<phrase>"`: keep the status, move
-  Progress to Blocked, record the external reason. Frees a Build slot.
-  Ask the owner only from Blocked.
-- `igniter unblock <ticket>`: return Blocked to Pending. Then run
-  `igniter begin <ticket>` to launch the stage worker again.
-- `igniter reconcile <ticket>`: normalize one owner move from Linear
-  state alone (Build+Complete to Review handoff, approval, send-back,
-  landing). Run it after the owner moves the first Build+Complete to
-  Review, Review+Complete to Deliver or back to Build, or Deliver+Complete
-  to Done. Without an owner move it leaves the ticket still.
-- `igniter pause <ticket>` / `igniter resume <ticket>`: park on an
-  external condition and return to Pending. `resume` never starts agents;
-  follow it with `igniter begin <ticket>`.
-- `igniter fail <ticket> --reason TEXT`: return the ticket to Backlog.
-- `igniter restart <ticket> --builder MODEL`: record a new Builder model
-  and prompt the live Build worker. `igniter answer <ticket> y|n` answers
-  a live worker's permission dialog.
+- `igniter begin <ticket>`: validate and record the current stage start only.
+  Todo becomes Build; Pending becomes In progress. It never creates a worker,
+  prepares a worktree, or sends prompts. An In progress retry is idempotent.
+- `igniter submit <ticket> --input -`: submit the worker's validated JSON
+  report using the schema from status. The first Build lands in Build+Complete;
+  a correction Build returns automatically to Review+Pending. Review PASS lands
+  in Review+Complete, Review FAIL in Build+Pending, Deliver in Deliver+Complete.
+  Retry the identical payload after uncertainty; never create another receipt.
+- `igniter approve <ticket> --receipt <id>`: after explicit owner approval,
+  approve only the current completed stage and the receipt identity from status.
+  Never pass `--to`. Valid Build -> Review+Pending; valid Review PASS ->
+  Deliver+Pending; valid Deliver -> Done. Stage, Progress, checkpoint, receipt,
+  and existing handoff rules must agree. The recorded approval is traceable
+  and bound to that receipt; retain its identity across retries. Never substitute
+  a later receipt into a retry of an earlier owner's decision.
+- `igniter block <ticket> --reason "<phrase>"`: keep the status, set Blocked,
+  record the external reason, and free a Build slot. Ask the owner only from
+  Blocked. Stop an unneeded worker explicitly.
+- `igniter unblock <ticket>`: return Blocked to Pending. Then run status,
+  worker start, confirm delivery, and begin.
+- `igniter fail <ticket> --reason TEXT`: return to Backlog without stopping
+  workers or cleaning work. Run worker stop explicitly when appropriate.
+- `igniter reconcile <ticket>`: normalize an existing owner move and receipt
+  state. It never starts, stops, or sends to workers. Ordinary sync, reconcile,
+  or a request to continue is not approval.
+- `igniter worker start <ticket> [--role build|review|deliver]`: prepare or
+  recover the current role's worktree, scratch, stable identity, tab/title,
+  and initial work order. Note the returned role, effective model, worker,
+  delivery confirmation, and result path. Retries reuse the same role without
+  duplicate workers. A failed launch or undelivered prompt leaves Linear alone.
+- `igniter worker send <ticket> --role build|review|deliver TEXT`: send to the
+  intended role. Explicitly select the role when several workers exist.
+- `igniter worker restart <ticket> --role build|review|deliver --model MODEL`:
+  really rebuild with the effective model while preserving the worktree and
+  checkpoint. `--profile builder|reviewer|deliverer|fallback`, `--harness`, and
+  `--effort` select supported effective settings. Require the reported model to
+  match and tell the replacement to inspect existing changes before editing.
+- `igniter worker stop <ticket> --role build|review|deliver`: stop only the
+  selected workflow worker. After Done, run `igniter worker stop <ticket>`
+  without a role to stop the ticket's workers and perform guarded checkout
+  cleanup. Retain dirty, untracked, or unmerged work and user tabs.
+- `igniter worker answer <ticket> --role build|review|deliver y|n`: answer the
+  selected worker's verified live permission dialog.
+
+Worker commands may read ticket context but never write Linear. Linear
+commands never hide worker lifecycle or prompt effects.
 
 ## Run one stage
 
-1. `igniter status <ticket> --json`. Confirm Pending and read the submit
-   schema, criteria, and checkpoint.
-2. `igniter begin <ticket>`. Note the worker name and its result path
-   (`.../scratch/<ticket>/<worker>/result.md`).
-3. Stay active and supervise the worker. Use Herdr waits of at most 60
-   seconds, then inspect the worker and its result path after every timeout.
-   A timeout is a progress checkpoint, not permission to stop watching.
-   Resolve an in-scope permission dialog immediately; pause only when the
-   dialog needs new owner authority or an external blocker has no safe next
-   action.
-4. Require the completion marker in the result file; Herdr `idle` or `done`
-   alone is never completion. Build ends with `BUILD_HANDOFF_COMPLETE`,
-   Acceptance with `ACCEPTANCE_COMPLETE`, Deliver with
-   `DELIVERY_COMPLETE`.
-5. Read the result file from the worker's own scratch. Validate it covers
-   every criterion at the current checkpoint with the fields the submit
-   schema requires.
-6. `igniter submit <ticket> --input -` with the validated report JSON.
-   Read status back and confirm the receipt before treating the stage as
-   complete. A first Build rests at Build+Complete: do not begin
-   Acceptance until the owner has moved the ticket to Review and
-   `igniter reconcile <ticket>` has converged it to Review+Pending.
-7. On Review FAIL the ticket returns to Build+Pending: begin again with
-   `igniter begin <ticket>` and send only the reproducible failed
-   criteria to the original Build agent — never to a new Builder, and
-   never fix inside acceptance. The correction submit returns straight
-   to Review+Pending with no owner step. On Review PASS keep owner acceptance
-   pending: the owner approves by moving Review+Complete to Deliver. The
-   same correction path applies when the owner sends Review+Complete back
-   to Build: reconcile, begin, correct with the original Builder, and the
-   submit returns straight to Review+Pending.
+1. `igniter status <ticket> --json`. Confirm the legal stage and read criteria,
+   checkpoint, and submit schema.
+2. `igniter worker start <ticket>`. Confirm the initial work order was delivered;
+   save the role, model, stable worker identity, and scratch result path.
+3. Only after confirmed delivery, `igniter begin <ticket>`. If the status write
+   fails, read status and retry begin; do not create or prompt another worker.
+4. Stay active and supervise the worker with Herdr waits of at most 60 seconds.
+   Inspect lifecycle, visible output, and the result path after each wait.
+   Resolve in-scope permission dialogs; block before requesting new authority.
+5. Require a complete result file ending with `BUILD_HANDOFF_COMPLETE`,
+   `ACCEPTANCE_COMPLETE`, or `DELIVERY_COMPLETE`. Herdr idle/done alone is not
+   completion. Validate each criterion and every required field at the checkpoint.
+6. `igniter submit <ticket> --input -` with the validated report JSON. Read
+   status back and confirm the receipt. Stop the previous role explicitly when
+   no longer useful; submit does not stop it.
+7. At first Build+Complete, wait for the owner's Diffwalk approval. At
+   Review+Complete PASS, wait for delivery approval. After approval, run
+   `igniter approve <ticket> --receipt <id>`, then status, worker start,
+   confirmed delivery, and begin. After Deliver+Complete, confirm landing with
+   the owner, approve the Deliver receipt, then explicitly stop workers for
+   safe Done cleanup. Approval never starts the next worker.
+8. Review FAIL returns to Build+Pending. Use status, worker start, confirmed
+   delivery, begin, and worker send for the original Build role. Send only
+   reproducible failed criteria; never fix inside acceptance. Its correction
+   submit returns to Review+Pending with no new owner step. An owner send-back
+   from Review+Complete follows the same correction path after reconcile.
 
 After each submitted stage, patrol status again. Continue eligible assigned
 work until every ticket is at an owner gate, Blocked on an external reason,
-or complete. Do not report that you are merely "waiting" while a worker is
-still running.
+or complete. Starting a worker does not end your supervision.
 
 ## Review publication
 
@@ -163,16 +159,20 @@ and never publish receipts: only you submit.
 
 ## Recovery
 
-- You restart: Igniter rebuilds this same singleton with `igniter start`
-  and hands you the patrol order again. Then run `igniter status --json`,
-  `igniter status <ticket> --json` per active ticket, and
-  `igniter begin <ticket>` to rebuild any missing stage worker. Same
-  name, same work order, no duplicate receipt.
-- A prompt stalls or a worker never becomes ready: the ticket stays
-  Pending. Inspect the worker pane, fix the cause, run `begin` again.
-- A partial begin (workspace exists, Linear still Pending): `begin`
-  reuses the workspace and converges Linear without a second work order.
-- A command retry after a lost result: resend the identical submit
-  payload; the receipt identity dedupes it.
-- An owner move while you work: run `igniter reconcile <ticket>` and
-  continue from the converged state; do not restart.
+- You restart: run status, then worker start for each missing stage worker.
+  Reuse its role and work order, confirm delivery, and begin only if Pending.
+- Worker creation fails or the prompt is undelivered: do not begin. Inspect
+  the failure, fix it, retry worker start, and require confirmation.
+- Worker ready but begin failed: read status and retry begin only. The existing
+  worker and initial work order remain intact.
+- Lost submit response: resend the identical payload to reuse the receipt.
+- Lost approval response or partial approval failure: read status and its
+  approval record; retry only with the original receipt identity. Never treat
+  another stage becoming Complete as authorization to approve it.
+- An owner move while you work: reconcile, then orchestrate worker changes
+  explicitly from the new status. Reconciliation is never a worker restart.
+- A model fails: worker restart with the selected effective profile/model,
+  preserve all work, and verify the replacement's model and delivery result.
+- Integration moved Linear to Done: submit the Deliver report to record its
+  landed commit and clear Progress, then explicitly stop workers for safe
+  cleanup. Never discard work to make cleanup succeed.

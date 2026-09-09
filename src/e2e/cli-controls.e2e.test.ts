@@ -42,7 +42,7 @@ describe("e2e CLI status and workspace state", () => {
         labelIds: ["label-pending"],
       });
 
-      const begun = expectOk(await e2e.cli(["begin", "STA-20"]));
+      const begun = expectOk(await e2e.startStage("STA-20"));
       expect(begun.stdout).toContain("builder-sta-20");
       expect(begun.stderr).toBe("");
       const workspace = e2e.workspaces.workspaces.find((candidate) => candidate.label === "STA-20")!;
@@ -91,8 +91,8 @@ describe("e2e CLI status and workspace state", () => {
   });
 });
 
-describe("e2e CLI pause, resume, block, and unblock", () => {
-  test("pause and resume converge through Pending without launching another worker", async () => {
+describe("e2e CLI removed controls and blockers", () => {
+  test("removed pause and resume commands preserve ticket and worker state", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-21",
@@ -100,31 +100,18 @@ describe("e2e CLI pause, resume, block, and unblock", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-21"]));
-      const startsBefore = e2e.workspaces.calls.filter((call) => call.method === "agent.start").length;
-
-      const paused = expectOk(await e2e.cli(["pause", "STA-21"]));
-      expect(paused.stdout).toContain("paused STA-21");
-      expect(paused.stderr).toBe("");
-      let issue = (await e2e.client.fetchIssue("STA-21"))!;
+      expectOk(await e2e.startStage("STA-21"));
+      const callsBefore = e2e.workspaces.calls.length;
+      const writesBefore = e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels").length;
+      for (const command of ["pause", "resume"]) {
+        expectFail(await e2e.cli([command, "STA-21"]), "usage: igniter");
+      }
+      const issue = (await e2e.client.fetchIssue("STA-21"))!;
       expect(issue.state.name).toBe("Build");
-      expect(progressNames(issue.labels)).toEqual(["Blocked"]);
-      expect(e2e.workspaces.tokensFor("STA-21")).toMatchObject({
-        paused: "1",
-        block_reason: "owner pause",
-      });
-      expect(e2e.workspaces.promptsFor("builder-sta-21").at(-1)).toContain("owner paused this ticket");
-
-      const resumed = expectOk(await e2e.cli(["resume", "STA-21"]));
-      expect(resumed.stdout).toContain("back to pending");
-      expect(resumed.stdout).toContain("igniter begin STA-21");
-      expect(resumed.stderr).toBe("");
-      issue = (await e2e.client.fetchIssue("STA-21"))!;
-      expect(progressNames(issue.labels)).toEqual(["Pending"]);
+      expect(progressNames(issue.labels)).toEqual(["In progress"]);
       expect(e2e.workspaces.tokensFor("STA-21")).not.toHaveProperty("paused");
-      expect(e2e.workspaces.tokensFor("STA-21")).not.toHaveProperty("block_reason");
-      expect(e2e.workspaces.calls.filter((call) => call.method === "agent.start")).toHaveLength(startsBefore);
-      expect(e2e.workspaces.calls.filter((call) => call.method === "tab.create")).toHaveLength(0);
+      expect(e2e.workspaces.calls).toHaveLength(callsBefore);
+      expect(e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels")).toHaveLength(writesBefore);
     });
   });
 
@@ -136,7 +123,8 @@ describe("e2e CLI pause, resume, block, and unblock", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-22"]));
+      expectOk(await e2e.startStage("STA-22"));
+      const workerEffectsBefore = e2e.workspaces.calls.filter((call) => !["workspace.list", "snapshot"].includes(call.method));
 
       const blocked = expectOk(
         await e2e.cli(["block", "STA-22", "--reason", "waiting for owner input"]),
@@ -146,9 +134,6 @@ describe("e2e CLI pause, resume, block, and unblock", () => {
       let issue = (await e2e.client.fetchIssue("STA-22"))!;
       expect(issue.state.name).toBe("Build");
       expect(progressNames(issue.labels)).toEqual(["Blocked"]);
-      expect(e2e.workspaces.tokensFor("STA-22")).toMatchObject({
-        block_reason: "waiting for owner input",
-      });
 
       const unblocked = expectOk(await e2e.cli(["unblock", "STA-22"]));
       expect(unblocked.stdout).toContain("unblocked STA-22: back to pending");
@@ -158,12 +143,13 @@ describe("e2e CLI pause, resume, block, and unblock", () => {
       expect(issue.state.name).toBe("Build");
       expect(progressNames(issue.labels)).toEqual(["Pending"]);
       expect(e2e.workspaces.tokensFor("STA-22")).not.toHaveProperty("block_reason");
+      expect(e2e.workspaces.calls.filter((call) => !["workspace.list", "snapshot"].includes(call.method))).toEqual(workerEffectsBefore);
     });
   });
 });
 
 describe("e2e CLI recovery controls", () => {
-  test("restart records the builder model and fail closes the owned workspace", async () => {
+  test("worker restart changes the real model; fail leaves worker cleanup explicit", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-23",
@@ -171,18 +157,18 @@ describe("e2e CLI recovery controls", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-23"]));
+      expectOk(await e2e.startStage("STA-23"));
+      const original = e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-23")!;
+      const originalPane = original.paneId;
+      const writesBefore = e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels").length;
 
       const restarted = expectOk(
-        await e2e.cli(["restart", "STA-23", "--builder", "openai/gpt-5.6-sol"]),
+        await e2e.cli(["worker", "restart", "STA-23", "--model", "gpt-5.6-sol"]),
       );
-      expect(restarted.stdout).toContain("restarted STA-23 with builder openai/gpt-5.6-sol");
+      expect(restarted.stdout).toContain("model gpt-5.6-sol; work order confirmed");
       expect(restarted.stderr).toBe("");
-      expect(e2e.workspaces.tokensFor("STA-23")).toMatchObject({ builder: "openai/gpt-5.6-sol" });
-      expect(e2e.workspaces.promptsFor("builder-sta-23").at(-1)).toContain(
-        "restart the Builder with model openai/gpt-5.6-sol",
-      );
-      expect(e2e.workspaces.promptsFor("builder-sta-23").at(-1)).toContain("read `git diff` first");
+      expect(e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-23")!.paneId).not.toBe(originalPane);
+      expect(e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels")).toHaveLength(writesBefore);
 
       const failed = expectOk(
         await e2e.cli(["fail", "STA-23", "--reason", "worker could not recover"]),
@@ -194,7 +180,9 @@ describe("e2e CLI recovery controls", () => {
       expect(progressNames(issue.labels)).toEqual(["agent-failed"]);
       expect(issue.comments.at(-1)?.body).toContain("<!-- igniter:failed -->");
       expect(issue.comments.at(-1)?.body).toContain("worker could not recover");
-      expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-23")?.closed).toBe(true);
+      expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-23")?.closed).not.toBe(true);
+      expectOk(await e2e.cli(["worker", "stop", "STA-23", "--role", "build"]));
+      expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-23")?.closed).not.toBe(true);
     });
   });
 });
@@ -208,12 +196,12 @@ describe("e2e CLI permission answers", () => {
         description: CRITERIA,
         labelIds: ["label-pending"],
       });
-      expectOk(await e2e.cli(["begin", "STA-24"]));
+      expectOk(await e2e.startStage("STA-24"));
       const builder = e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-24")!;
       expect(builder.kind).toBe("opencode");
 
-      const allowed = expectOk(await e2e.cli(["answer", "STA-24", "y"]));
-      expect(allowed.stdout).toContain("answered y for STA-24 (allowed once, sent y)");
+      const allowed = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "build", "y"]));
+      expect(allowed.stdout).toContain("answered y for builder-sta-24");
       expect(allowed.stderr).toBe("");
       expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: builder.paneId, keys: ["y"] });
 
@@ -226,13 +214,13 @@ describe("e2e CLI permission answers", () => {
       expect(submitted.stdout).toContain(`submitted build ${head} → Build+Complete`);
       expect(submitted.stderr).toBe("");
       await ownerHandoff(e2e, "STA-24");
-      expectOk(await e2e.cli(["begin", "STA-24"]));
+      expectOk(await e2e.startStage("STA-24"));
       const reviewer = e2e.workspaces.agents.find((agent) => agent.name === "reviewer-sta-24")!;
       expect(reviewer.kind).toBe("claude");
       expect(reviewer.paneId).not.toBe(builder.paneId);
 
-      const denied = expectOk(await e2e.cli(["answer", "STA-24", "n"]));
-      expect(denied.stdout).toContain("answered n for STA-24 (denied, sent esc)");
+      const denied = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "review", "n"]));
+      expect(denied.stdout).toContain("answered n for reviewer-sta-24");
       expect(denied.stderr).toBe("");
       expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: reviewer.paneId, keys: ["esc"] });
     }, {

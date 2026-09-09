@@ -15,7 +15,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { parseDispatchConfig } from "../dispatch/config.ts";
-import { MemoryLinearClient, ownerSetState, standardMemoryWorld, type MemoryWorld } from "../dispatch/fake-memory-linear.ts";
+import { MemoryLinearClient, standardMemoryWorld, type MemoryWorld } from "../dispatch/fake-memory-linear.ts";
 import { FakeWorkspaces } from "../dispatch/fake-workspaces.ts";
 import { startDispatchServe, type DispatchServeHandle } from "../server/dispatch-serve.ts";
 import type { PromptDeliveryPolicy } from "../dispatch/prompt-delivery.ts";
@@ -213,6 +213,17 @@ export class E2E {
     return this.spawnCli(argv, options).done;
   }
 
+  /** Commander orchestration: confirm the worker order, then record stage start. */
+  async startStage(ticket: string): Promise<CliResult> {
+    const worker = await this.cli(["worker", "start", ticket]);
+    if (worker.code !== 0) return worker;
+    if (!worker.stdout.includes("work order confirmed")) {
+      throw new Error(`worker start did not confirm its order: ${worker.stdout}`);
+    }
+    const begun = await this.cli(["begin", ticket]);
+    return { ...begun, stdout: `${worker.stdout}${begun.stdout}` };
+  }
+
   /** Poll until `read` returns a value; throw with packed diagnosis past the deadline. */
   async waitFor<T>(label: string, read: () => T | null | undefined, timeoutMs = 15_000): Promise<T> {
     const start = Date.now();
@@ -375,11 +386,10 @@ export function commitWorktreeFile(
 }
 
 /**
- * Owner handoff for a first Build: the ticket waits at Build+Complete, the
- * owner moves it to Review in Linear (Complete kept), and an explicit
- * reconcile converges it to Review+Pending.
+ * Explicit owner handoff binds approval to the receipt observed by status.
  */
 export async function ownerHandoff(e2e: E2E, ticket: string): Promise<void> {
-  ownerSetState(e2e.world, ticket, "Review");
-  expectOk(await e2e.cli(["reconcile", ticket]));
+  const state = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } | null };
+  if (!state.receipt) throw new Error("owner handoff requires a completed receipt");
+  expectOk(await e2e.cli(["approve", ticket, "--receipt", state.receipt.id]));
 }

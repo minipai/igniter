@@ -44,7 +44,7 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
-  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url });
+  const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
   const resolved = await validateStartup(
     client,
     parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),
@@ -102,7 +102,6 @@ function seedReview(
     revision?: number | null;
     noCommander?: boolean;
     noReviewer?: boolean;
-    paused?: boolean;
   } = {},
 ): void {
   addIssue(h.world, {
@@ -120,7 +119,6 @@ function seedReview(
       status: "review",
       progress: "in_progress",
       checkpoint: HEAD,
-      ...(options.paused ? { paused: "1" } : {}),
     },
     { commander: !options.noCommander, commanderStatus: options.commanderStatus ?? "working" },
   );
@@ -159,7 +157,7 @@ describe("wake on a finished reviewer", () => {
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain("reviewer-sta-1");
-      expect(inbox[0]).toContain("`igniter state --json`");
+      expect(inbox[0]).toContain("`igniter status STA-1 --json`");
       expect(inbox[0]).toContain("never submit without a complete report");
       expect(h.lines).toContainEqual(
         expect.stringContaining("STA-1 review wake-up: reviewer-sta-1 done, commander idle prompted to read the report"),
@@ -208,12 +206,12 @@ describe("wake on a finished reviewer", () => {
       const inbox = h.workspaces.promptsFor("commander-sta-1");
       expect(inbox).toHaveLength(2);
       expect(inbox[0]).toContain("This is a resumed run.");
-      expect(inbox[0]).toContain("`igniter state --json`");
+      expect(inbox[0]).toContain("`igniter status STA-1 --json`");
       expect(inbox[1]).toContain("reviewer-sta-1");
       expect(h.lines).toContainEqual(
         expect.stringContaining("STA-1 review wake-up: reviewer-sta-1 done, commander rebuilt at review+in_progress"),
       );
-      // The rebuild is Herdr-only, like `igniter resume`: Linear is untouched.
+      // The rebuild is Herdr-only, like `igniter worker restart`: Linear is untouched.
       expect(linearSnapshot(h, "STA-1")).toBe(before);
       // A second poll does not rebuild again.
       await h.watcher.pollOnce();
@@ -346,7 +344,6 @@ describe("stays quiet", () => {
       seedReview(h, "STA-3", { commanderStatus: "blocked", reviewerStatus: "done" });
       seedReview(h, "STA-4", { commanderStatus: "idle", reviewerStatus: "done", progress: BLOCKED });
       seedReview(h, "STA-5", { commanderStatus: "idle", reviewerStatus: "done", progress: COMPLETE });
-      seedReview(h, "STA-6", { commanderStatus: "idle", reviewerStatus: "done", paused: true });
       await h.watcher.pollOnce();
       expect(h.workspaces.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(0);
       expect(h.lines.some((l) => l.includes("review wake-up"))).toBe(false);
@@ -408,7 +405,7 @@ async function startFakeHerdr(handlers: Record<string, SocketHandler>): Promise<
       }
     });
   });
-  const path = join(tmpdir(), `fake-herdr-wake-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sock`);
+  const path = join(tmpdir(), `w-${Math.random().toString(36).slice(2, 8)}.sock`);
   await new Promise<void>((resolve, reject) => {
     server.on("error", reject);
     server.listen(path, resolve);
@@ -475,7 +472,7 @@ describe("interrupted wait over a real Herdr socket", () => {
       },
     });
     try {
-      const client = new LinearClient({ apiKey: "test-key", endpoint: fakeLinear.url });
+      const client = new LinearClient({ apiKey: "test-key", endpoint: fakeLinear.url, fetchImpl: fakeLinear.fetchImpl });
       const resolved = await validateStartup(
         client,
         parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),
@@ -553,7 +550,7 @@ describe("interrupted wait over a real Herdr socket", () => {
       },
     });
     try {
-      const client = new LinearClient({ apiKey: "test-key", endpoint: fakeLinear.url });
+      const client = new LinearClient({ apiKey: "test-key", endpoint: fakeLinear.url, fetchImpl: fakeLinear.fetchImpl });
       const resolved = await validateStartup(
         client,
         parseDispatchConfig({ project: "igniter", team: "Starcoder", max_running: 3 }),

@@ -72,10 +72,6 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     publisher: new DiffwalkReviewPublisher(root),
   };
   let lastRefreshAt: string | null = null;
-  const reconcilePending = new Map<string, {
-    followUp: import("../dispatch/protocol.ts").OwnerMoveFollowUp | null;
-    closeDue: { workspaceId: string | null; checkpoint: string } | null;
-  }>();
 
   const commandContext = () => ({
     client: options.client,
@@ -88,7 +84,6 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     git: options.git,
     lastPollAt: () => lastRefreshAt,
     promptDelivery: options.promptDelivery,
-    reconcilePending,
     publication,
   });
   const markRefresh = (): void => {
