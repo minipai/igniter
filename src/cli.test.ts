@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -384,6 +384,124 @@ describe("cli command coverage", () => {
       }
       expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
       expect(fake.seen.every((entry) => entry.workspaceId === "ws-7")).toBe(true);
+    } finally {
+      fake.stop();
+    }
+  });
+});
+
+describe("cli start project-root search", () => {
+  test("start from the project root keeps the existing behavior", async () => {
+    const fake = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
+    }));
+    try {
+      const dir = repoPointingAt(fake.port);
+      const result = await runCliFull(["start"], { cwd: dir, env: outsideWorkspaceEnv() });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("starting Commander");
+      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("start from one and many subdirectory levels uses the enclosing config", async () => {
+    const fake = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
+    }));
+    try {
+      const dir = repoPointingAt(fake.port);
+      const deep = join(dir, "src", "nested");
+      mkdirSync(deep, { recursive: true });
+      for (const cwd of [join(dir, "src"), deep]) {
+        const result = await runCliFull(["start"], { cwd, env: outsideWorkspaceEnv() });
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain("starting Commander");
+      }
+      expect(fake.seen).toEqual([
+        { argv: ["start"], directStart: true },
+        { argv: ["start"], directStart: true },
+      ]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("start with a ticket from a subdirectory forwards the ticket", async () => {
+    const fake = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
+    }));
+    try {
+      const dir = repoPointingAt(fake.port);
+      const sub = join(dir, "src");
+      mkdirSync(sub, { recursive: true });
+      const result = await runCliFull(["start", "STA-1"], { cwd: sub, env: outsideWorkspaceEnv() });
+      expect(result.code).toBe(0);
+      expect(fake.seen).toEqual([{ argv: ["start", "STA-1"], directStart: true }]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("nested projects select the nearest config", async () => {
+    const outer = startFakeDispatch(() => ({ ok: true, text: "outer" }));
+    const inner = startFakeDispatch(() => ({
+      ok: true,
+      text: "starting Commander",
+      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
+    }));
+    try {
+      const outerDir = repoPointingAt(outer.port);
+      const innerDir = join(outerDir, "inner");
+      mkdirSync(join(innerDir, ".igniter"), { recursive: true });
+      writeFileSync(join(innerDir, ".igniter", "config.yaml"), `project: igniter\nlisten: "127.0.0.1:${inner.port}"\n`);
+      const sub = join(innerDir, "src");
+      mkdirSync(sub, { recursive: true });
+      const result = await runCliFull(["start"], { cwd: sub, env: outsideWorkspaceEnv() });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("starting Commander");
+      expect(inner.seen).toEqual([{ argv: ["start"], directStart: true }]);
+      expect(outer.seen).toEqual([]);
+    } finally {
+      outer.stop();
+      inner.stop();
+    }
+  });
+
+  test("no ancestor config fails clearly without contacting a server", async () => {
+    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "igniter-start-noroot-"));
+      const sub = join(dir, "a", "b");
+      mkdirSync(sub, { recursive: true });
+      const result = await runCliFull(["start"], { cwd: sub, env: outsideWorkspaceEnv() });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(".igniter/config.yaml not found from");
+      expect(result.stdout).toBe("");
+      expect(fake.seen).toEqual([]);
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("non-start dispatch commands from a subdirectory keep the cwd config, never the ancestor", async () => {
+    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
+    try {
+      const dir = repoPointingAt(fake.port);
+      const sub = join(dir, "src");
+      mkdirSync(sub, { recursive: true });
+      const result = await runCliFull(["status"], { cwd: sub, env: outsideWorkspaceEnv() });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`.igniter/config.yaml not found under ${realpathSync(sub)}`);
+      expect(result.stdout).toBe("");
+      expect(fake.seen).toEqual([]);
     } finally {
       fake.stop();
     }

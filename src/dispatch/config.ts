@@ -1,3 +1,4 @@
+import { dirname, join, resolve } from "node:path";
 import commanderDefaultsYaml from "../commander/config.yaml";
 
 // Dispatch settings from `.igniter/config.yaml`. Commander defaults come from
@@ -380,4 +381,28 @@ export async function loadDispatchConfig(repoRoot: string): Promise<DispatchConf
     }
   }
   return config;
+}
+
+/**
+ * Walk from startDir upward to the nearest directory holding
+ * `.igniter/config.yaml`. Returns that project root. Throws a clear error
+ * naming the search start when no ancestor (up to the filesystem root)
+ * holds a config. `igniter start` uses this so a subdirectory launch serves
+ * the enclosing project; bundled Commander prompts still resolve from the
+ * Igniter install, never from the project.
+ */
+export async function findProjectRoot(startDir: string): Promise<string> {
+  const start = resolve(startDir);
+  let dir = start;
+  while (true) {
+    if (await Bun.file(join(dir, ".igniter", "config.yaml")).exists()) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) {
+      fail(
+        `.igniter/config.yaml not found from ${start} up to the filesystem root ` +
+          `(run \`igniter start\` from inside a configured project)`,
+      );
+    }
+    dir = parent;
+  }
 }

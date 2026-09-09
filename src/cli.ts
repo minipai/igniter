@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { loadDispatchConfig } from "./dispatch/config.ts";
+import { findProjectRoot, loadDispatchConfig } from "./dispatch/config.ts";
 import {
   type CommandCallOptions,
 } from "./dispatch/claims.ts";
@@ -22,6 +22,17 @@ function hasFlag(name: string): boolean {
 
 function repoRoot(): string {
   return process.cwd();
+}
+
+/**
+ * Project root for `igniter start`: the nearest ancestor of the calling
+ * directory holding `.igniter/config.yaml`. Every other dispatch command
+ * keeps the historical cwd behavior; only `start` searches upward, so a
+ * subdirectory launch serves the enclosing project. Throws a clear error
+ * (no serve, no agent) when no ancestor holds a config.
+ */
+async function startProjectRoot(): Promise<string> {
+  return findProjectRoot(process.cwd());
 }
 
 interface CommanderForegroundLaunch {
@@ -87,7 +98,8 @@ async function serveCommand(): Promise<void> {
  * stdin payload.
  */
 async function forwardCommand(argv: string[], options: CommandCallOptions = {}): Promise<void> {
-  const config = await loadDispatchConfig(repoRoot());
+  const root = argv[0] === "start" ? await startProjectRoot() : repoRoot();
+  const config = await loadDispatchConfig(root);
   const base = `http://${config.listenHost}:${config.listenPort}`;
   const post = () => fetch(`${base}/api/command`, {
     method: "POST",
@@ -108,7 +120,7 @@ async function forwardCommand(argv: string[], options: CommandCallOptions = {}):
     try {
       await autoStartServe({
         base,
-        repoRoot: repoRoot(),
+        repoRoot: root,
         bunPath: process.execPath,
         cliPath: import.meta.path,
       });
