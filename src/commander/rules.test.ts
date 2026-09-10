@@ -55,8 +55,8 @@ describe("Commander delivery protocol", () => {
     expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
     expect(commanderConfig.stages.deliver.prompt).toBe("stages/deliver.md");
     expect(commanderConfig.agents.commander.harness).toBe("codex");
-    expect(commanderConfig.agents.commander.model).toBe("gpt-5.6-sol");
-    expect(commanderConfig.agents.commander.effort).toBe("high");
+    expect(commanderConfig.agents.commander.model).toBe("gpt-6-astra");
+    expect(commanderConfig.agents.commander.effort).toBe("medium");
     expect(commanderConfig.agents.builder.harness).toBe("codex");
     expect(commanderConfig.agents.builder.model).toBe("gpt-5.6-terra");
     expect(commanderConfig.agents.builder.effort).toBeUndefined();
@@ -67,7 +67,7 @@ describe("Commander delivery protocol", () => {
     expect(commanderConfig.agents.deliverer.model).toBe("gpt-5.6-luna");
     expect(commanderConfig.agents.deliverer.effort).toBe("high");
     expect(commanderConfig.agents.builder.fallback.harness).toBe("codex");
-    expect(commanderConfig.agents.builder.fallback.model).toBe("gpt-6-astra");
+    expect(commanderConfig.agents.builder.fallback.model).toBe("gpt-5.6-sol");
     expect(commanderConfig.agents.builder.fallback.effort).toBe("high");
     expect(commonRules).toContain("builder.fallback");
     expect(stageRules[0]).toStartWith("# Build agent");

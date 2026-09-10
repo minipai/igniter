@@ -116,11 +116,11 @@ describe("parseDispatchConfig", () => {
 
   test("loads bundled agent profiles and applies repository overrides", () => {
     const defaults = parseDispatchConfig({ project: "x" }).commander;
-    expect(defaults.agents.commander).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
+    expect(defaults.agents.commander).toEqual({ harness: "codex", model: "gpt-6-astra", effort: "medium" });
     expect(defaults.agents.builder).toEqual({
       harness: "codex",
       model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
+      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
     expect(defaults.agents.reviewer).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
     expect(defaults.agents.deliverer).toEqual({ harness: "codex", model: "gpt-5.6-luna", effort: "high" });
@@ -138,7 +138,7 @@ describe("parseDispatchConfig", () => {
       },
     }).commander;
     // A single-field override inherits every other bundled field.
-    expect(overridden.agents.commander).toEqual({ harness: "codex", model: "custom/commander", effort: "high" });
+    expect(overridden.agents.commander).toEqual({ harness: "codex", model: "custom/commander", effort: "medium" });
     expect(overridden.agents.builder.harness).toBe("codex");
     expect(overridden.agents.builder.model).toBe("gpt-5.6-sol");
     expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
@@ -380,11 +380,11 @@ describe("findProjectRoot", () => {
 
 test("omitted agents fall back to the bundled profiles", () => {
   expect(parseDispatchConfig({ project: "x" }).commander.agents).toEqual({
-    commander: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+    commander: { harness: "codex", model: "gpt-6-astra", effort: "medium" },
     builder: {
       harness: "codex",
       model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
+      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     },
     reviewer: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     deliverer: { harness: "codex", model: "gpt-5.6-luna", effort: "high" },

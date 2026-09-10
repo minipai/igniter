@@ -20,15 +20,15 @@
 agents:
   commander:
     harness: codex
-    model: gpt-5.6-sol
-    effort: high
+    model: gpt-6-astra
+    effort: medium
 
   builder:
     harness: codex
     model: gpt-5.6-terra
     fallback:
       harness: codex
-      model: gpt-6-astra
+      model: gpt-5.6-sol
       effort: high
 
   reviewer:
