@@ -31,8 +31,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "generate:herdr": "bun src/herdr/generate-types.ts",
-    "test": "bun test src/package.test.ts src/cli.test.ts src/herdr src/dispatch src/commander",
-    "test:e2e": "bun src/e2e/run.ts",
+    "test": "bun test src/package.test.ts src/cli.test.ts src/herdr src/workflow src/commander",
+    "test:e2e": "bun src/e2e/support/run.ts",
     "check": "bun run typecheck && bun run test && bun run test:e2e"
   },
   "dependencies": {

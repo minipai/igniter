@@ -2,15 +2,15 @@
 import { cac, type CAC } from "cac";
 import { version } from "../package.json";
 import { assertCommanderAssets } from "./commander/assets.ts";
-import { createDispatchLog, validateStartup, type CommandResult } from "./dispatch/claims.ts";
-import type { CommandRequest, WorkerAnswer, WorkerProfile, WorkerRole } from "./dispatch/command-request.ts";
-import { runCommand } from "./dispatch/commands.ts";
-import { findProjectRoot, loadDispatchConfig } from "./dispatch/config.ts";
-import { LinearClient, requireLinearApiKey } from "./dispatch/linear.ts";
-import type { LinearClientLike } from "./dispatch/linear.ts";
-import { bunGitRunner } from "./dispatch/worktrees.ts";
-import { createHerdrWorkspaces, type CommandWorkspaces } from "./dispatch/workspaces.ts";
-import type { PromptDeliveryPolicy } from "./dispatch/prompt-delivery.ts";
+import { createDispatchLog, validateStartup, type CommandResult } from "./workflow/config/claims.ts";
+import type { CommandRequest, WorkerAnswer, WorkerProfile, WorkerRole } from "./workflow/command/command-request.ts";
+import { runCommand } from "./workflow/command/commands.ts";
+import { findProjectRoot, loadDispatchConfig } from "./workflow/config/config.ts";
+import { LinearClient, requireLinearApiKey } from "./workflow/linear/linear.ts";
+import type { LinearClientLike } from "./workflow/linear/linear.ts";
+import { bunGitRunner } from "./workflow/worktree/worktrees.ts";
+import { createHerdrWorkspaces, type CommandWorkspaces } from "./workflow/workspace/workspaces.ts";
+import type { PromptDeliveryPolicy } from "./workflow/delivery/prompt-delivery.ts";
 
 export interface CliRuntime {
   run(command: CommandRequest): Promise<CommandResult>;
