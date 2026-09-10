@@ -980,7 +980,8 @@ export interface StateJson {
   submit_schema: unknown;
 }
 
-function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unknown {
+/** Canonical submit shape shared by status and worker work orders. */
+export function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unknown {
   const at = checkpoint ?? "<worktree HEAD>";
   if (status === "build") {
     return {

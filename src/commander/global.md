@@ -103,12 +103,15 @@ use explicit reconcile and retry the same command when recovery is needed.
 4. Stay active and supervise the worker with Herdr waits of at most 60 seconds.
    Inspect lifecycle, visible output, and the result path after each wait.
    Resolve in-scope permission dialogs; block before requesting new authority.
-5. Require a complete result file ending with `BUILD_HANDOFF_COMPLETE`,
-   `ACCEPTANCE_COMPLETE`, or `DELIVERY_COMPLETE`. Herdr idle/done alone is not
-   completion. Validate each criterion and every required field at the checkpoint.
-6. `igniter submit <ticket> --input -` with the validated report JSON. Read
-   status back and confirm the receipt. Stop the previous role explicitly when
-   no longer useful; submit does not stop it.
+5. Require `submit.json` and `result.md` in the worker's scratch, with
+   `BUILD_HANDOFF_COMPLETE`, `ACCEPTANCE_COMPLETE`, or `DELIVERY_COMPLETE` as the
+   final line of `result.md`. Herdr idle/done alone is not completion. Review
+   the JSON's criteria, checks, evidence, and checkpoint plus the Markdown's
+   findings and risks. Compare the artifact with the current submit schema.
+6. Submit the reviewed artifact unchanged using
+   `igniter submit <ticket> --input - < "/absolute/scratch/submit.json"` with
+   the worker's actual path. Read status back and confirm the receipt. Stop
+   the previous role explicitly when no longer useful; submit does not stop it.
 7. At first Build+Complete, wait for the owner's approval. At
    Review+Complete PASS, wait for delivery approval. After approval, run
    `igniter approve <ticket> --receipt <id>`, then status, worker start,
@@ -127,12 +130,23 @@ or complete. Starting a worker does not end your supervision.
 
 ## Collecting reports
 
-A Herdr lifecycle state is not a result. Accept a worker report only when
-its result file covers the required fields and ends with its completion
-marker. Never infer success from `done`, never send a generic `continue`,
-never submit an incomplete report, and never leave a completed result
-uncollected. Stage workers never run Igniter commands, never call Linear,
-and never publish receipts: only you submit.
+A Herdr lifecycle state is not a result. The generated work order embeds the
+submit shape from the same canonical source as status. Workers write that
+payload to `submit.json`; `result.md` holds the completion marker and only
+stage-specific findings or risks not covered by the JSON. Keep Build code-review
+findings and unresolved concerns available for review, and Deliver's remaining
+owner steps in JSON's `owner_actions`. Do not rewrite the payload or require a
+duplicate Markdown report.
+
+Both files are required. Missing files or markers, unfinished content, JSON
+parse errors, schema omissions, and checkpoint mismatches are not successful
+handoffs. Send precise corrections to the same worker and review its corrected
+files again; forward existing submit refusal details when that boundary rejects
+an artifact. Valid syntax and schema do not prove checks or acceptance passed:
+you must review the content and evidence before submission. Never infer success
+from `done`, never send a generic `continue`, never submit an incomplete report,
+and never leave a completed result uncollected. Stage workers never run Igniter
+commands, never call Linear, and never publish receipts: only you submit.
 
 ## Recovery
 

@@ -11,7 +11,7 @@ resident pane.
 ```text
 Global Commander: status -> worker start -> confirmed -> begin
   ↓
-stage subagent: work + structured report
+stage subagent: work + submit.json + result.md completion marker
   ↓
 Global Commander: validate + submit
   ↓
@@ -208,7 +208,8 @@ Pass the worker:
 
 - its absolute configured stage prompt path;
 - the inputs that stage prompt allows, supplied by the generated work order;
-- the worker's own scratch result path; and
+- the worker's own scratch paths for `submit.json` and `result.md`, and the
+  submit shape generated from the same canonical source as status; and
 - an instruction to read and follow repository rules.
 
 Each rule has one owner: this document owns roles, handoffs, and the
@@ -264,21 +265,40 @@ externally outside its configured stage.
 
 ## Worker reports
 
-A Herdr lifecycle state is not a result. Accept a worker report only when it
-covers the required fields and ends with its completion marker.
+A Herdr lifecycle state is not a result. A handoff requires both files in the
+worker's own scratch: `submit.json` contains the directly submittable JSON
+payload; `result.md` contains only stage-specific findings or risks that the
+payload does not cover, and ends with its completion marker. Do not require a
+second full report in Markdown. The work order embeds the submit shape from
+the same canonical source as status; workers need no Igniter or Linear access.
 
 - **Build — `BUILD_HANDOFF_COMPLETE`:** checkpoint, required checks,
   per-criterion self-acceptance, reproduction
-  steps, evidence required by the repository workflow, and unresolved concerns.
+  steps, and evidence required by the repository workflow in JSON; code-review
+  findings and unresolved concerns in `result.md` when not covered by JSON.
 - **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
-  with expected, actual, evidence, and environment details.
+  with expected, actual, evidence, and environment details in JSON.
 - **Deliver — `DELIVERY_COMPLETE`:** checkpoint, landed target-branch commit,
-  commit lineage, merge result, and remaining owner steps.
+  commit lineage, merge result, and remaining owner steps in JSON's
+  `owner_actions`.
 
-Validate the report against the checkpoint and the submit schema from
-`igniter status <ticket> --json`. The Commander converts the report to JSON and runs
-`igniter submit <ticket> --input -`. Never infer success from `done`, send a generic
-`continue`, or submit an incomplete report.
+Read both files and review the actual checks, per-criterion results, evidence,
+findings, and risks against the current checkpoint and submit schema from
+`igniter status <ticket> --json`. Valid JSON and schema compliance do not prove
+that checks or acceptance passed; the Commander retains that review duty.
+Require the stage's marker as the final line of `result.md` before submitting.
+For an absent, unfinished, malformed, schema-invalid, or stale artifact, send
+the same worker the precise missing field, parse error, or checkpoint mismatch
+to correct, then review both files again. Never supply missing results yourself.
+
+After review, submit the existing artifact unchanged with
+`igniter submit <ticket> --input - < "/absolute/scratch/submit.json"`, using the
+worker's actual path. The existing submit boundary still validates stage,
+checkpoint, every criterion, evidence, and receipt retries before Linear
+writes; send any refusal back to the worker for correction. Retry the identical
+payload after an uncertain response. Never infer success from `done`, send a
+generic `continue`, or submit an incomplete report. Worker completion and
+submission never replace the owner's approval gates.
 
 ## Build
 

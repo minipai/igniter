@@ -19,6 +19,7 @@ import {
 import { FakeWorkspaces } from "../../testing/fake-workspaces.ts";
 import { FakeGit } from "../../testing/fake-git.ts";
 import { ticketWorktree } from "../../service/worktree/worktrees.ts";
+import { submitSchemaFor } from "../ticket/protocol.ts";
 
 /** An implementation hint Acceptance must never receive. */
 const HINT = "只修改 src/workflow/lifecycle/stage/stage-start.ts 的 buildStageWorkOrder";
@@ -52,6 +53,47 @@ function input(overrides: Partial<StageWorkOrderInput> = {}): StageWorkOrderInpu
 }
 
 describe("generated stage work order inputs", () => {
+  for (const [stage, worker, marker] of [
+    ["build", "builder", "BUILD_HANDOFF_COMPLETE"],
+    ["review", "reviewer", "ACCEPTANCE_COMPLETE"],
+    ["deliver", "deliverer", "DELIVERY_COMPLETE"],
+  ] as const) {
+    test(`${stage} embeds the canonical submit shape and preserves the completion gate`, () => {
+      const scratch = `/scratch/sta-241/${worker}`;
+      const order = buildStageWorkOrder(input({ stage, resultPath: `${scratch}/result.md` }));
+      const json = order.match(/```json\n([\s\S]*?)\n```/)?.[1];
+      expect(json).toBeDefined();
+      expect(JSON.parse(json!)).toEqual(submitSchemaFor(stage, stage === "build" ? null : "abc123"));
+      expect(order).toContain(`write your submit JSON to \`${scratch}/submit.json\``);
+      expect(order).toContain(`your completion report to \`${scratch}/result.md\``);
+      expect(order).toContain("same canonical submitSchemaFor source as status.submit_schema");
+      expect(order).toContain("do not need to read implementation files or call Igniter or Linear");
+      expect(order).toContain("remove the old completion marker before editing either artifact");
+      expect(order).toContain("Finish and locally parse the JSON before writing the completion marker");
+      expect(order).toContain("If work or the artifact is incomplete, report what is missing without a completion marker");
+      expect(order).toContain("completion and JSON validity do not mean tests passed or authorize submission");
+      expect(order).toContain("Commander must review both files, evidence, and checkpoint");
+      expect(order).toContain("Missing, malformed, or schema-invalid artifacts are not successful handoffs");
+      expect(order).toContain("Never submit or approve your own result");
+      expect(order).toContain(`\n${marker}\n`);
+      expect(order).toContain("Do not duplicate the full JSON as a Markdown report");
+      expect(order).toContain("unresolved concerns in result.md");
+      expect(order).not.toContain("Write the stage result as structured Markdown covering exactly");
+      if (stage === "build") {
+        expect(order).toContain("Use the final committed worktree HEAD as checkpoint");
+        expect(order).toContain("code-review findings and fixes");
+        expect(order).toContain("check outcomes, additional evidence links");
+      } else {
+        expect(order).toContain("Keep checkpoint bound to the checkpoint supplied above");
+      }
+      if (stage === "deliver") {
+        expect(order).toContain("remaining owner steps in owner_actions");
+      } else {
+        expect(order).toContain("one result for each exact acceptance criterion");
+      }
+    });
+  }
+
   test("Build receives the feature request, criteria, and Git context", () => {
     const order = buildStageWorkOrder(input({ stage: "build" }));
     expect(order).toContain("Feature request:");
