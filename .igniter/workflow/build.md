@@ -18,6 +18,10 @@ criteria, paths, and any failures from an earlier attempt.
 - Inspect the final diff and create one checkpoint commit with an English
   message. Squash review fixes and check failures into that feature commit;
   keep a separate commit only for a separate change.
+- Capture the committed checkpoint with `diffwalk inspect <checkpoint>`, author
+  its ordered explanations while the implementation reasoning is fresh, and
+  run `diffwalk check`. Publish the checked walkthrough with `diffwalk publish`
+  and retain the printed review link. Do not add `.diffwalk/` to Git.
 
 On restart, continue from the existing worktree rather than creating another
 branch or worktree. Do not push; only Deliver updates the remote branch after
@@ -25,4 +29,5 @@ the new checkpoint has passed Review and received owner approval.
 
 Report the checkpoint, check results, one self-acceptance result per criterion,
 the one-pass code-review result and fixes, reproduction steps, evidence
-locations, and unresolved concerns.
+locations, the Diffwalk check result and published review link, and unresolved
+concerns.
