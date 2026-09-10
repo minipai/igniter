@@ -47,7 +47,7 @@ function input(overrides: Partial<StageWorkOrderInput> = {}): StageWorkOrderInpu
     stage: "build",
     promptPath: "/igniter/stages/build.md",
     harness: "opencode",
-    model: "opencode-go/deepseek-v4.1-flash",
+    model: "opencode-go/deepseek-v4-flash",
     ...overrides,
   };
 }
