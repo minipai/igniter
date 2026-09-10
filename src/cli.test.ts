@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { ensureProjectConfig } from "./cli/init.ts";
 import type { CommandRequest } from "./workflow/request.ts";
 import { runCli, type CliRuntime } from "./cli.ts";
 
@@ -63,6 +66,113 @@ async function runInProcess(args: string[], input = "{}"): Promise<CliResult & {
   const fake = fakeRuntime(input);
   const code = await runCli(args, fake.runtime);
   return { ...fake.output(), code, seen: fake.seen };
+}
+
+describe("project initialization", () => {
+  test("an existing project config is reused without prompting", async () => {
+    const root = tempGitRepo();
+    const nested = join(root, "src", "nested");
+    mkdirSync(join(root, ".igniter"));
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, ".igniter", "config.yaml"), "project: existing\n");
+    let prompts = 0;
+
+    try {
+      expect(await ensureProjectConfig(nested, {
+        interactive: true,
+        read: async () => {
+          prompts += 1;
+          return "y";
+        },
+      })).toEqual({ root, created: false });
+      expect(prompts).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("confirmation creates a minimal config at the Git root", async () => {
+    const root = tempGitRepo();
+    const nested = join(root, "src", "nested");
+    mkdirSync(nested, { recursive: true });
+    const questions: string[] = [];
+
+    try {
+      expect(await ensureProjectConfig(nested, {
+        interactive: true,
+        read: async (question) => {
+          questions.push(question);
+          return "yes";
+        },
+      })).toEqual({ root, created: true });
+      expect(questions).toEqual([
+        `No .igniter/config.yaml found in ${root}. Initialize Igniter for "${basename(root)}"? [y/N] `,
+      ]);
+      expect(await Bun.file(join(root, ".igniter", "config.yaml")).text()).toBe(
+        `project: ${JSON.stringify(basename(root))}\n`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("declining initialization leaves the repository unchanged", async () => {
+    const root = tempGitRepo();
+
+    try {
+      await expect(ensureProjectConfig(root, {
+        interactive: true,
+        read: async () => "n",
+      })).rejects.toThrow("initialization cancelled; no files changed");
+      expect(await Bun.file(join(root, ".igniter", "config.yaml")).exists()).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("non-interactive startup gives instructions without reading input", async () => {
+    const root = tempGitRepo();
+    let reads = 0;
+
+    try {
+      await expect(ensureProjectConfig(root, {
+        interactive: false,
+        read: async () => {
+          reads += 1;
+          return "y";
+        },
+      })).rejects.toThrow("Run `igniter start` in an interactive terminal");
+      expect(reads).toBe(0);
+      expect(await Bun.file(join(root, ".igniter", "config.yaml")).exists()).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the real CLI exits instead of waiting when startup is non-interactive", async () => {
+    const root = tempGitRepo();
+
+    try {
+      const result = await runProcess(["start"], root);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("Run `igniter start` in an interactive terminal");
+      expect(await Bun.file(join(root, ".igniter", "config.yaml")).exists()).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+function tempGitRepo(): string {
+  const root = mkdtempSync(join(tmpdir(), "igniter-init-"));
+  const result = Bun.spawnSync(["git", "init", "-q", "-b", "main"], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode, result.stderr.toString()).toBe(0);
+  return realpathSync(root);
 }
 
 describe("CLI metadata", () => {

@@ -86,8 +86,9 @@ prompts.
 
 ### Connect a project
 
-Create `.igniter/config.yaml` in the root of the Git repository you want the
-agents to work on:
+Run `igniter start` inside an unconfigured Git repository and confirm the
+interactive initialization prompt. To configure it manually instead, create
+`.igniter/config.yaml` in the repository root:
 
 ```yaml
 project: Your Linear project

@@ -1,3 +1,4 @@
+import { createInterface } from "node:readline/promises";
 import { assertCommanderAssets } from "../commander/assets.ts";
 import type { CommandRequest } from "../workflow/request.ts";
 import { runCommand } from "../workflow/run.ts";
@@ -7,6 +8,7 @@ import { findProjectRoot, loadDispatchConfig } from "../workflow/config/config.t
 import { LinearClient, requireLinearApiKey, type LinearClientLike } from "../workflow/service/linear/linear.ts";
 import { createHerdrWorkspaces, type CommandWorkspaces } from "../workflow/service/workspace/workspaces.ts";
 import { bunGitRunner } from "../workflow/service/worktree/worktrees.ts";
+import { ensureProjectConfig } from "./init.ts";
 
 export interface CliRuntime {
   run(command: CommandRequest): Promise<CommandResult>;
@@ -18,7 +20,15 @@ export interface CliRuntime {
 
 export function productionRuntime(): CliRuntime {
   return {
-    run: executeCommand,
+    run: async (command) => {
+      if (command.command !== "start") return executeCommand(command);
+      const project = await ensureProjectConfig(process.cwd(), {
+        interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+        read: readTerminalLine,
+      });
+      if (project.created) console.log(`Created ${project.root}/.igniter/config.yaml.`);
+      return executeCommand(command, { repoRoot: project.root });
+    },
     readStdin: () => new Response(Bun.stdin.stream()).text(),
     stdout: console.log,
     stderr: console.error,
@@ -53,4 +63,13 @@ export async function executeCommand(
     git: bunGitRunner(),
     promptDelivery: dependencies.promptDelivery,
   });
+}
+
+async function readTerminalLine(question: string): Promise<string> {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await terminal.question(question);
+  } finally {
+    terminal.close();
+  }
 }
