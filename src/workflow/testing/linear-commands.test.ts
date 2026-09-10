@@ -1,12 +1,12 @@
 // Linear mutation boundaries use an in-memory client and no Worker workspace.
 import { describe, expect, test } from "bun:test";
 import { validateStartup } from "../config/claims.ts";
-import { runCommand, type CommandContext } from "./commands.ts";
+import { runCommand, type CommandContext } from "../run.ts";
 import { parseDispatchConfig } from "../config/config.ts";
 import { MemoryLinearClient, memoryAddIssue, standardMemoryWorld } from "../service/linear/fake-memory-linear.ts";
-import { FakeWorkspaces } from "../testing/fake-workspaces.ts";
-import { FakeGit } from "../testing/fake-git.ts";
-import { receiptBlock } from "./ticket/protocol.ts";
+import { FakeWorkspaces } from "./fake-workspaces.ts";
+import { FakeGit } from "./fake-git.ts";
+import { receiptBlock } from "../lifecycle/ticket/protocol.ts";
 
 const HEAD = "abcdef1234567890";
 const PRIOR = "fedcba1234567890";

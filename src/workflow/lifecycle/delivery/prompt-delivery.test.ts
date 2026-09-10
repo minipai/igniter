@@ -22,7 +22,7 @@ import {
   type PromptDeliveryPolicy,
 } from "./prompt-delivery";
 import { validateStartup, type ResolvedDispatch } from "../../config/claims";
-import { runCommand, type CommandContext } from "../commands";
+import { runCommand, type CommandContext } from "../../run";
 import { parseDispatchConfig } from "../../config/config";
 import { LinearClient } from "../../service/linear/linear";
 import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";

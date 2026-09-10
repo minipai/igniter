@@ -10,7 +10,7 @@ import { join } from "node:path";
 import {
   runCommand,
   type CommandContext,
-} from "../commands";
+} from "../../run";
 import { validateStartup, type ResolvedDispatch } from "../../config/claims";
 import { parseDispatchConfig } from "../../config/config";
 import { LinearClient } from "../../service/linear/linear";

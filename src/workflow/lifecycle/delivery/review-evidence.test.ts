@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCommand, type CommandContext } from "../commands";
+import { runCommand, type CommandContext } from "../../run";
 import { validateStartup, type ResolvedDispatch } from "../../config/claims";
 import { parseDispatchConfig } from "../../config/config";
 import { LinearClient } from "../../service/linear/linear";

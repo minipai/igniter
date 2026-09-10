@@ -3,7 +3,7 @@
 // real temp git repo, and fake Herdr. No real credentials, no real Linear.
 import { describe, expect, test } from "bun:test";
 import { memoryAddIssue } from "../../workflow/service/linear/fake-memory-linear.ts";
-import { latestValidReceipt } from "../../workflow/command/ticket/protocol.ts";
+import { latestValidReceipt } from "../../workflow/lifecycle/ticket/protocol.ts";
 import { E2E, CRITERIA, expectFail, expectOk, worktreeHeadOf, type CliResult } from "../support/fake-harness.ts";
 
 async function withE2E(fn: (e2e: E2E) => Promise<void>): Promise<void> {

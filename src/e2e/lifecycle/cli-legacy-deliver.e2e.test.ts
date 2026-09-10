@@ -11,7 +11,7 @@ import {
   ownerSetState,
   type MemoryIssue,
 } from "../../workflow/service/linear/fake-memory-linear.ts";
-import { latestValidReceipt, receiptBlock } from "../../workflow/command/ticket/protocol.ts";
+import { latestValidReceipt, receiptBlock } from "../../workflow/lifecycle/ticket/protocol.ts";
 import { CRITERIA, E2E, expectFail, expectOk, git, mainHead } from "../support/fake-harness.ts";
 
 interface LegacyTicket {
