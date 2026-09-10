@@ -23,8 +23,10 @@ One ticket. A team of agents. A traceable path to delivery.
   their progress, collects their reports, and drives the next step. Each ticket
   gets a Git worktree, and each worker gets its own scratch space.
 - **Independent acceptance.** A separate agent exercises the feature through
-  its public UI, CLI, or API. Findings come with expected behavior, actual
-  results, and evidence the owner can inspect.
+  its public UI, CLI, or API. It receives the requirement, observable criteria,
+  and public runbook, never the source, diff, Git history, or Build plan, and
+  may start the product's own local service to do it. Findings come with
+  expected behavior, actual results, and evidence the owner can inspect.
 - **Evidence at every handoff.** Build reports include a committed checkpoint,
   check results, and the evidence required by that repository's workflow. The
   Commander validates stage reports and records receipts against the checkpoint
