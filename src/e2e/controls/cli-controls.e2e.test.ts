@@ -222,7 +222,7 @@ describe("e2e CLI permission answers", () => {
     }, {
       config: {
         agents: {
-          builder: { harness: "opencode", model: "opencode-go/deepseek-v4-flash" },
+          builder: { harness: "opencode", model: "opencode-go/deepseek-v4.1-flash" },
           reviewer: { harness: "claude", model: "claude-sonnet-5" },
         },
       },
