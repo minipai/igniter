@@ -99,9 +99,9 @@ describe("foreground lifecycle", () => {
       expect(launch.command.slice(0, 5)).toEqual([
         "codex",
         "-m",
-        "gpt-5.6-sol",
+        "gpt-6-astra",
         "-c",
-        'model_reasoning_effort="high"',
+        'model_reasoning_effort="medium"',
       ]);
       expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
       expect(launch.command.at(-1)).toContain(commanderAssetPaths().global);

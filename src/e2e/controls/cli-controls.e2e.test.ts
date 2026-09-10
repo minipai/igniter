@@ -242,8 +242,8 @@ describe("e2e CLI foreground start", () => {
       expect(started.stderr).toBe("");
       expect(await Bun.file(marker).exists()).toBe(true);
       const args = readFileSync(`${marker}.args`, "utf8");
-      expect(args).toContain("-m\ngpt-5.6-sol\n");
-      expect(args).toContain('model_reasoning_effort="high"');
+      expect(args).toContain("-m\ngpt-6-astra\n");
+      expect(args).toContain('model_reasoning_effort="medium"');
       expect(args).toContain("Begin with `igniter status --json`");
       const env = readFileSync(`${marker}.env`, "utf8");
       expect(env).toContain(`PWD=${e2e.repoDir}`);

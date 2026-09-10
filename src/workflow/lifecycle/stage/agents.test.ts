@@ -194,7 +194,7 @@ describe("run-recorded stage profiles", () => {
     expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
       harness: "codex",
       model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-6-astra", effort: "high" },
+      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
     expect(JSON.parse(recorded["profile_reviewer"]!)).toEqual({
       harness: "codex",
