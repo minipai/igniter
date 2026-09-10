@@ -35,7 +35,7 @@ const COMPLETE = "label-complete";
 const BLOCKED = "label-blocked";
 const CRITERIA = "## 驗收條件\n- [ ] works\n- [ ] shines\n";
 const HEAD = "deadbeefcafe0001";
-const MARKER = "igniter:incomplete-state";
+const MARKER = "kind: incomplete-state";
 
 interface Harness {
   ctx: CommandContext;
@@ -134,6 +134,31 @@ describe("missing Progress on active stages", () => {
       }
     });
   }
+});
+
+describe("park dedupe identity is ticket-bound", () => {
+  test("an incomplete-state event copied from a different ticket never dedupes this ticket's park", async () => {
+    const h = await harness();
+    try {
+      // Same stage, Progress set (none), receipt (no-receipt), and decision
+      // (park:no-receipt) as the park this ticket is about to produce — but
+      // its `ticket` field names a different ticket. A dedupe that ignored
+      // `ticket` would treat this as already parked and skip the comment.
+      const foreignEvent =
+        "```yaml\nigniter_event:\n  version: 1\n  kind: incomplete-state\n  ticket: STA-999\n  stage: build\n  progress: none\n  receipt: no-receipt\n  decision: park:no-receipt\n```";
+      addIssue(h.world, {
+        identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [],
+        comments: [{ id: "foreign", body: `Blocked: unrelated ticket.\n\n${foreignEvent}` }],
+      });
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("parked as");
+      expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
+      expect(markerComments(h, "STA-1")).toBe(2); // the foreign-ticket comment plus this ticket's own new park.
+    } finally {
+      h.stop();
+    }
+  });
 });
 
 describe("multiple Progress labels fail closed", () => {

@@ -15,6 +15,17 @@
 // Todo, Build, Review, Deliver carry exactly one Progress label; Backlog
 // and Done carry none. Status says which stage the work is in; Progress
 // says how far that stage has come.
+//
+// Every machine-readable record this module writes to a Linear comment is
+// one visible, versioned YAML fenced block after a short human-readable
+// line: `igniter_receipt` for build/review/deliver receipts (below), and
+// `igniter_event` (./event.ts) for begin, approval, blocked, failed, and
+// incomplete-state (STA-254). No hidden `<!-- igniter:... -->` HTML marker
+// or inline JSON is written by either. History from before this contract
+// still carries the old hidden markers; begin, approval, and
+// incomplete-state read those read-only so an in-progress ticket never
+// loses its stage-start, approval, or recovery boundary, but this module
+// never writes that format again.
 
 import { createHash } from "node:crypto";
 import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "../../service/linear/linear.ts";
@@ -22,6 +33,17 @@ import type { ResolvedDispatch, DecisionLog, CommandResult } from "../../config/
 import type { CommandWorkspaces } from "../../service/workspace/workspaces.ts";
 import { ticketWorktree, type GitRunner } from "../../service/worktree/worktrees.ts";
 import { LinearError } from "../../service/linear/linear.ts";
+import {
+  beginEventBody,
+  blockedEventBody,
+  hasBlockedEvent,
+  incompleteEventBody,
+  parseBeginEvent,
+  parseIncompleteEvent,
+  type BeginStage,
+  type BlockedStage,
+} from "./event.ts";
+import { parseRecord, recordBlock, RecordParseError, strictFields } from "./record.ts";
 
 export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done";
 export type ProtocolProgress = "pending" | "in_progress" | "complete" | "blocked";
@@ -215,8 +237,6 @@ export function submissionId(payload: unknown): string {
   return createHash("sha256").update(canonicalJson(payload)).digest("hex").slice(0, 16);
 }
 
-export const RECEIPT_VERSION = 1;
-
 const RECEIPT_KINDS: ReceiptKind[] = ["build", "review-pass", "review-fail", "deliver"];
 
 /**
@@ -228,16 +248,12 @@ const RECEIPT_KINDS: ReceiptKind[] = ["build", "review-pass", "review-fail", "de
  * Deliver rebase; every other kind carries the checkpoint alone.
  */
 export function receiptBlock(kind: ReceiptKind, checkpoint: string, submission: string, landed?: string): string {
-  return (
-    "```yaml\n" +
-    "igniter_receipt:\n" +
-    `  version: ${RECEIPT_VERSION}\n` +
-    `  kind: ${kind}\n` +
-    `  checkpoint: ${checkpoint}\n` +
-    (landed !== undefined ? `  landed: ${landed}\n` : "") +
-    `  submission: ${submission}\n` +
-    "```"
-  );
+  return recordBlock("igniter_receipt", [
+    ["kind", kind],
+    ["checkpoint", checkpoint],
+    ...(landed === undefined ? [] : [["landed", landed]] as const),
+    ["submission", submission],
+  ]);
 }
 
 export interface ParsedReceipt {
@@ -248,91 +264,28 @@ export interface ParsedReceipt {
   submission: string;
 }
 
-/** A receipt block that fails validation names what is wrong with it. */
-export class ReceiptParseError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ReceiptParseError";
-  }
-}
-
-const FENCE_RE = /^```(yaml|yml)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
-const RECEIPT_HEAD_RE = /^igniter_receipt[ \t]*:[ \t]*$/;
-const RECEIPT_FIELD_RE = /^  ([A-Za-z_]+)[ \t]*:[ \t]*(\S+)[ \t]*$/;
-const RECEIPT_FIELDS = ["version", "kind", "checkpoint", "landed", "submission"] as const;
-const RECEIPT_REQUIRED_FIELDS = ["version", "kind", "checkpoint", "submission"] as const;
-
-/** A fenced block counts as a receipt block when it names the receipt head, even malformed. */
-function isReceiptBlock(content: string): boolean {
-  return content.split("\n").some((line) => /^\s*igniter_receipt\b/.test(line));
-}
-
-function receiptBlocks(body: string): string[] {
-  const blocks: string[] = [];
-  for (const match of body.matchAll(FENCE_RE)) {
-    const content = match[2] ?? "";
-    if (isReceiptBlock(content)) blocks.push(content);
-  }
-  return blocks;
-}
-
 /**
  * Parse the single `igniter_receipt` YAML block in a comment body. Null
- * when the body holds no receipt block. Throws ReceiptParseError on a
- * duplicate block, an unknown version or kind, missing or extra fields,
- * or any malformed YAML shape.
+ * when the body holds no receipt block. Invalid records throw and cannot
+ * authorize a transition.
  */
 export function parseReceiptBlock(body: string): ParsedReceipt | null {
-  const blocks = receiptBlocks(body);
-  if (blocks.length === 0) return null;
-  if (blocks.length > 1) {
-    throw new ReceiptParseError(`refused: comment holds ${blocks.length} igniter_receipt blocks; one receipt needs exactly one`);
-  }
-  const content = blocks[0] as string;
-  const lines = content.split("\n").map((line) => line.replace(/\r$/, ""));
-  const headIndex = lines.findIndex((line) => line.trim() !== "");
-  const head = headIndex >= 0 ? lines[headIndex] : undefined;
-  if (head === undefined || !RECEIPT_HEAD_RE.test(head)) {
-    throw new ReceiptParseError(`refused: receipt block must start with "igniter_receipt:"`);
-  }
-  const seen = new Map<string, string>();
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] as string;
-    if (line.trim() === "" || index === headIndex) continue;
-    if (line.trimStart().startsWith("#")) {
-      throw new ReceiptParseError(`refused: receipt block holds a comment line; one receipt needs exactly version, kind, checkpoint, submission`);
-    }
-    const field = RECEIPT_FIELD_RE.exec(line);
-    if (!field) {
-      throw new ReceiptParseError(`refused: malformed receipt line ${JSON.stringify(line)}; fields need two-space "key: value" scalars`);
-    }
-    const key = field[1] as string;
-    const value = field[2] as string;
-    if (!((RECEIPT_FIELDS as readonly string[]).includes(key))) {
-      throw new ReceiptParseError(`refused: unknown receipt field "${key}"; expected version, kind, checkpoint, submission`);
-    }
-    if (seen.has(key)) {
-      throw new ReceiptParseError(`refused: duplicate receipt field "${key}"`);
-    }
-    seen.set(key, value);
-  }
-  for (const key of RECEIPT_REQUIRED_FIELDS) {
-    if (!seen.has(key)) {
-      throw new ReceiptParseError(`refused: receipt block misses "${key}"; one receipt needs version, kind, checkpoint, submission`);
-    }
-  }
-  const version = seen.get("version") as string;
-  if (version !== String(RECEIPT_VERSION)) {
-    throw new ReceiptParseError(`refused: unknown receipt version ${JSON.stringify(version)}; this dispatch reads version 1`);
-  }
-  const kind = seen.get("kind") as string;
+  const record = parseRecord(body, "igniter_receipt");
+  if (!record) return null;
+  const fields = strictFields(
+    record,
+    ["kind", "checkpoint", "landed", "submission"],
+    ["kind", "checkpoint", "submission"],
+    "receipt",
+  );
+  const kind = fields["kind"]!;
   if (!(RECEIPT_KINDS as readonly string[]).includes(kind)) {
-    throw new ReceiptParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, review-pass, review-fail, or deliver`);
+    throw new RecordParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, review-pass, review-fail, or deliver`);
   }
-  const checkpoint = seen.get("checkpoint") as string;
-  const landed = seen.get("landed");
+  const checkpoint = fields["checkpoint"]!;
+  const landed = fields["landed"];
   if (landed !== undefined && kind !== "deliver") {
-    throw new ReceiptParseError(`refused: only a deliver receipt carries "landed"; ${kind} needs version, kind, checkpoint, submission`);
+    throw new RecordParseError(`refused: only a deliver receipt carries "landed"; ${kind} needs version, kind, checkpoint, submission`);
   }
   return {
     kind: kind as ReceiptKind,
@@ -342,7 +295,7 @@ export function parseReceiptBlock(body: string): ParsedReceipt | null {
     // v1 read contract in memory without rewriting the historical comment;
     // new Deliver submits still require an explicit landed commit.
     ...(kind === "deliver" ? { landed: landed ?? checkpoint } : {}),
-    submission: seen.get("submission") as string,
+    submission: fields["submission"]!,
   };
 }
 
@@ -418,8 +371,6 @@ export function latestValidReceiptExcluding(
   }
   return null;
 }
-
-export const BLOCK_MARKER = "<!-- igniter:blocked -->";
 
 // ---------------------------------------------------------------------------
 // Submit payload validation (the kind only rejects wrong data; the Linear
@@ -761,8 +712,8 @@ export function deliverReceiptBody(payload: DeliverSubmit, submission: string): 
   return lines.join("\n") + "\n";
 }
 
-export function blockCommentBody(reason: string): string {
-  return `${BLOCK_MARKER}\nBlocked: ${reason}\n`;
+export function blockCommentBody(reason: string, ticket: string, stage: BlockedStage): string {
+  return `Blocked: ${reason}\n\n${blockedEventBody(ticket, stage, reason)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,8 +1063,8 @@ export async function recordStageStart(
   stage: ProtocolStatus,
 ): Promise<FullIssue> {
   const after = latestValidReceipt(full.comments)?.receipt.submission ?? null;
-  const body = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: full.identifier, stage, after })} -->\n` +
-    `Stage started: ${stage}; preceding receipt ${after ?? "none"}.`;
+  const body = `Stage started: ${stage}; preceding receipt ${after ?? "none"}.\n\n` +
+    beginEventBody(full.identifier, stage as BeginStage, after);
   const expectedProgress = deriveState(deps.resolved, full).progress;
   const before = await readback(deps, full.id);
   if ((latestValidReceipt(before.comments)?.receipt.submission ?? null) !== after || before.state.id !== full.state.id ||
@@ -1140,20 +1091,29 @@ export async function recordStageStart(
   return verified;
 }
 
+/**
+ * Whether a stage started after the given receipt. A begin event's `after`
+ * field is the explicit boundary its writer recorded. The matching receipt
+ * must appear first in comment order, and the later begin must also bind it
+ * with `after === submission`; order or identity alone never establishes the
+ * boundary, current YAML or legacy HTML alike.
+ */
 export function stageStartedAfterReceipt(full: FullIssue, submission: string, stage?: ProtocolStatus): boolean {
-  let seen = false;
+  let receiptSeen = false;
   for (const comment of full.comments) {
     try {
-      if (parseReceiptBlock(comment.body)?.submission === submission) seen = true;
-    } catch { /* An unrelated malformed comment cannot authorize a retry. */ }
-    if (!seen) continue;
-    const match = /^<!-- igniter:begin (\{[^\n]+\}) -->\n/.exec(comment.body);
-    if (!match) continue;
+      if (parseReceiptBlock(comment.body)?.submission === submission) receiptSeen = true;
+    } catch { /* A malformed receipt cannot establish the protected boundary. */ }
+    if (!receiptSeen) continue;
+    let begin: ReturnType<typeof parseBeginEvent>;
     try {
-      const record: unknown = JSON.parse(match[1]!);
-      if (isRecord(record) && record["v"] === 1 && record["ticket"] === full.identifier &&
-          ["build", "review", "deliver"].includes(String(record["stage"])) && (!stage || record["stage"] === stage)) return true;
-    } catch { /* Only valid stage-start records establish the boundary. */ }
+      begin = parseBeginEvent(comment.body);
+    } catch {
+      continue; // A malformed begin block cannot establish the boundary.
+    }
+    if (begin && begin.ticket === full.identifier && begin.after === submission && (!stage || begin.stage === stage)) {
+      return true;
+    }
   }
   return false;
 }
@@ -1524,7 +1484,22 @@ export async function blockMutation(
         `${full.identifier} is ${state.status}+${state.progress ?? "no progress"}`,
     );
   }
-  await deps.client.addComment(full.id, blockCommentBody(reason));
+  // Every call posts a fresh comment — the same reason recurring across a
+  // later, separate block episode is a new event, not a duplicate of the
+  // first. `hasBlockedEvent` only guards the lost-response retry of THIS
+  // attempt: it is checked against comments not already present before this
+  // write, never against the ticket's whole history, so an old episode with
+  // an identical reason can never suppress today's comment.
+  const stage = state.status as BlockedStage;
+  const beforeIds = new Set(full.comments.map((c) => c.id).filter((id): id is string => !!id));
+  try {
+    await deps.client.addComment(full.id, blockCommentBody(reason, full.identifier, stage));
+  } catch (error) {
+    if (!isTransientLinearError(error)) throw error;
+    const read = await readback(deps, full.id);
+    const landed = read.comments.filter((c) => !c.id || !beforeIds.has(c.id));
+    if (!hasBlockedEvent(landed, full.identifier, stage, reason)) throw error;
+  }
   const moved = await readback(deps, full.id);
   await setProgress(deps, moved, "blocked");
   const verified = await readback(deps, full.id);
@@ -1576,12 +1551,12 @@ export async function unblockMutation(
 // Anything else — no receipt, a stale checkpoint, a receipt kind that
 // belongs to another stage, or a correction receipt whose stage moved on —
 // parks the ticket as same-stage Blocked with one actionable comment. The
-// comment carries a fingerprint of the exact error, so an unchanged bad
-// state never comments twice: after a park the ticket reads Blocked (a
-// complete pair) and later reconciles stay quiet.
+// comment carries an `igniter_event` YAML block naming the stage, Progress
+// set, receipt, and decision as explicit fields — the dedupe identity a
+// later reconcile reads back structurally instead of a substring match — so
+// an unchanged bad state never comments twice: after a park the ticket
+// reads Blocked (a complete pair) and later reconciles stay quiet.
 // ---------------------------------------------------------------------------
-
-export const INCOMPLETE_MARKER = "<!-- igniter:incomplete-state -->";
 
 export type IncompleteKind = "missing-progress" | "multiple-progress";
 
@@ -1698,12 +1673,9 @@ function parkReasonText(
   return `${stage} proves no single Progress from the receipt history`;
 }
 
-function incompleteFingerprint(
-  diagnosis: IncompleteDiagnosis,
-  latest: FoundReceipt | null,
-  decision: string,
-): string {
-  return `${diagnosis.status}|${progressKeyOf(diagnosis)}|${latest?.receipt.submission ?? "no-receipt"}|${decision}`;
+/** The identity of an incomplete-state park: same stage, Progress set, receipt, and decision, same park. */
+function incompleteReceiptKey(latest: FoundReceipt | null): string {
+  return latest?.receipt.submission ?? "no-receipt";
 }
 
 function incompleteParkBody(
@@ -1712,13 +1684,10 @@ function incompleteParkBody(
   latest: FoundReceipt | null,
   prior: FoundReceipt | null,
   reason: IncompleteParkReason,
-  fingerprint: string,
   resolved: ResolvedDispatch,
 ): string {
   const stage = resolved.config.states[diagnosis.status];
   const lines = [
-    `${INCOMPLETE_MARKER}`,
-    `<!-- fingerprint: ${fingerprint} -->`,
     `Blocked: ${identifier} is ${stage} with ${progressKeyOf(diagnosis) === "none" ? "no Progress label" : `several Progress labels (${progressKeyOf(diagnosis)})`} — ${parkReasonText(diagnosis, reason, latest, prior)}.`,
     ``,
     `Dispatch parked it as ${stage}+Blocked without guessing a checkpoint or completion, and starts no worker here.`,
@@ -1728,12 +1697,42 @@ function incompleteParkBody(
     `- then run \`igniter reconcile ${identifier}\`.`,
     ``,
     `This diagnosis posts once per unchanged error; a changed status, Progress set, or newest receipt diagnoses again.`,
+    ``,
+    incompleteEventBody(identifier, diagnosis.status, progressKeyOf(diagnosis), incompleteReceiptKey(latest), `park:${reason}`),
   ];
   return lines.join("\n") + "\n";
 }
 
-function hasIncompleteComment(comments: { body: string }[], fingerprint: string): boolean {
-  return comments.some((c) => c.body.includes(INCOMPLETE_MARKER) && c.body.includes(fingerprint));
+/**
+ * Same identity as a prior park: same ticket, stage, Progress set, receipt,
+ * and decision. Reads the current YAML event structurally, requiring its
+ * `ticket` field to match this ticket. A pre-migration
+ * `<!-- igniter:incomplete-state -->` + `<!-- fingerprint: ... -->` comment
+ * still matches read-only (its fingerprint carries no ticket of its own, so
+ * `ticket` parses as null there — allowed only for that legacy drain, never
+ * for a current YAML block) so an unchanged bad state never re-parks right
+ * after this migration deploys.
+ */
+function hasIncompleteComment(
+  comments: { body: string }[],
+  identifier: string,
+  diagnosis: IncompleteDiagnosis,
+  latest: FoundReceipt | null,
+  decision: string,
+): boolean {
+  const progress = progressKeyOf(diagnosis);
+  const receipt = incompleteReceiptKey(latest);
+  return comments.some((c) => {
+    let parsed: ReturnType<typeof parseIncompleteEvent>;
+    try {
+      parsed = parseIncompleteEvent(c.body);
+    } catch {
+      return false; // A malformed comment cannot authorize a duplicate skip.
+    }
+    return !!parsed && (parsed.ticket === null || parsed.ticket === identifier) &&
+      parsed.stage === diagnosis.status && parsed.progress === progress &&
+      parsed.receipt === receipt && parsed.decision === decision;
+  });
 }
 
 /**
@@ -1857,15 +1856,15 @@ async function parkIncomplete(
   const latest = latestValidReceipt(fresh.comments);
   const prior = latest ? latestValidReceiptExcluding(fresh.comments, latest.receipt.submission) : null;
   const reason = await parkReasonFor(deps, full.identifier, diagnosis, latest, prior);
-  const fingerprint = incompleteFingerprint(diagnosis, latest, `park:${reason}`);
-  if (!hasIncompleteComment(fresh.comments, fingerprint)) {
-    const body = incompleteParkBody(full.identifier, diagnosis, latest, prior, reason, fingerprint, resolved);
+  const decision = `park:${reason}`;
+  if (!hasIncompleteComment(fresh.comments, full.identifier, diagnosis, latest, decision)) {
+    const body = incompleteParkBody(full.identifier, diagnosis, latest, prior, reason, resolved);
     try {
       await deps.client.addComment(full.id, body);
     } catch (error) {
       if (!isTransientLinearError(error)) throw error;
       const reread = await readback(deps, full.id);
-      if (!hasIncompleteComment(reread.comments, fingerprint)) throw error;
+      if (!hasIncompleteComment(reread.comments, full.identifier, diagnosis, latest, decision)) throw error;
     }
   }
   const current = await readback(deps, full.id);
