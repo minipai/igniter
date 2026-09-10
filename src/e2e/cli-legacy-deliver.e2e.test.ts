@@ -1,7 +1,7 @@
 // Upgrade coverage for Deliver receipts written before STA-235 added the
 // landed field. Real CLI subprocesses drive production dispatch against the
 // stateful memory Linear client and temporary real Git; no provider or fake
-// Linear HTTP server is involved.
+// Linear service is involved.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

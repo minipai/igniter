@@ -68,70 +68,11 @@ async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient
   return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
 }
 
-describe("argv parsing", () => {
-  test("unknown command and bad argv answer ok:false with usage", async () => {
-    const h = await harness();
-    try {
-      expect(await runCommand([], h.ctx)).toEqual({ ok: false, text: expect.stringContaining("usage: igniter") });
-      expect(await runCommand(["frobnicate"], h.ctx)).toMatchObject({ ok: false });
-      expect((await runCommand(["frobnicate"], h.ctx)).text).toContain("usage: igniter");
-      for (const argv of [
-        ["reconcile"], ["pause"], ["resume"], ["fail"], ["restart"],
-        ["fail", "STA-1"], ["restart", "STA-1"], ["begin", "--builder", "x"],
-        ["begin", "STA-1", "--agent", "hal"],
-        ["begin", "STA-1", "build"],
-        ["begin", "STA-1", "--builder", "m"],
-        ["start", "STA-1", "--bogus"],
-        ["start", "STA-1", "STA-2"],
-        ["pause", "STA-1", "--bogus"],
-        ["begin"], ["submit"], ["submit", "--input", "file"],
-        ["submit", "--input", "-"],
-        ["block"], ["block", "--reason", ""], ["block", "--reason", "x"],
-        ["unblock"],
-      ]) {
-        const out = await runCommand(argv, h.ctx, { directStart: true });
-        expect(out.ok).toBe(false);
-        expect(out.text).toContain("usage: igniter");
-      }
-      expect(h.lines).toEqual([]);
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("removed state points to explicit status without reading workspace metadata", async () => {
-    const h = await harness();
-    try {
-      for (const argv of [["state"], ["state", "--json"]]) {
-        const out = await runCommand(argv, h.ctx);
-        expect(out).toEqual({ ok: false, text: "`igniter state` was removed; use `igniter status <ticket> --json`" });
-      }
-      expect(h.workspaces.calls).toEqual([]);
-    } finally { h.stop(); }
-  });
-
-  test("missing tickets refuse usage even when an old caller supplies workspace metadata", async () => {
-    const h = await harness();
-    try {
-      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
-      h.client.fetchIssue = async () => { throw new Error("must not read Linear"); };
-      for (const argv of [["begin"], ["submit", "--input", "-"], ["block", "--reason", "waiting"], ["unblock"]]) {
-        const options = { workspaceId: "ws-1", input: "{}" };
-        const out = await runCommand(argv, h.ctx, options);
-        expect(out.ok).toBe(false);
-        expect(out.text).toContain(`usage: igniter ${argv[0]} <ticket>`);
-      }
-      expect(h.workspaces.calls).toEqual([]);
-    } finally { h.stop(); }
-  });
-
-});
-
 describe("status", () => {
   test("empty run reports free slots", async () => {
     const h = await harness();
     try {
-      const out = await runCommand(["status"], h.ctx);
+      const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("0 / 3 slots");
       expect(out.data).toMatchObject({ slots: { used: 0, max: 3 }, tickets: [] });
@@ -145,8 +86,8 @@ describe("status", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["worker", "start", "STA-1"], h.ctx);
-      await runCommand(["begin", "STA-1"], h.ctx);
+      await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
+      await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx);
       addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Second", labelIds: [COMPLETE] });
       h.workspaces.seedWorkspace("STA-2", {
         ticket: "STA-2",
@@ -156,7 +97,7 @@ describe("status", () => {
         receipt_kind: "review-pass",
         receipt_id: "comment-9",
       });
-      const out = await runCommand(["status"], h.ctx);
+      const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("1 / 3 slots");
       expect(out.text).toContain("STA-1  Build/In progress");
@@ -178,7 +119,7 @@ describe("status", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [BLOCKED] });
       h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", status: "build", progress: "blocked", block_reason: "x" });
-      const out = await runCommand(["status"], h.ctx);
+      const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("0 / 1 slots");
       expect(out.text).toContain("blocked");
@@ -193,7 +134,7 @@ describe("status", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       h.workspaces.failMethods.add("snapshot");
-      const out = await runCommand(["status"], h.ctx);
+      const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("herdr unreachable: fake herdr exploded");
       expect(out.text).toContain("STA-1  no workspace info");
@@ -206,7 +147,7 @@ describe("status", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [] });
-      const out = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      const out = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data).toMatchObject({ status: "todo", progress: null, next: ["worker start", "begin"] });
@@ -226,7 +167,7 @@ describe("status", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      const out = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data).toMatchObject({ status: "todo", progress: "pending", next: ["worker start", "begin"] });
@@ -243,11 +184,11 @@ describe("finished status actions", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: DONE, description: CRITERIA, labelIds: [] });
       addIssue(h.world, { identifier: "STA-2", stateId: "st-backlog", description: CRITERIA, labelIds: [] });
-      const done = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      const done = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
       expect(done.ok).toBe(true);
       expect((done.data as Record<string, unknown>)["note"]).toContain("preserve uncommitted or unmerged work");
       expect(done.data).toMatchObject({ status: "done", next: ["worker stop"], note: expect.stringContaining("guarded cleanup") });
-      const backlog = await runCommand(["status", "STA-2", "--json"], h.ctx);
+      const backlog = await runCommand({ command: "status", ticket: "STA-2", json: true }, h.ctx);
       expect(backlog.ok).toBe(true);
       expect(backlog.data).toMatchObject({ status: "backlog", next: [] });
       expect(h.workspaces.calls.every(call => call.method === "snapshot")).toBe(true);
@@ -264,13 +205,13 @@ describe("begin", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, description: CRITERIA, labelIds: [PENDING] });
       h.workspaces.failMethods.add("snapshot");
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       expect(h.workspaces.calls).toHaveLength(0);
       expect(h.git.commands).toHaveLength(0);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect(h.workspaces.calls).toHaveLength(0);
     } finally { h.stop(); }
   });
@@ -286,7 +227,7 @@ describe("begin", () => {
         ["STA-5", TODO, CRITERIA, [COMPLETE]],
       ] as const) {
         addIssue(h.world, { identifier, stateId, description, labelIds: [...labelIds] });
-        expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(false);
+        expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(false);
       }
       expect(h.workspaces.calls).toHaveLength(0);
       expect(h.world.issues.every(issue => issue.comments.length === 0)).toBe(true);
@@ -299,9 +240,9 @@ describe("begin", () => {
       h.world.labels.push({ id: "keep", name: "keep", teamId: "team-1", parentId: null });
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, description: CRITERIA, labelIds: ["keep"] });
       addIssue(h.world, { identifier: "STA-2", stateId: TODO, description: CRITERIA, labelIds: [] });
-      expect(await runCommand(["begin", "STA-1"], h.ctx)).toMatchObject({ ok: true });
+      expect(await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).toMatchObject({ ok: true });
       expect(new Set(h.world.issues[0]!.labelIds)).toEqual(new Set(["keep", IN_PROGRESS]));
-      expect((await runCommand(["begin", "STA-2"], h.ctx)).ok).toBe(false);
+      expect((await runCommand({ command: "begin", ticket: "STA-2" }, h.ctx)).ok).toBe(false);
       expect(h.world.issues[1]!.labelIds).toEqual([]);
       expect(h.workspaces.calls).toHaveLength(0);
     } finally { h.stop(); }
@@ -313,7 +254,7 @@ describe("worker start profiles", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("builder-sta-1");
       const started = h.workspaces.calls.find((call) => call.method === "agent.start");
@@ -333,7 +274,7 @@ describe("worker start profiles", () => {
         team: "Starcoder",
         agents: { builder: { harness: "hal" } },
       });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain('"hal"');
       expect(h.workspaces.agents).toHaveLength(0);
@@ -352,7 +293,7 @@ describe("worker start profiles", () => {
         team: "Starcoder",
         agents: { builder: { harness: "opencode", model: "opencode/model", effort: "high" } },
       });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain('unsupported effort "high" for harness "opencode"');
       expect(h.workspaces.agents).toHaveLength(0);
@@ -383,7 +324,7 @@ describe("worker start profiles", () => {
           reviewer: { harness: "opencode", model: "new/reviewer" },
         },
       });
-      const out = await runCommand(["worker", "start", "STA-7"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-7" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("builder-sta-7");
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
@@ -401,7 +342,7 @@ describe("worker start profiles", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.workspaces.failMethods.add("agent.start");
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("worker start failed");
       expect(h.workspaces.workspaces[0]!.workspaceId).toBe("ws-1");
@@ -421,7 +362,7 @@ describe("worker start profiles", () => {
         agents: { builder: { harness: "codex", model: "openai/gpt-5.6-sol" } },
       });
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("provider/model ids belong to OpenCode");
       expect(h.workspaces.agents).toHaveLength(0);
@@ -437,9 +378,9 @@ describe("foreground start", () => {
   test("start refuses unknown tickets and finished ones", async () => {
     const h = await harness();
     try {
-      expect((await runCommand(["start", "STA-404"], h.ctx, { directStart: true })).ok).toBe(false);
+      expect((await runCommand({ command: "start", ticket: "STA-404" }, h.ctx)).ok).toBe(false);
       addIssue(h.world, { identifier: "STA-9", stateId: DONE, priority: 1, description: CRITERIA });
-      const done = await runCommand(["start", "STA-9"], h.ctx, { directStart: true });
+      const done = await runCommand({ command: "start", ticket: "STA-9" }, h.ctx);
       expect(done.ok).toBe(false);
       expect(done.text).toContain("ticket is Done");
       expect(h.workspaces.workspaces).toHaveLength(0);
@@ -454,9 +395,9 @@ describe("fail", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      await runCommand(["worker", "start", "STA-1"], h.ctx);
-      await runCommand(["begin", "STA-1"], h.ctx);
-      const out = await runCommand(["fail", "STA-1", "--reason", "builder wedged"], h.ctx);
+      await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
+      await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx);
+      const out = await runCommand({ command: "fail", ticket: "STA-1", reason: "builder wedged" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("failed STA-1: builder wedged");
       const issue = h.world.issues[0]!;
@@ -481,7 +422,7 @@ describe("fail", () => {
     try {
       h.world.labels.push({ id: "label-9", name: "keep", teamId: "team-1", parentId: null });
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: ["label-9", IN_PROGRESS] });
-      const out = await runCommand(["fail", "STA-1", "--reason", "x"], h.ctx);
+      const out = await runCommand({ command: "fail", ticket: "STA-1", reason: "x" }, h.ctx);
       expect(out.ok).toBe(true);
       const issue = h.world.issues[0]!;
       const failedLabel = h.world.labels.find((l) => l.name === "agent-failed")!;
@@ -498,7 +439,7 @@ describe("fail", () => {
       // creating a team copy then failed as a duplicate on the real API.
       h.world.labels.push({ id: "label-7", name: "agent-failed", teamId: "", parentId: null });
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-      const out = await runCommand(["fail", "STA-1", "--reason", "x"], h.ctx);
+      const out = await runCommand({ command: "fail", ticket: "STA-1", reason: "x" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(h.world.issues[0]!.labelIds).toEqual(["label-7"]);
       expect(h.world.labels.filter((l) => l.name === "agent-failed")).toHaveLength(1);
@@ -511,7 +452,7 @@ describe("fail", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-      const out = await runCommand(["fail", "STA-1", "--reason", "no run"], h.ctx);
+      const out = await runCommand({ command: "fail", ticket: "STA-1", reason: "no run" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(h.workspaces.calls).toHaveLength(0);
     } finally {
@@ -538,7 +479,7 @@ describe("worker work order", () => {
           deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
         },
       });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       // The worker still launches the run's recorded stage profile.
       const started = h.workspaces.calls.find((c) => c.method === "agent.start");
@@ -558,7 +499,7 @@ describe("worker work order", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.git.failOn = ["worktree"];
       h.git.failMessage = "fatal: not a git repository";
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("not a git repository");
       expect(h.workspaces.workspaces).toHaveLength(0);
@@ -572,7 +513,7 @@ describe("worker work order", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-8", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["worker", "start", "STA-8"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-8" }, h.ctx);
       expect(out.ok).toBe(true);
       const scratch = { builder: scratchFor(h.repoRoot, "STA-8", "builder"), reviewer: scratchFor(h.repoRoot, "STA-8", "reviewer"), deliverer: scratchFor(h.repoRoot, "STA-8", "deliverer") };
       const { existsSync } = await import("node:fs");

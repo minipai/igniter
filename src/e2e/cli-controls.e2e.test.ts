@@ -1,6 +1,6 @@
-// CLI control contract through the real dispatch HTTP service. The CLI runs
-// as a subprocess; Linear is the stateful memory client and Herdr/agents are
-// fakes owned by the temp fixture. No real credentials, provider, or project.
+// CLI control contract through the real parser and command protocol. Linear
+// is the stateful memory client and Herdr/agents are fakes owned by the temp
+// fixture. No real credentials, provider, or project.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -72,9 +72,9 @@ describe("e2e CLI explicit ticket status", () => {
       const workerCallsBefore = e2e.workspaces.calls.length;
       for (const env of [{}, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: workspace.workspaceId }] as Record<string, string>[]) {
         const removed = await e2e.cli(["state", "--json"], { env });
-        expectFail(removed, "status <ticket> --json");
+        expectFail(removed, "Unknown command: state");
         for (const argv of [["begin"], ["submit", "--input", "-"], ["block", "--reason", "waiting"], ["unblock"]]) {
-          expectFail(await e2e.cli(argv, { env }), `usage: igniter ${argv[0]} <ticket>`);
+          expectFail(await e2e.cli(argv, { env }), `missing required args for command \`${argv[0]} <ticket>\``);
         }
       }
       expect(e2e.client.calls).toHaveLength(callsBefore);
@@ -100,7 +100,7 @@ describe("e2e CLI removed controls and blockers", () => {
       const callsBefore = e2e.workspaces.calls.length;
       const writesBefore = e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels").length;
       for (const command of ["pause", "resume"]) {
-        expectFail(await e2e.cli([command, "STA-21"]), "usage: igniter");
+        expectFail(await e2e.cli([command, "STA-21"]), `Unknown command: ${command}`);
       }
       const issue = (await e2e.client.fetchIssue("STA-21"))!;
       expect(issue.state.name).toBe("Build");
@@ -231,7 +231,7 @@ describe("e2e CLI permission answers", () => {
 });
 
 describe("e2e CLI foreground start", () => {
-  test("start connects to the existing service and runs the fake Commander in project context", async () => {
+  test("start runs the fake Commander in project context", async () => {
     await withE2E(async (e2e) => {
       const marker = join(e2e.repoDir, "fake-commander-started");
       e2e.stubForegroundAgent("codex", marker);

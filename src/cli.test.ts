@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import type { CommandRequest } from "./dispatch/command-request.ts";
+import { runCli, type CliRuntime } from "./cli.ts";
 
 const cli = new URL("./cli.ts", import.meta.url).pathname;
-const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
-  version: string;
-};
+const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as { version: string };
 
 interface CliResult {
   stdout: string;
@@ -14,28 +12,13 @@ interface CliResult {
   code: number;
 }
 
-async function runCli(args: string[], cwd?: string): Promise<CliResult> {
-  return runCliFull(args, { cwd });
-}
-
-interface RunCliFullOptions {
-  cwd?: string;
-  env?: Record<string, string | undefined>;
-  stdin?: string;
-}
-
-async function runCliFull(args: string[], options: RunCliFullOptions = {}): Promise<CliResult> {
+async function runProcess(args: readonly string[], cwd = tmpdir()): Promise<CliResult> {
   const proc = Bun.spawn(["bun", cli, ...args], {
-    cwd: options.cwd,
+    cwd,
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "pipe",
-    env: { ...process.env, ...options.env },
+    env: { PATH: process.env.PATH },
   });
-  if (options.stdin !== undefined) {
-    proc.stdin.write(options.stdin);
-  }
-  await proc.stdin.end();
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -44,452 +27,149 @@ async function runCliFull(args: string[], options: RunCliFullOptions = {}): Prom
   return { stdout, stderr, code };
 }
 
-describe("cli --version", () => {
-  test("--version prints the package.json version and exits 0", async () => {
-    const result = await runCli(["--version"]);
-    expect(result.code).toBe(0);
-    expect(result.stdout.trim()).toBe(pkg.version);
-  });
-
-  test("-v behaves identically", async () => {
-    const result = await runCli(["-v"]);
-    expect(result.code).toBe(0);
-    expect(result.stdout.trim()).toBe(pkg.version);
-  });
-
-  test("version resolves from any directory", async () => {
-    const result = await runCli(["--version"], tmpdir());
-    expect(result.code).toBe(0);
-    expect(result.stdout.trim()).toBe(pkg.version);
-  });
-
-  test("usage with no arguments lists --version and exits 1", async () => {
-    const result = await runCli([]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("--version");
-  });
-
-  test("usage separates Linear transitions from worker operations", async () => {
-    const result = await runCli([]);
-    expect(result.stderr).toContain("approve <ticket>");
-    for (const action of ["start", "send", "restart", "stop", "answer"]) {
-      expect(result.stderr).toContain(`worker ${action} <ticket>`);
-    }
-    expect(result.stderr).not.toMatch(/pause|resume|--builder|--to/);
-  });
-
-  test.each(["pause", "resume", "restart", "answer"])("removed top-level %s command is rejected", async (command) => {
-    const result = await runCli([command, "STA-1"], tmpdir());
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("usage: igniter");
-  });
-
-  test("the removed Web UI dev command is rejected", async () => {
-    const result = await runCli(["dev"]);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("usage: igniter");
-    expect(result.stderr).not.toContain("serve|dev|");
-  });
-});
-
-// Black-box forwarding: the CLI is a thin client over POST /api/command.
-// A fake dispatch server records what arrived; a temporary repo root points
-// the CLI at it through `.igniter/config.yaml`. No Linear key, no daemon.
-
-interface SeenCommand {
-  argv: string[];
-  workspaceId?: string;
-  directStart?: boolean;
-  input?: string;
-}
-
-function startFakeDispatch(reply: (seen: SeenCommand) => { ok: boolean; text: string; data?: unknown }): {
-  port: number;
-  seen: SeenCommand[];
-  stop: () => void;
+function fakeRuntime(input = "{}"): {
+  runtime: CliRuntime;
+  seen: CommandRequest[];
+  output: () => CliResult;
 } {
-  const seen: SeenCommand[] = [];
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (req: Request): Promise<Response> => {
-      const body = (await req.json()) as SeenCommand;
-      seen.push(body);
-      return Response.json(reply(body));
+  const seen: CommandRequest[] = [];
+  let stdout = "";
+  let stderr = "";
+  let code = 0;
+  const runtime: CliRuntime = {
+    run: async (command) => {
+      seen.push(command);
+      return {
+        ok: true,
+        text: command.command,
+        ...(command.command === "start"
+          ? { data: { kind: "commander_foreground", command: ["true"], cwd: tmpdir() } }
+          : {}),
+      };
     },
-  });
-  const port = server.port;
-  if (port === undefined) throw new Error("fake dispatch has no port");
-  return { port, seen, stop: () => server.stop() };
+    readStdin: async () => input,
+    stdout: (text) => {
+      stdout += `${text}\n`;
+    },
+    stderr: (text) => {
+      stderr += `${text}\n`;
+    },
+    launch: async () => 0,
+  };
+  return { runtime, seen, output: () => ({ stdout, stderr, code }) };
 }
 
-/** A repo root whose dispatch config points at the fake dispatch server. */
-function repoPointingAt(port: number): string {
-  const dir = mkdtempSync(join(tmpdir(), "igniter-cli-"));
-  mkdirSync(join(dir, ".igniter"), { recursive: true });
-  writeFileSync(join(dir, ".igniter", "config.yaml"), `project: igniter\nlisten: "127.0.0.1:${port}"\n`);
-  return dir;
+async function runInProcess(args: string[], input = "{}"): Promise<CliResult & { seen: CommandRequest[] }> {
+  const fake = fakeRuntime(input);
+  const code = await runCli(args, fake.runtime);
+  return { ...fake.output(), code, seen: fake.seen };
 }
 
-function outsideWorkspaceEnv(): Record<string, string> {
-  return { HERDR_ENV: "0", HERDR_WORKSPACE_ID: "" };
-}
-
-describe("cli dispatch forwarding", () => {
-  test("status prints the server text and exits 0", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "1 / 2 slots" }));
-    try {
-      const result = await runCliFull(["status"], { cwd: repoPointingAt(fake.port), env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("1 / 2 slots");
-      expect(result.stderr).toBe("");
-      expect(fake.seen).toEqual([{ argv: ["status"] }]);
-    } finally {
-      fake.stop();
-    }
+describe("CLI metadata", () => {
+  test.each(["--version", "-v"])("%s prints the package version", async (flag) => {
+    const result = await runProcess([flag]);
+    expect(result).toEqual({ stdout: `${pkg.version}\n`, stderr: "", code: 0 });
   });
 
-  test("dispatch argv reaches the server verbatim", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "answered y for STA-1" }));
-    try {
-      const result = await runCliFull(["worker", "answer", "STA-1", "y"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("answered y for STA-1");
-      expect(fake.seen).toEqual([{ argv: ["worker", "answer", "STA-1", "y"] }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("start runs the prepared Commander in the current terminal", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "igniter-cli-foreground-"));
-    const marker = join(dir, "commander-started");
-    const fake = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: {
-        kind: "commander_foreground",
-        command: ["/usr/bin/touch", marker],
-        cwd: dir,
-      },
-    }));
-    try {
-      const result = await runCliFull(["start"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(0);
-      expect(await Bun.file(marker).exists()).toBe(true);
-      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("start returns the foreground Commander's exit code", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "igniter-cli-foreground-exit-"));
-    const fake = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: {
-        kind: "commander_foreground",
-        command: [process.execPath, "-e", "process.exit(7)"],
-        cwd: dir,
-      },
-    }));
-    try {
-      const result = await runCliFull(["start"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(7);
-      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("start cold-boots serve and reports an owned child that exits early", async () => {
-    const probe = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probe.port;
-    probe.stop();
-    if (port === undefined) throw new Error("probe has no port");
-
-    const result = await runCliFull(["start"], {
-      cwd: repoPointingAt(port),
-      env: { ...outsideWorkspaceEnv(), LINEAR_API_KEY: "", IGNITER_PORT: "" },
-    });
-
+  test("usage groups worker subcommands", async () => {
+    const result = await runProcess([]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("automatic `igniter serve` exited with code 1");
+    expect(result.stdout).toContain("igniter <command>");
+    expect(result.stdout).toContain("approve <ticket>");
+    expect(result.stdout).toContain("worker restart <ticket>");
+    expect(result.stdout).not.toContain("serve");
+    expect(result.stdout).not.toContain("publish-review");
   });
 
-  test("a refused command prints to stderr and exits 1", async () => {
-    const fake = startFakeDispatch(() => ({ ok: false, text: 'ticket "STA-9" was not found in Linear' }));
-    try {
-      const result = await runCliFull(["start", "STA-9"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain('ticket "STA-9" was not found in Linear');
-      expect(result.stdout).toBe("");
-      expect(fake.seen).toEqual([{ argv: ["start", "STA-9"], directStart: true }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("no server names the address and exits 1", async () => {
-    const probe = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probe.port;
-    probe.stop();
-    if (port === undefined) throw new Error("probe has no port");
-    const result = await runCliFull(["status"], { cwd: repoPointingAt(port), env: outsideWorkspaceEnv() });
+  test.each(["pause", "resume", "serve", "dev"])("removed %s command is rejected", async (command) => {
+    const result = await runProcess([command]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(`no dispatch server at 127.0.0.1:${port}`);
-    expect(result.stderr).toContain("igniter serve");
-  });
-
-  test("an unknown command never touches the server", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
-    try {
-      const result = await runCliFull(["frobnicate"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("usage: igniter");
-      expect(fake.seen).toEqual([]);
-    } finally {
-      fake.stop();
-    }
+    expect(result.stderr).toContain(`Unknown command: ${command}`);
   });
 });
 
-describe("cli explicit ticket commands", () => {
-  test("removed state reports its replacement even inside a Herdr workspace", async () => {
-    const result = await runCliFull(["state", "--json"], {
-      cwd: tmpdir(), env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
-    });
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain("was removed; use `igniter status <ticket> --json`");
+describe("CAC command actions", () => {
+  test("each declaration constructs the typed command it owns", async () => {
+    const cases: { argv: string[]; request: CommandRequest; input?: string }[] = [
+      { argv: ["status"], request: { command: "status" } },
+      { argv: ["status", "STA-1", "--json"], request: { command: "status", ticket: "STA-1", json: true } },
+      { argv: ["start"], request: { command: "start" } },
+      { argv: ["start", "STA-1"], request: { command: "start", ticket: "STA-1" } },
+      { argv: ["begin", "STA-1"], request: { command: "begin", ticket: "STA-1" } },
+      { argv: ["reconcile", "STA-1"], request: { command: "reconcile", ticket: "STA-1" } },
+      { argv: ["approve", "STA-1", "--receipt", "r-1"], request: { command: "approve", ticket: "STA-1", receipt: "r-1" } },
+      { argv: ["fail", "STA-1", "--reason", "wedged"], request: { command: "fail", ticket: "STA-1", reason: "wedged" } },
+      { argv: ["submit", "STA-1", "--input", "-"], request: { command: "submit", ticket: "STA-1", payload: { ok: true } }, input: '{"ok":true}' },
+      { argv: ["block", "STA-1", "--reason", "waiting"], request: { command: "block", ticket: "STA-1", reason: "waiting" } },
+      { argv: ["unblock", "STA-1"], request: { command: "unblock", ticket: "STA-1" } },
+      { argv: ["worker", "start", "STA-1", "--role", "build"], request: { command: "worker.start", ticket: "STA-1", role: "build" } },
+      { argv: ["worker", "send", "STA-1", "--role", "review", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "review", text: "check this" } },
+      { argv: ["worker", "stop", "STA-1", "--role", "deliver"], request: { command: "worker.stop", ticket: "STA-1", role: "deliver" } },
+      { argv: ["worker", "restart", "STA-1", "--profile", "fallback", "--harness", "codex", "--model", "m", "--effort", "high"], request: { command: "worker.restart", ticket: "STA-1", profile: "fallback", harness: "codex", model: "m", effort: "high" } },
+      { argv: ["worker", "answer", "STA-1", "y"], request: { command: "worker.answer", ticket: "STA-1", answer: "y" } },
+    ];
+
+    for (const testCase of cases) {
+      const result = await runInProcess(testCase.argv, testCase.input);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.seen).toEqual([testCase.request]);
+    }
+  });
+
+  test("a refused command exits 1 with the command result", async () => {
+    const fake = fakeRuntime();
+    fake.runtime.run = async (command) => {
+      fake.seen.push(command);
+      return { ok: false, text: "ticket was refused" };
+    };
+    const code = await runCli(["begin", "STA-9"], fake.runtime);
+    expect(code).toBe(1);
+    expect(fake.output().stderr).toContain("ticket was refused");
+  });
+
+  test("start propagates the foreground Commander's exit code", async () => {
+    const fake = fakeRuntime();
+    fake.runtime.launch = async () => 7;
+    expect(await runCli(["start"], fake.runtime)).toBe(7);
+  });
+});
+
+describe("CAC validation and help", () => {
+  test.each([
+    { args: ["--help"], usage: "igniter <command>", option: "--version" },
+    { args: ["status", "--help"], usage: "igniter status [ticket]", option: "--json" },
+    { args: ["start", "--help"], usage: "igniter start [ticket]", option: "--help" },
+    { args: ["approve", "--help"], usage: "igniter approve <ticket>", option: "--receipt <id>" },
+    { args: ["submit", "--help"], usage: "igniter submit <ticket>", option: "--input <source>" },
+    { args: ["worker", "--help"], usage: "igniter worker <command>", option: "restart <ticket>" },
+    { args: ["worker", "restart", "--help"], usage: "igniter worker restart <ticket>", option: "--model <model>" },
+  ])("help comes from its CAC declaration: $args", async ({ args, usage, option }) => {
+    const result = await runProcess(args);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(usage);
+    expect(result.stdout).toContain(option);
+    expect(result.stderr).toBe("");
   });
 
   test.each([
-    { args: ["begin"] }, { args: ["submit", "--input", "-"] }, { args: ["submit", "--input=-"] },
-    { args: ["block", "--reason", "waiting"] }, { args: ["block", "--reason=waiting"] }, { args: ["unblock"] },
-  ])("missing ticket is rejected before config, HTTP, or stdin: %j", async ({ args }) => {
-    const result = await runCliFull([...args], {
-      cwd: tmpdir(), env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
-    });
+    ["begin"], ["approve", "STA-1"], ["fail", "STA-1"], ["submit", "STA-1"],
+    ["block", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
+    ["status", "--bogus"], ["start", "STA-1", "--publish-review"],
+    ["worker", "start", "STA-1", "--role", "other"],
+    ["worker", "restart", "STA-1", "--profile", "other"],
+    ["worker", "answer", "STA-1", "yes"],
+  ].map((argv) => ({ argv })))("invalid syntax never runs a command: $argv", async ({ argv }) => {
+    const result = await runInProcess(argv);
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(`usage: igniter ${args[0]} <ticket>`);
+    expect(result.stderr).not.toBe("");
+    expect(result.seen).toEqual([]);
   });
 
-  test("submit carries stdin to the server verbatim without a workspace id", async () => {
-    const payload = JSON.stringify({ version: 1, summary: "done" });
-    const fake = startFakeDispatch((seen) => {
-      expect(seen.input).toBe(payload);
-      expect(seen.workspaceId).toBeUndefined();
-      return { ok: true, text: "submitted STA-1" };
-    });
-    try {
-      const result = await runCliFull(["submit", "STA-1", "--input", "-"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-        stdin: payload,
-      });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("submitted STA-1");
-      expect(fake.seen).toEqual([{ argv: ["submit", "STA-1", "--input", "-"], input: payload }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("a refused ticket-targeted command exits 1 with the server text on stderr", async () => {
-    const fake = startFakeDispatch(() => ({ ok: false, text: "nothing to submit" }));
-    try {
-      const result = await runCliFull(["submit", "STA-1", "--input", "-"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-        stdin: JSON.stringify({ version: 1 }),
-      });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("nothing to submit");
-    } finally {
-      fake.stop();
-    }
-  });
-});
-
-describe("cli command coverage", () => {
-  test("every dispatch command forwards argv and honors the reply", async () => {
-    const fake = startFakeDispatch((seen) => ({
-      ok: true,
-      text: seen.argv.join(" "),
-      ...(seen.argv[0] === "start"
-        ? { data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() } }
-        : {}),
-    }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const cases: string[][] = [
-        ["status", "--json"],
-        ["status", "STA-1", "--json"],
-        ["start"],
-        ["start", "STA-1"],
-        ["begin", "STA-1"],
-        ["submit", "STA-1", "--input", "-"],
-        ["submit", "--input", "-", "STA-1"],
-        ["submit", "--input=-", "STA-1"],
-        ["block", "STA-1", "--reason", "waiting"],
-        ["block", "--reason", "waiting", "STA-1"],
-        ["block", "--reason=waiting", "STA-1"],
-        ["unblock", "STA-1"],
-        ["reconcile", "STA-1"],
-        ["approve", "STA-1", "--receipt", "receipt-build-1"],
-        ["worker", "start", "STA-1", "--role", "build"],
-        ["worker", "send", "STA-1", "--role", "review", "check the result"],
-        ["worker", "stop", "STA-1", "--role", "deliver"],
-        ["fail", "STA-1", "--reason", "wedged"],
-        ["worker", "restart", "STA-1", "--model", "m"],
-      ];
-      for (const argv of cases) {
-        const result = await runCliFull(argv, {
-          cwd: dir,
-          env: outsideWorkspaceEnv(),
-          ...(argv[0] === "submit" ? { stdin: "{}" } : {}),
-        });
-        expect(result.code).toBe(0);
-        expect(result.stdout).toContain(argv.join(" "));
-      }
-      expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
-      expect(fake.seen.every((entry) => entry.workspaceId === undefined)).toBe(true);
-      expect(fake.seen.filter((entry) => entry.argv[0] === "start").every((entry) => entry.directStart === true)).toBe(true);
-    } finally {
-      fake.stop();
-    }
-  });
-});
-
-describe("cli start project-root search", () => {
-  test("start from the project root keeps the existing behavior", async () => {
-    const fake = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
-    }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const result = await runCliFull(["start"], { cwd: dir, env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("starting Commander");
-      expect(fake.seen).toEqual([{ argv: ["start"], directStart: true }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("start from one and many subdirectory levels uses the enclosing config", async () => {
-    const fake = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
-    }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const deep = join(dir, "src", "nested");
-      mkdirSync(deep, { recursive: true });
-      for (const cwd of [join(dir, "src"), deep]) {
-        const result = await runCliFull(["start"], { cwd, env: outsideWorkspaceEnv() });
-        expect(result.code).toBe(0);
-        expect(result.stdout).toContain("starting Commander");
-      }
-      expect(fake.seen).toEqual([
-        { argv: ["start"], directStart: true },
-        { argv: ["start"], directStart: true },
-      ]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("start with a ticket from a subdirectory forwards the ticket", async () => {
-    const fake = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
-    }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const sub = join(dir, "src");
-      mkdirSync(sub, { recursive: true });
-      const result = await runCliFull(["start", "STA-1"], { cwd: sub, env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(0);
-      expect(fake.seen).toEqual([{ argv: ["start", "STA-1"], directStart: true }]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("nested projects select the nearest config", async () => {
-    const outer = startFakeDispatch(() => ({ ok: true, text: "outer" }));
-    const inner = startFakeDispatch(() => ({
-      ok: true,
-      text: "starting Commander",
-      data: { kind: "commander_foreground", command: ["/usr/bin/true"], cwd: tmpdir() },
-    }));
-    try {
-      const outerDir = repoPointingAt(outer.port);
-      const innerDir = join(outerDir, "inner");
-      mkdirSync(join(innerDir, ".igniter"), { recursive: true });
-      writeFileSync(join(innerDir, ".igniter", "config.yaml"), `project: igniter\nlisten: "127.0.0.1:${inner.port}"\n`);
-      const sub = join(innerDir, "src");
-      mkdirSync(sub, { recursive: true });
-      const result = await runCliFull(["start"], { cwd: sub, env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain("starting Commander");
-      expect(inner.seen).toEqual([{ argv: ["start"], directStart: true }]);
-      expect(outer.seen).toEqual([]);
-    } finally {
-      outer.stop();
-      inner.stop();
-    }
-  });
-
-  test("no ancestor config fails clearly without contacting a server", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
-    try {
-      const dir = mkdtempSync(join(tmpdir(), "igniter-start-noroot-"));
-      const sub = join(dir, "a", "b");
-      mkdirSync(sub, { recursive: true });
-      const result = await runCliFull(["start"], { cwd: sub, env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain(".igniter/config.yaml not found from");
-      expect(result.stdout).toBe("");
-      expect(fake.seen).toEqual([]);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("non-start dispatch commands from a subdirectory keep the cwd config, never the ancestor", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const sub = join(dir, "src");
-      mkdirSync(sub, { recursive: true });
-      const result = await runCliFull(["status"], { cwd: sub, env: outsideWorkspaceEnv() });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain(`.igniter/config.yaml not found under ${realpathSync(sub)}`);
-      expect(result.stdout).toBe("");
-      expect(fake.seen).toEqual([]);
-    } finally {
-      fake.stop();
-    }
+  test("submit rejects malformed JSON before dispatch", async () => {
+    const result = await runInProcess(["submit", "STA-1", "--input", "-"], "{not-json");
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("submit input is not JSON");
+    expect(result.seen).toEqual([]);
   });
 });

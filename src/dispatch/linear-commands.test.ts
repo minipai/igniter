@@ -43,7 +43,7 @@ async function fixture(stage = "build", comments: { id: string; body: string }[]
   return { ctx, issue, client, workspaces, git };
 }
 
-const submit = (ctx: CommandContext, payload: unknown) => runCommand(["submit", "STA-244", "--input", "-"], ctx, { input: JSON.stringify(payload) });
+const submit = (ctx: CommandContext, payload: unknown) => runCommand({ command: "submit", ticket: "STA-244", payload }, ctx);
 const noWorkers = (workspaces: FakeWorkspaces) => {
   expect(workspaces.calls).toEqual([]);
   expect(workspaces.snapshotCalls).toBe(0);
@@ -82,9 +82,9 @@ describe("Linear mutations without Worker dependencies", () => {
 
   test("block and unblock retain their stage while Herdr is unavailable", async () => {
     const h = await fixture();
-    expect((await runCommand(["block", "STA-244", "--reason", "waiting for input"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(true);
     expect(h.issue.labelIds).toEqual(["label-blocked"]);
-    expect((await runCommand(["unblock", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "unblock", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.issue.labelIds).toEqual(["label-pending"]);
     expect(h.issue.stateId).toBe("st-build");
     noWorkers(h.workspaces);
@@ -94,11 +94,11 @@ describe("Linear mutations without Worker dependencies", () => {
     const h = await fixture("todo");
     h.issue.labelIds = ["label-pending"];
     h.client.failNext("setIssueState", failure);
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(false);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
     expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
     expect(h.issue.labelIds).toEqual(["label-pending"]);
     const restarted = { ...h.ctx, client: new MemoryLinearClient(h.client.world) };
-    expect((await runCommand(["begin", "STA-244"], restarted)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, restarted)).ok).toBe(true);
     expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     noWorkers(h.workspaces);
@@ -108,8 +108,8 @@ describe("Linear mutations without Worker dependencies", () => {
     const h = await fixture();
     h.issue.labelIds = ["label-pending"];
     h.client.failNext("addComment", { ...failure, afterWrite: true });
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
     noWorkers(h.workspaces);
   });
@@ -119,7 +119,7 @@ describe("Linear mutations without Worker dependencies", () => {
     h.client.failNext("setIssueLabels", failure);
     expect((await submit(h.ctx, build())).ok).toBe(false);
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.issue.comments.some((comment) => comment.body.includes("igniter:begin"))).toBe(false);
     expect((await submit(h.ctx, build())).ok).toBe(true);
     expect(h.issue.labelIds).toEqual(["label-complete"]);
@@ -144,7 +144,7 @@ describe("Linear mutations without Worker dependencies", () => {
         return result;
       };
     }
-    const result = await runCommand(["begin", "STA-244"], h.ctx);
+    const result = await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx);
     expect(result.ok).toBe(false);
     expect(result.text).toContain("ticket moved");
     expect(h.issue.labelIds).toEqual(["label-blocked"]);
@@ -180,7 +180,7 @@ describe("Linear mutations without Worker dependencies", () => {
     expect((await submit(h.ctx, payload)).ok).toBe(false);
     // An explicit reconciliation put the new stage back in Pending before its new start.
     h.issue.labelIds = ["label-pending"];
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     const restarted = { ...h.ctx, client: new MemoryLinearClient(h.client.world) };
     const result = await submit(restarted, payload);
     expect(result.ok).toBe(true);
@@ -195,7 +195,7 @@ describe("Linear mutations without Worker dependencies", () => {
     const h = await fixture();
     expect((await submit(h.ctx, build())).ok).toBe(true);
     h.issue.labelIds = ["label-pending"];
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     h.client.calls = [];
     const result = await submit(h.ctx, build());
     expect(result.text).toContain("already submitted");

@@ -119,7 +119,7 @@ describe("missing Progress on active stages", () => {
       const h = await harness();
       try {
         addIssue(h.world, { identifier: "STA-1", stateId: statusId, priority: 1, description: CRITERIA, labelIds: [] });
-        const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+        const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
         expect(out.ok).toBe(false);
         expect(out.text).toContain("parked as");
         expect(out.text).toContain("Blocked");
@@ -147,7 +147,7 @@ describe("multiple Progress labels fail closed", () => {
         description: CRITERIA,
         labelIds: [IN_PROGRESS, COMPLETE],
       });
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("parked as");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
@@ -172,7 +172,7 @@ describe("multiple Progress labels fail closed", () => {
       });
       seedReceipt(h, "STA-1", "review-pass");
       seedLineage(h, "STA-1");
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("repaired");
       expect(out.text).toContain("deliver+complete+in_progress → deliver+pending");
@@ -194,7 +194,7 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       const commentsBefore = issueOf(h, "STA-1").comments.length;
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("build+none → build+complete");
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
@@ -215,7 +215,7 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       const commentsBefore = issueOf(h, "STA-1").comments.length;
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("review+none → review+pending");
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
@@ -232,7 +232,7 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "review-pass");
       seedLineage(h, "STA-1");
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("review+none → review+complete");
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
@@ -248,7 +248,7 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "deliver");
       // No lineage needed: the landed delivery legitimately rewrote the branch.
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("deliver+none → deliver+complete");
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
@@ -266,7 +266,7 @@ describe("insufficient or conflicting receipts park with one actionable comment"
       addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "review-fail");
       seedLineage(h, "STA-1");
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("parked as");
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
@@ -288,7 +288,7 @@ describe("insufficient or conflicting receipts park with one actionable comment"
       seedReceipt(h, "STA-1", "review-pass", HEAD, "sub-old-0000000001");
       seedReceipt(h, "STA-1", "build", HEAD, "sub-new-0000000002");
       seedLineage(h, "STA-1");
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("belongs in Review+Pending");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
@@ -305,7 +305,7 @@ describe("insufficient or conflicting receipts park with one actionable comment"
       addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "review-pass", "replaced-commit");
       // No lineage for the receipt checkpoint: the branch moved on.
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("stale");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
@@ -322,14 +322,14 @@ describe("repeat reconciles on an unchanged bad state", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
-      const first = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const first = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(first.ok).toBe(false);
       expect(markerComments(h, "STA-1")).toBe(1);
       const commentsAfterFirst = issueOf(h, "STA-1").comments.length;
       const linesAfterFirst = h.lines.length;
       // The ticket now reads Build+Blocked: the retry stays quiet without
       // touching Linear or Herdr again.
-      const second = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const second = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(second.ok).toBe(true);
       expect(second.text).toContain("no owner transition to reconcile (build+blocked)");
       expect(issueOf(h, "STA-1").comments).toHaveLength(commentsAfterFirst);
@@ -358,10 +358,10 @@ describe("Herdr-independent convergence", () => {
       h.workspaces.failMethods.add("snapshot");
       h.workspaces.failMethods.add("workspace.create");
       h.workspaces.failMethods.add("agent.start");
-      const repaired = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const repaired = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(repaired.ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      const parked = await runCommand(["reconcile", "STA-2"], h.ctx);
+      const parked = await runCommand({ command: "reconcile", ticket: "STA-2" }, h.ctx);
       expect(parked.ok).toBe(false);
       expect(issueOf(h, "STA-2").labelIds).toEqual([BLOCKED]);
       expect(markerComments(h, "STA-2")).toBe(1);
@@ -451,7 +451,7 @@ describe("concurrent changes are never clobbered", () => {
         if (calls === 1) throw new LinearError(500, "lost result");
         return id;
       }) as typeof h.client.addComment;
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("parked as");
       expect(markerComments(h, "STA-1")).toBe(1);
@@ -470,7 +470,7 @@ describe("receipt-kind ownership", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "deliver");
       seedLineage(h, "STA-1");
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("proves no single Progress");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
@@ -487,7 +487,7 @@ describe("receipt-kind ownership", () => {
       seedReceipt(h, "STA-1", "review-pass", HEAD, "sub-old-0000000001");
       seedReceipt(h, "STA-1", "build", "replaced-commit", "sub-new-0000000002");
       // No lineage for the correction checkpoint: stale beats stage-conflict.
-      const out = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("stale");
       expect(out.text).not.toContain("belongs in Review");
@@ -505,14 +505,14 @@ describe("bad states stay ticket-targeted", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
       addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const parked = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const parked = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(parked.ok).toBe(false);
       // The queue overview still lists both tickets.
-      const overview = await runCommand(["status"], h.ctx);
+      const overview = await runCommand({ command: "status" }, h.ctx);
       expect(overview.ok).toBe(true);
       expect(overview.text).toContain("STA-1");
       // The healthy ticket begins normally without worker side effects.
-      const begun = await runCommand(["begin", "STA-2"], h.ctx);
+      const begun = await runCommand({ command: "begin", ticket: "STA-2" }, h.ctx);
       expect(begun.ok).toBe(true);
       expect(h.workspaces.workspaces).toHaveLength(0);
       expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
@@ -529,7 +529,7 @@ describe("bad states stay ticket-targeted", () => {
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
       const commentsBefore = issueOf(h, "STA-1").comments.length;
-      const out = await runCommand(["status", "STA-1", "--json"], h.ctx);
+      const out = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("STA-1");
       expect(out.text).toContain("reconcile");
@@ -550,7 +550,7 @@ describe("bad states stay ticket-targeted", () => {
       const commentsBefore = issueOf(h, "STA-1").comments.length;
       // Even a receipt-repairable ticket starts nothing through begin: only
       // an explicit reconcile converges it.
-      const out = await runCommand(["begin", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("reconcile");
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);

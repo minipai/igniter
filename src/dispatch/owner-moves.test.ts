@@ -163,28 +163,37 @@ function wsIdOf(h: Harness, identifier: string): string {
   return workspace.workspaceId;
 }
 
-async function ticketCommand(h: Harness, identifier: string, argv: string[], input?: string) {
-  if (argv[0] === "begin") {
-    const started = await runCommand(["worker", "start", identifier], h.ctx);
+async function ticketCommand(
+  h: Harness,
+  identifier: string,
+  action: "begin" | "submit" | "status" | "block" | "unblock",
+  value?: string,
+) {
+  if (action === "begin") {
+    const started = await runCommand({ command: "worker.start", ticket: identifier }, h.ctx);
     if (!started.ok) return started;
   }
-  return runCommand([argv[0]!, identifier, ...argv.slice(1)], h.ctx, { input });
+  if (action === "submit") return runCommand({ command: "submit", ticket: identifier, payload: JSON.parse(value!) }, h.ctx);
+  if (action === "status") return runCommand({ command: "status", ticket: identifier, json: true }, h.ctx);
+  if (action === "block") return runCommand({ command: "block", ticket: identifier, reason: value! }, h.ctx);
+  if (action === "unblock") return runCommand({ command: "unblock", ticket: identifier }, h.ctx);
+  return runCommand({ command: "begin", ticket: identifier }, h.ctx);
 }
 
 /** Start a worker and record Build, submit the first Build, and hand it to Review: the owner moves Build+Complete to Review and an explicit reconcile converges it. */
 async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
-  expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
-  expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+  expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
+  expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
   expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
   seedLineage(h, identifier);
   await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
-  expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
+  expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect(issueOf(h, identifier).labelIds).toEqual([PENDING]);
-  expect((await ticketCommand(h, identifier, ["begin"])).ok).toBe(true);
-  expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
   seedLineage(h, identifier);
 }
 
@@ -195,7 +204,7 @@ describe("owner transitions from Linear state", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       seedReceipt(h, "STA-1", "review-pass");
       seedLineage(h, "STA-1");
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // The owner still owns it; reconcile creates no workspace or worker.
       expect(h.workspaces.workspaces).toHaveLength(0);
       expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
@@ -215,7 +224,7 @@ describe("owner transitions from Linear state", () => {
       // A fresh process: empty workspaces, no tokens anywhere.
       h.workspaces.workspaces = [];
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
@@ -250,7 +259,7 @@ describe("owner transitions from Linear state", () => {
         git,
         repoRoot: h.ctx.repoRoot,
       };
-      const reconciled = await runCommand(["reconcile", "STA-1"], restarted);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, restarted);
       expect(reconciled.ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
@@ -270,7 +279,7 @@ describe("owner transitions from Linear state", () => {
       h.workspaces.workspaces = [];
       h.workspaces.failMethods.add("snapshot");
       h.workspaces.calls = [];
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(reconciled.ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
@@ -291,7 +300,7 @@ describe("owner transitions from Linear state", () => {
       seedReceipt(h, "STA-2", "review-fail", HEAD, "sub-seed-00000002");
       seedLineage(h, "STA-2");
       for (const id of ["STA-1", "STA-2"]) {
-        const reconciled = await runCommand(["reconcile", id], h.ctx);
+        const reconciled = await runCommand({ command: "reconcile", ticket: id }, h.ctx);
         expect(reconciled.ok).toBe(true);
         expect(reconciled.text).toContain("sent back: Review+Complete → Build+Pending");
         expect(issueOf(h, id).stateId).toBe(BUILD);
@@ -307,18 +316,18 @@ describe("owner transitions from Linear state", () => {
     try {
       await toReviewComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
-      await ticketCommand(h, "STA-1", ["begin"]);
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload()))).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      await ticketCommand(h, "STA-1", "begin");
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(deliverPayload()))).ok).toBe(true);
       const at = h.lines.length;
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // A fresh delivery is never misread as a fresh approval: Linear is kept, no line.
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(h.lines.slice(at).filter((l) => l.startsWith("STA-1"))).toEqual([]);
       // The owner lands and moves to Done: Progress is removed.
       await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DONE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
       expect(reconciled.text).toContain("done: Deliver+Complete → Done");
@@ -333,7 +342,7 @@ describe("owner transitions from Linear state", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       seedReceipt(h, "STA-1", "review-pass", "replaced-commit");
       // No lineage for the receipt checkpoint: the branch moved on.
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(reconciled.text).toContain("STA-1");
@@ -348,15 +357,15 @@ describe("owner transitions from Linear state", () => {
     try {
       await toReviewComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
-      await ticketCommand(h, "STA-1", ["begin"]);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      await ticketCommand(h, "STA-1", "begin");
       // Deliver rebased and landed the new tip: the approved SHA no longer
       // binds the rewritten branch, but the landed SHA reads back from main.
       const rebased = "bbbbbbbbbbbbbbbb";
       h.git.ancestors.add(`${rebased} main`);
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload(HEAD, rebased)))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(deliverPayload(HEAD, rebased)))).ok).toBe(true);
       const at = h.lines.length;
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // Deliver+Complete with a deliver receipt waits for the owner: no
       // fresh approval, no stale refusal, no label rollback.
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
@@ -366,11 +375,11 @@ describe("owner transitions from Linear state", () => {
       // The owner confirms the landing: Done cleanup verifies the landed
       // commit, not the approved checkpoint left behind by the rebase.
       await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DONE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
       expect(reconciled.text).toContain("done: Deliver+Complete → Done");
-      const stopped = await runCommand(["worker", "stop", "STA-1"], h.ctx);
+      const stopped = await runCommand({ command: "worker.stop", ticket: "STA-1" }, h.ctx);
       expect(stopped.ok).toBe(true);
       expect(h.git.commands.some(command => command.args.includes(rebased))).toBe(true);
     } finally {
@@ -401,7 +410,7 @@ describe("owner transitions from Linear state", () => {
         "holds no valid Igniter receipt",
       ];
       for (const [index, ticket] of ["STA-1", "STA-2", "STA-3", "STA-4"].entries()) {
-        const reconciled = await runCommand(["reconcile", ticket], h.ctx);
+        const reconciled = await runCommand({ command: "reconcile", ticket: ticket }, h.ctx);
         expect(reconciled.ok).toBe(false);
         expect(reconciled.text).toContain(ticket);
         expect(reconciled.text).toContain(diagnostics[index]!);
@@ -425,7 +434,7 @@ describe("owner transitions from Linear state", () => {
         body: `note\n\n${block}\n${block}\n`,
         createdAt: "2026-09-04T00:00:00.000099Z",
       });
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
     } finally {
@@ -464,8 +473,8 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       const realAdd = h.client.addComment.bind(h.client);
       let calls = 0;
       h.client.addComment = (async (issueId: string, body: string) => {
@@ -474,9 +483,9 @@ describe("submission retries", () => {
         return realAdd(issueId, body);
       }) as typeof h.client.addComment;
       const payload = JSON.stringify(buildPayload());
-      const first = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
+      const first = await ticketCommand(h, "STA-1", "submit", payload);
       expect(first.ok).toBe(false);
-      const second = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
+      const second = await ticketCommand(h, "STA-1", "submit", payload);
       expect(second.ok).toBe(true);
       // Mutation front and back both read back: exactly one receipt comment.
       const receipts = issueOf(h, "STA-1").comments.filter((c) => parseReceiptBlock(c.body) !== null);
@@ -493,8 +502,8 @@ describe("submission retries", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // The comment lands, then the write result is lost: the retry must
       // read it back and adopt it instead of publishing a second receipt.
       const realAdd = h.client.addComment.bind(h.client);
@@ -508,8 +517,8 @@ describe("submission retries", () => {
       const payload = JSON.stringify(buildPayload());
       // The lost result never surfaces: the post-write read-back adopts the
       // landed receipt inside the same submit.
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
-      const repeated = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
+      expect((await ticketCommand(h, "STA-1", "submit", payload)).ok).toBe(true);
+      const repeated = await ticketCommand(h, "STA-1", "submit", payload);
       expect(repeated.ok).toBe(true);
       expect(repeated.text).toContain("already submitted build");
       const receipts = issueOf(h, "STA-1").comments.filter((c) => parseReceiptBlock(c.body) !== null);
@@ -528,23 +537,23 @@ describe("multi-receipt tickets read newest-first", () => {
   /** Build, hand to Review, fail the review, rebuild at a new checkpoint, pass the review. */
   async function toSecondPass(h: Harness, identifier: string): Promise<void> {
     addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-    expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
-    expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+    expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
     seedLineage(h, identifier);
     await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
-    expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, ["begin"])).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+    expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
     h.git.head = HEAD2;
-    expect((await ticketCommand(h, identifier, ["begin"])).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
     // The correction submit returns straight to Review+Pending: no owner step.
-    const corrected = await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
+    const corrected = await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload(HEAD2)));
     expect(corrected.ok).toBe(true);
     expect(corrected.text).toContain("→ Review+Pending");
     expect(issueOf(h, identifier).stateId).toBe(REVIEW);
-    expect((await ticketCommand(h, identifier, ["begin"])).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass", HEAD2)))).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("pass", HEAD2)))).ok).toBe(true);
     h.git.ancestors.add(`${HEAD2} feature/${identifier.toLowerCase()}`);
     h.git.ancestors.add(`${HEAD2} main`);
   }
@@ -574,7 +583,7 @@ describe("multi-receipt tickets read newest-first", () => {
       await toSecondPass(h, "STA-1");
       const newest = receiptComments(h, "STA-1").at(-1)!;
       expect(receiptComments(h, "STA-1")).toHaveLength(4);
-      const out = await ticketCommand(h, "STA-1", ["status", "--json"]);
+      const out = await ticketCommand(h, "STA-1", "status");
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data).toMatchObject({ status: "review", progress: "complete", checkpoint: HEAD2 });
@@ -594,7 +603,7 @@ describe("multi-receipt tickets read newest-first", () => {
     try {
       await toSecondPass(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
@@ -609,7 +618,7 @@ describe("multi-receipt tickets read newest-first", () => {
     try {
       await toSecondPass(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, BUILD);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(reconciled.text).toContain("sent back: Review+Complete → Build+Pending");
@@ -623,17 +632,17 @@ describe("multi-receipt tickets read newest-first", () => {
     try {
       await toSecondPass(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
-      await ticketCommand(h, "STA-1", ["begin"]);
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(deliverPayload(HEAD2)))).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      await ticketCommand(h, "STA-1", "begin");
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(deliverPayload(HEAD2)))).ok).toBe(true);
       const at = h.lines.length;
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // The deliver receipt is newest: no fresh approval, no label rollback.
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(h.lines.slice(at).some((l) => l.includes("approved"))).toBe(false);
       await h.client.setIssueState(issueOf(h, "STA-1").id, DONE);
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DONE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
       expect(reconciled.text).toContain("done: Deliver+Complete → Done");
@@ -700,7 +709,7 @@ describe("owner-move guards", () => {
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2", status: "build", progress: "in_progress" });
       for (const ticket of ["STA-1", "STA-2"]) {
-        expect((await runCommand(["reconcile", ticket], h.ctx)).ok).toBe(true);
+        expect((await runCommand({ command: "reconcile", ticket: ticket }, h.ctx)).ok).toBe(true);
       }
       expect(h.lines.some((l) => /approved|sent back|refusing|failed|dropped/.test(l))).toBe(false);
       expect(issueOf(h, "STA-1").labelIds).toEqual([]);
@@ -720,7 +729,7 @@ describe("owner-move guards", () => {
         createdAt: "2026-09-04T00:00:00.000001Z",
       });
       seedLineage(h, "STA-1");
-      const reconciled = await runCommand(["reconcile", "STA-1"], h.ctx);
+      const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       // The ticket must drain through a fresh YAML submit; the owner move waits.
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(reconciled.text).toContain("holds no valid Igniter receipt");
@@ -733,13 +742,13 @@ describe("owner-move guards", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+      expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
       seedLineage(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
-      await ticketCommand(h, "STA-1", ["begin"]);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      await ticketCommand(h, "STA-1", "begin");
       // A planted newer receipt for another checkpoint moves history on. The
       // far-future stamp keeps it newest no matter how many comments earlier
       // tests published through the shared fake clock.
@@ -748,7 +757,7 @@ describe("owner-move guards", () => {
         body: `note\n\n${receiptBlock("review-fail", "other-checkpoint", "sub-plant-00000001")}\n`,
         createdAt: "2026-09-05T00:00:00.000000Z",
       });
-      const out = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")));
+      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(reviewPayload("pass")));
       expect(out.ok).toBe(false);
       expect(out.text).toContain("history moved on");
     } finally {
@@ -763,7 +772,7 @@ describe("cli reads the Linear receipt", () => {
     try {
       await toReviewComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // Drop the cached receipt: the Linear comment still carries the truth.
       await h.workspaces.reportMetadata(wsIdOf(h, "STA-1"), {
         receipt_id: null,
@@ -771,7 +780,7 @@ describe("cli reads the Linear receipt", () => {
         submission: null,
         checkpoint: null,
       });
-      const out = await ticketCommand(h, "STA-1", ["status", "--json"]);
+      const out = await ticketCommand(h, "STA-1", "status");
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data).toMatchObject({ status: "deliver", progress: "pending", checkpoint: HEAD });
@@ -799,7 +808,7 @@ describe("cli reads the Linear receipt", () => {
         submission: null,
         checkpoint: null,
       });
-      const out = await ticketCommand(h, "STA-1", ["status", "--json"]);
+      const out = await ticketCommand(h, "STA-1", "status");
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data["receipt"]).toMatchObject({ kind: "review-pass", checkpoint: HEAD });
@@ -813,8 +822,8 @@ describe("cli reads the Linear receipt", () => {
     try {
       await toReviewComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
-      expect((await runCommand(["reconcile", "STA-1"], h.ctx)).ok).toBe(true);
-      const out = await runCommand(["status"], h.ctx);
+      expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
+      const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("STA-1  Deliver/");
       expect(out.text).toContain("receipt review-pass:comment-");

@@ -18,7 +18,6 @@
 
 import { createHash } from "node:crypto";
 import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "./linear.ts";
-import type { BuildPublicationGate } from "./review-publication.ts";
 import type { ResolvedDispatch, DecisionLog, CommandResult } from "./claims.ts";
 import type { CommandWorkspaces } from "./workspaces.ts";
 import { ticketWorktree, type GitRunner } from "./worktrees.ts";
@@ -42,12 +41,6 @@ export interface ProtocolDeps {
   decisions: DecisionLog;
   git: GitRunner;
   repoRoot: string;
-  /**
-   * Host-side review publication gate. Present only in the command
-   * service: stage workers never carry it, and a build submit carrying
-   * a Diffwalk artifact refuses without it.
-   */
-  publication?: BuildPublicationGate;
 }
 
 export type FullIssue = LinearIssue & { comments: LinearComment[]; labels: LinearLabel[] };
@@ -440,25 +433,6 @@ export interface BuildSubmit {
   checks: string[];
   results: { criterion: string; ok: boolean; note?: string }[];
   reproduction: string;
-  /**
-   * Local Diffwalk artifact the worker captured and checked offline.
-   * Present only when the Commander asks the host service to publish
-   * the review with this submit; the service verifies consent,
-   * destination, lifecycle, and checkpoint before publishing.
-   */
-  diffwalk?: ReviewArtifact;
-}
-
-/**
- * The worker's local Diffwalk artifact identity: which capture was
- * checked, that the check passed, and which destination it targets.
- * Publication always targets the fixed review destination; anything
- * else is destination drift and refuses.
- */
-export interface ReviewArtifact {
-  capture: string;
-  check: "pass";
-  destination: string;
 }
 
 export interface CommandEvidence {
@@ -566,42 +540,7 @@ export function parseBuildSubmit(raw: unknown, criteria: string[]): BuildSubmit 
     checks: (raw["checks"] as string[]).map((c) => c.trim()),
     results,
     reproduction: (raw["reproduction"] as string).trim(),
-    ...(raw["diffwalk"] !== undefined ? { diffwalk: parseReviewArtifact(raw["diffwalk"]) } : {}),
   };
-}
-
-/**
- * The fixed review destination, mirrored from
- * REVIEW_PUBLICATION_DESTINATION in ./review-publication.ts (kept as a
- * literal here so the protocol module stays runtime-cycle-free; a test
- * pins the two equal). The worker's artifact must name exactly this.
- */
-const FIXED_REVIEW_DESTINATION = "review.diffwalk.dev";
-
-/**
- * Parse the worker's local Diffwalk artifact identity. The check must be
- * "pass" and the destination must be the fixed one: a failed check or a
- * drifted destination refuses with the next step instead of publishing.
- */
-export function parseReviewArtifact(raw: unknown): ReviewArtifact {
-  if (!isRecord(raw) || !nonEmpty(raw["capture"])) {
-    throw new ProtocolError(`refused: build diffwalk artifact needs {"capture": "<capture id>", "check": "pass", "destination": "review.diffwalk.dev"}`);
-  }
-  if (raw["check"] !== "pass") {
-    throw new ProtocolError(
-      `refused: diffwalk check did not pass for capture ${JSON.stringify((raw["capture"] as string).trim())}; ` +
-        `rerun \`diffwalk check\` on the capture and resubmit only a passing artifact`,
-    );
-  }
-  const destination = typeof raw["destination"] === "string" ? raw["destination"].trim() : "";
-  if (destination !== FIXED_REVIEW_DESTINATION) {
-    throw new ProtocolError(
-      `refused: review destination drift (got ${JSON.stringify(destination)}, ` +
-        `fixed destination is ${FIXED_REVIEW_DESTINATION}); ` +
-        `the worker must capture for the fixed destination — inspect the artifact and resubmit`,
-    );
-  }
-  return { capture: (raw["capture"] as string).trim(), check: "pass", destination };
 }
 
 /** True when a result carries reproducible evidence: a URL or a transcript. */
@@ -754,14 +693,13 @@ export function parseDeliverSubmit(raw: unknown): DeliverSubmit {
 // only caches the same identity for display)
 // ---------------------------------------------------------------------------
 
-export function buildReceiptBody(payload: BuildSubmit, submission: string, reviewUrl?: string): string {
+export function buildReceiptBody(payload: BuildSubmit, submission: string): string {
   const lines = [
     `# Build receipt`,
     ``,
     `Checkpoint: \`${payload.checkpoint}\``,
     `Checks: ${payload.checks.map((c) => `\`${c}\``).join(", ")}`,
     ``,
-    ...(reviewUrl !== undefined ? [`Review: ${reviewUrl}`, ``] : []),
     `Self-acceptance (not an independent approval):`,
     ...payload.results.map((r) => `- [${r.ok ? "x" : " "}] ${r.criterion}${r.note ? ` — ${r.note}` : ""}`),
     ``,
@@ -1052,11 +990,6 @@ function submitSchemaFor(status: ProtocolStatus, checkpoint: string | null): unk
       checks: ["<command you ran, e.g. bun run check>"],
       results: [{ criterion: "<one acceptance criterion>", ok: true, note: "" }],
       reproduction: "<steps to reproduce your self-acceptance>",
-      diffwalk: {
-        capture: "<local diffwalk capture id from `diffwalk inspect`>",
-        check: "pass",
-        destination: "review.diffwalk.dev",
-      },
     };
   }
   if (status === "review") {
@@ -1105,7 +1038,7 @@ function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { n
   if (progress === "in_progress") return { next: ["submit", "block"], note: null };
   if (progress === "blocked") return { next: ["unblock"], note: null };
   if (status === "build" && progress === "complete") {
-    return { next: ["approve"], note: "after owner Diffwalk approval: approve <ticket> --receipt <receipt.id>" };
+    return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>" };
   }
   if (status === "review" && progress === "complete") {
     return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>; owner may send back to Build" };
@@ -1341,8 +1274,8 @@ function partialSubmissionMarked(full: FullIssue, submission: string): boolean {
 }
 
 /**
- * A CLI may lose its HTTP response after the service completed the Linear
- * transition. The safe retry then arrives in the next stage, where normal
+ * A caller may lose the result after Igniter completed the Linear transition.
+ * The safe retry then arrives in the next stage, where normal
  * schema dispatch would otherwise misread the old payload. Recognize only an
  * exact, fully validated submission identity already present in Linear; this
  * acknowledges the completed write without replaying any transition.
@@ -1437,8 +1370,8 @@ async function submitBuild(
   // submission, excluding the submission itself so a retry classifies
   // exactly like its first attempt. Only Linear history decides; workspace
   // metadata never authorizes the target. No prior review receipt means
-  // the first Build: it stops at Build+Complete for the owner's Diffwalk
-  // review. A newest review-fail receipt means an Acceptance correction; a
+  // the first Build: it stops at Build+Complete for owner acceptance.
+  // A newest review-fail receipt means an Acceptance correction; a
   // newest review-pass receipt means an owner send-back correction (the
   // ticket could only return to Build+In progress through the send-back
   // reconcile): both return straight to Review+Pending.
@@ -1447,66 +1380,23 @@ async function submitBuild(
     prior !== null && (prior.receipt.kind === "review-fail" || prior.receipt.kind === "review-pass")
       ? prior.receipt.kind
       : null;
-  // A carried Diffwalk artifact turns this submit into a host-side
-  // publication: verify consent, destination, lifecycle, and checkpoint
-  // before anything is published or recorded. Any refusal leaves Linear
-  // untouched — no review, no receipt.
-  let reviewUrl: string | undefined;
-  if (payload.diffwalk !== undefined) {
-    if (!deps.publication) {
-      throw new ProtocolError(
-        `refused: build submit carries a diffwalk artifact but the host publication service is not configured; ` +
-          `submit from the project workspace through \`igniter submit ${full.identifier} --input -\``,
-      );
-    }
-    const published = await deps.publication.publish({
-      ticket: full.identifier,
-      checkpoint: payload.checkpoint,
-      capture: payload.diffwalk.capture,
-      destination: payload.diffwalk.destination,
-      head,
-      workspaceTokens: await workspaceTokensOf(deps, full.identifier),
-      comments: full.comments,
-      submission,
-    });
-    reviewUrl = published.url;
-  }
-  const body = buildReceiptBody(payload, submission, reviewUrl);
+  const body = buildReceiptBody(payload, submission);
   const commentId = await publishReceipt(deps, full.id, "build", submission, body);
   await verifyReceipt(deps, full.id, "build", submission);
-  const review = reviewUrl !== undefined ? ` (review ${reviewUrl})` : "";
   if (correctionKind !== null) {
     await moveStatus(deps, full, "review", "pending");
     const text =
       `submitted build ${payload.checkpoint} → Review+Pending ` +
-      `(correction after ${correctionKind} receipt ${prior!.id ?? prior!.receipt.submission}; receipt ${commentId}${review})`;
+      `(correction after ${correctionKind} receipt ${prior!.id ?? prior!.receipt.submission}; receipt ${commentId})`;
     await deps.decisions.record(full.identifier, text);
     return text;
   }
   await moveStatus(deps, full, "build", "complete");
   const text =
     `submitted build ${payload.checkpoint} → Build+Complete ` +
-    `(awaiting owner Diffwalk review; receipt ${commentId}${review})`;
+    `(awaiting owner acceptance; receipt ${commentId})`;
   await deps.decisions.record(full.identifier, text);
   return text;
-}
-
-/** Current ticket workspace tokens for the publication lifecycle check. */
-async function workspaceTokensOf(
-  deps: ProtocolDeps,
-  identifier: string,
-): Promise<Record<string, string>> {
-  let snapshot;
-  try {
-    snapshot = await deps.workspaces.snapshot();
-  } catch (error) {
-    throw new ProtocolError(`herdr unreachable while verifying publication consent: ${(error as Error).message}`);
-  }
-  const workspace = snapshot.workspaces.find((candidate) => candidate.tokens["ticket"] === identifier);
-  if (!workspace) {
-    throw new ProtocolError(`no workspace for ${identifier}; run \`igniter worker start ${identifier}\` first`);
-  }
-  return { ...workspace.tokens };
 }
 
 async function submitReview(
@@ -2126,7 +2016,7 @@ export async function normalizeOwnerMove(
   }
   if (linearStatus === "build") {
     // An initial Build+Complete bound to its build receipt waits for the
-    // owner's Diffwalk review in Linear: only the owner moves it to
+    // owner's acceptance: only the owner moves it to
     // Review. Reconcile keeps it still — no transition, no line, no
     // worker start — however often it runs.
     if (kind === "build") return quiet();

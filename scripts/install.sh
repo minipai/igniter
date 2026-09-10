@@ -317,7 +317,7 @@ ensure_npm_tool() {
   fi
   say "install: $pkg"
   # Installed for all users on Linux (binaries land in /usr/bin, on PATH for
-  # doctor.sh and serve panes with no shell init changes); into the
+  # doctor.sh and agent runners with no shell init changes); into the
   # user-owned brew prefix on macOS, where run_root runs unprivileged.
   run_root npm install -g "$pkg" || {
     say "failed: npm install -g $pkg"
@@ -529,31 +529,12 @@ ensure_env_file() {
   changed "$env_file created empty; put LINEAR_API_KEY in it by hand"
 }
 
-ensure_repos_file() {
-  local repos_file="$HOME/.config/igniter/repos"
-  if [ -f "$repos_file" ]; then
-    skip "$repos_file already exists"
-    return 0
-  fi
-  if write_file "$repos_file" <<EOF
-# One repo path per line. factory-up.sh opens one 'igniter serve' pane per
-# repo inside the $FACTORY_SESSION Herdr session. Lines starting with # and
-# blank lines are ignored.
-$FACTORY_DIR
-EOF
-  then
-    changed "$repos_file created"
-  else
-    skip "$repos_file already current"
-  fi
-}
-
 # --- non-interactive PATH --------------------------------------------------
 # bun and opencode install into the home directory and append PATH lines to
 # the END of shell rc files, below bash's 'not running interactively, don't
 # do anything' guard — so non-interactive shells (ssh commands, systemd user
-# services, agent runners) never see the tools. doctor.sh and factory-up.sh
-# both run non-interactively, so the PATH itself must be fixed, in this
+# services and agent runners never see the tools. doctor.sh runs
+# non-interactively, so the PATH itself must be fixed, in this
 # shell (for have-checks later in the same run) and on disk (for every
 # future shell and for the systemd user manager, which reads neither rc
 # files nor ssh environments).
@@ -1028,7 +1009,6 @@ main() {
     say "missing: bun and git are required for the igniter checkout; rerun once installed"
   fi
   step "env file" ensure_env_file
-  step "repos file" ensure_repos_file
   step "shell PATH" ensure_shell_path
 
   if [ "$OS" = "Linux" ]; then
@@ -1051,7 +1031,7 @@ main() {
     say "fix the errors above and rerun (finished steps are skipped, nothing is re-done)"
     exit 1
   fi
-  say "then run scripts/factory-up.sh to open 'igniter serve' panes, and scripts/doctor.sh to verify."
+  say "then run scripts/doctor.sh to verify."
 }
 
 main "$@"

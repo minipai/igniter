@@ -28,8 +28,6 @@ describe("parseDispatchConfig", () => {
       team: undefined,
       maxRunning: 3,
       linearOrg: "starcoder",
-      listenHost: "127.0.0.1",
-      listenPort: 4180,
       states: DEFAULT_STATES,
       progress: DEFAULT_PROGRESS,
       targetBranch: "main",
@@ -90,7 +88,6 @@ describe("parseDispatchConfig", () => {
       project: "igniter",
       team: "Starcoder",
       max_running: 2,
-      listen: "192.168.8.8:4180",
       states: {
         backlog: "Backlog",
         todo: "Todo",
@@ -113,7 +110,6 @@ describe("parseDispatchConfig", () => {
       },
     });
     expect(config.maxRunning).toBe(2);
-    expect(config.listenHost).toBe("192.168.8.8");
     expect(config.commander.agents.builder.model).toBe("custom/builder");
     expect(config.commander.agents.reviewer.harness).toBe("codex");
   });
@@ -251,12 +247,7 @@ describe("parseDispatchConfig", () => {
     );
   });
 
-  test("rejects a 0.0.0.0 bind", () => {
-    expect(() => parseDispatchConfig({ project: "x", listen: "0.0.0.0:4180" })).toThrow("0.0.0.0");
-  });
-
-  test("rejects bad listen and max_running values", () => {
-    expect(() => parseDispatchConfig({ project: "x", listen: "nope" })).toThrow('"listen"');
+  test("rejects bad max_running and unknown state roles", () => {
     expect(() => parseDispatchConfig({ project: "x", max_running: 0 })).toThrow('"max_running"');
     expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
       'unknown states role "later" (known: backlog, todo, build, review, deliver, done)',

@@ -1,5 +1,5 @@
 // Black-box refusal and Git-safety matrix. Every command crosses the real
-// CLI -> dispatch HTTP boundary; only Linear, Herdr, and credentials are
+// CLI subprocess -> command boundary; only Linear, Herdr, and credentials are
 // replaced by the stateful in-memory/fake fixtures.
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -148,7 +148,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
     });
   });
 
-  test("HEAD mismatch and a receipt made stale by a new commit cannot publish review", async () => {
+  test("HEAD mismatch and a receipt made stale by a new commit cannot submit", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-21",

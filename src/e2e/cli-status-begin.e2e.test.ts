@@ -1,5 +1,5 @@
-// Black-box CLI vertical slice: the real CLI subprocess drives the real
-// dispatch HTTP service, which drives the stateful memory Linear client, a
+// Black-box CLI vertical slice: a real CLI subprocess drives the production
+// command protocol, which drives the stateful memory Linear client, a
 // real temp git repo, and fake Herdr. No real credentials, no real Linear.
 import { describe, expect, test } from "bun:test";
 import { memoryAddIssue } from "../dispatch/fake-memory-linear.ts";

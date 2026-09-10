@@ -26,8 +26,9 @@ One ticket. A team of agents. A traceable path to delivery.
   its public UI, CLI, or API. Findings come with expected behavior, actual
   results, and evidence the owner can inspect.
 - **Evidence at every handoff.** Build reports include a committed checkpoint,
-  check results, and a Diffwalk walkthrough. The Commander validates stage
-  reports and records receipts against the checkpoint they cover.
+  check results, and the evidence required by that repository's workflow. The
+  Commander validates stage reports and records receipts against the checkpoint
+  they cover.
 - **The right agent for each role.** Configure Codex, Claude Code, or OpenCode
   per role, with model selection, supported reasoning effort, and a stronger
   Builder fallback for difficult work.
@@ -55,12 +56,11 @@ flowchart LR
 
 The Commander works from the project root. Build, Acceptance, and Deliver
 workers work inside ticket worktrees and report back to it. The Commander
-validates those reports, publishes evidence, and advances the ticket through
+validates those reports and advances the ticket through
 explicit Igniter commands.
 
 Linear is the project board and source of truth. Herdr hosts the stage agents.
-A local Bun service connects the workflow. The Commander drives the work;
-the service responds to commands without polling Linear in the background.
+The Bun CLI connects both directly; there is no background Igniter service.
 
 ## Get started
 
@@ -71,7 +71,6 @@ the service responds to commands without polling Linear in the background.
 - The agent CLIs selected by your configuration, installed and authenticated.
   The [bundled defaults](src/commander/config.yaml) use Codex, Claude Code,
   and OpenCode.
-- Diffwalk installed and ready to publish Build walkthroughs.
 - A Linear project and a `LINEAR_API_KEY` supplied through your environment.
 
 ### Install
@@ -94,13 +93,11 @@ agents to work on:
 project: Your Linear project
 team: ENG
 linear_org: your-workspace-slug
-listen: 127.0.0.1:4180
 max_running: 3
 ```
 
 `project` accepts a Linear project name or slug; `team` accepts a team name or
-key. Set `linear_org` to your own Linear workspace slug. Use a different
-`listen` port for each project running on the same host.
+key. Set `linear_org` to your own Linear workspace slug.
 
 Prepare these workflow statuses on the project's Linear team:
 
@@ -112,7 +109,7 @@ Prepare these workflow statuses on the project's Linear team:
 | Done | Completed |
 
 Create a `Progress` label group with `Pending`, `In progress`, `Complete`,
-and `Blocked` child labels. Igniter validates this setup when the service starts.
+and `Blocked` child labels. Igniter validates this setup when a command runs.
 
 Give each ticket observable acceptance criteria, for example:
 
@@ -137,8 +134,7 @@ Or assign a specific ticket immediately:
 igniter start ENG-123
 ```
 
-`start` opens the configured Commander in the current terminal and starts the
-command service in the background when needed. Projects may replace all three
+`start` opens the configured Commander in the current terminal. Projects may replace all three
 stage prompts through the `stages` map in `.igniter/config.yaml`; otherwise the
 short bundled prompts apply.
 
@@ -153,8 +149,7 @@ An override is complete: all three entries and non-empty prompt files under
 the repository root are required.
 
 Use `igniter status` for a queue overview or `igniter status ENG-123 --json`
-for a ticket's current state. To supervise the service separately or inspect
-startup errors, run `igniter serve` in the foreground; stop it with Ctrl-C.
+for a ticket's current state.
 
 Linear transitions and worker execution are separate commands. The Commander
 reads `igniter status ENG-123 --json`, runs `igniter worker start ENG-123`,
@@ -162,9 +157,8 @@ confirms the initial work order was delivered, then records the stage start
 with `igniter begin ENG-123`. Begin only validates and records Linear state;
 it never starts a worker or sends a prompt.
 
-The command API only prepares a foreground launch when the CLI supplies its
-explicit launch intent. It never creates a resident Herdr Commander workspace
-or agent. Queue polling, automatic claim/adoption, per-ticket Commander wakeups,
+`start` prepares a foreground launch and never creates a resident Herdr
+Commander workspace or agent. Queue polling, automatic claim/adoption, per-ticket Commander wakeups,
 and deferred mirror/wake/close retries have been removed; use explicit commands
 and retry the same operation after correcting a failure.
 
@@ -174,13 +168,13 @@ Existing scripts should migrate these removed entry points:
 | --- | --- |
 | `igniter state --json` | `igniter status <ticket> --json` |
 | Bare `begin`, `submit`, `block`, `unblock` with Herdr workspace context | The same command with an explicit `<ticket>`; keep `--input -` or `--reason TEXT` |
-| HTTP or in-process background Commander start | CLI `igniter start [<ticket>]` in the calling terminal |
+| Background Commander start | CLI `igniter start [<ticket>]` in the calling terminal |
 | `status --json` fields `lastPollAt` and per-ticket `commander` | Commands refresh state on demand; read the current stage `worker` field |
 | Automatic owner-move recovery | `igniter reconcile <ticket>`, then explicit worker commands as needed |
 
 Workers report to the Commander. The Commander validates their checkpoint,
 checks, and evidence before `igniter submit ENG-123 --input -`. The first Build
-waits at Build + Complete for your Diffwalk review. Your explicit approval
+waits at Build + Complete for your approval. Your explicit approval
 allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
 from status, to move to Review + Pending. A PASS Review receipt similarly
 permits Deliver + Pending; a valid completed Deliver receipt permits Done.
@@ -203,8 +197,8 @@ A restart really replaces the selected worker and preserves existing work.
 side effects. The Commander explicitly stops workers after handoffs and Done;
 Done cleanup keeps dirty, untracked, or unmerged work and pre-existing user tabs.
 An externally integrated Done still requires the Deliver report and explicit
-worker cleanup. Publication consent, receipt/checkpoint validation, and Git
-safety continue to apply at every handoff.
+worker cleanup. Receipt/checkpoint validation and Git safety continue to apply
+at every handoff.
 
 This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
 rebases onto remote `main`, pushes, opens a pull request, and watches required
@@ -229,13 +223,12 @@ bun run test:e2e
 
 ### CLI end-to-end boundaries
 
-The end-to-end suite starts the production dispatch HTTP service and drives it
-through real CLI subprocesses. Each scenario owns a temporary Git repository,
-ticket worktrees, an ephemeral port, and a whitelisted child environment. A
-stateful in-memory Linear client and fake Herdr/agent processes are injected at
-the service boundary. The suite never reads real credentials, contacts Linear,
-starts Herdr or an LLM, changes the source checkout, or uses a fake Linear HTTP
-or GraphQL endpoint. Owner status moves are direct fixture mutations only;
+The end-to-end suite launches a real CLI subprocess for every command and
+drives the production command protocol against a temporary Git repository and
+ticket worktrees. The subprocess reaches stateful in-memory Linear and Herdr
+fakes through a test-only process boundary. The suite never reads real
+credentials, contacts Linear, starts Herdr or an LLM, or changes the source
+checkout. Owner status moves are direct fixture mutations only;
 `submit` never pretends to merge Git.
 
 The named scenario groups cover:
@@ -244,8 +237,8 @@ The named scenario groups cover:
 | --- | --- |
 | Status and begin | Human and JSON status, explicit worker start and Todo stage recording, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
 | Lifecycle and owner gates | Build, Review PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
-| Worker start and concurrency | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate begin prevention, concurrent submit dedupe, and ticket isolation. |
-| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, CLI timeout with background completion, and explicit worker cleanup recovery. |
+| Worker start | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate begin prevention, and ticket isolation. |
+| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, and explicit worker cleanup recovery. |
 | Control commands | Explicit ticket status, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, missing-ticket refusals, and `start` with a fake foreground Commander. |
 | Refusal and Git safety | Malformed payloads, wrong stage, stale/HEAD/rebased checkpoints, owner-gate refusal, dirty/untracked/unmerged checkout retention, scratch symlink escape, and packed failure diagnostics. |
 

@@ -246,7 +246,7 @@ describe("stage start", () => {
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       // The command returns project, ticket, role, stage, agent, and failure reason.
       const diagnosis = ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"];
@@ -267,13 +267,13 @@ describe("stage start", () => {
     try {
       h.workspaces.promptMode = "input-buffer";
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(false);
+      expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(false);
       // The STA-197 observation: the agent sits idle with an empty context.
       h.workspaces.agents.find((a) => a.name === "builder-sta-1")!.agentStatus = "idle";
       // The nudge lands the prompt: the retry redelivers the byte-identical
       // work order to the same worker. Only the subsequent begin writes Linear.
       h.workspaces.promptMode = "consumed";
-      const retry = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const retry = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(retry.ok).toBe(true);
       expect(retry.text).toContain("work order confirmed");
       expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
@@ -284,7 +284,7 @@ describe("stage start", () => {
       expect(inbox).toHaveLength(3);
       expect(new Set(inbox).size).toBe(1);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {
@@ -296,10 +296,10 @@ describe("stage start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
-      expect((await runCommand(["begin", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
       // The pane moved past the pre-send baseline: the prompt landed.
@@ -322,7 +322,7 @@ describe("in-progress recovery", () => {
     try {
       seedActive(h);
       h.workspaces.promptMode = "input-buffer";
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       for (const part of ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"]) {
         expect(out.text).toContain(part);
@@ -338,7 +338,7 @@ describe("in-progress recovery", () => {
     const h = await harness();
     try {
       seedActive(h);
-      const out = await runCommand(["worker", "start", "STA-1"], h.ctx);
+      const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("confirmed");
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();
@@ -371,7 +371,7 @@ describe("stage start gate (the contract STA-225 reuses)", () => {
     } catch {
       return false;
     }
-    expect((await runCommand(["begin", "STA-2"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-2" }, h.ctx)).ok).toBe(true);
     return true;
   }
 

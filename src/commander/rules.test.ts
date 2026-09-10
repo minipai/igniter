@@ -132,8 +132,7 @@ describe("Commander delivery protocol", () => {
 
   test("requires complete reports instead of trusting Herdr state", () => {
     expect(commonRules).toContain("BUILD_HANDOFF_COMPLETE");
-    expect(stageRules[0]).toContain("review the final diff once");
-    expect(commonRules).toContain("one-pass code-review result");
+    expect(stageRules[0]).toContain("evidence");
     expect(commonRules).toContain("ACCEPTANCE_COMPLETE");
     expect(commonRules).toContain("DELIVERY_COMPLETE");
     for (const prompt of stageRules) {
@@ -143,20 +142,15 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Never infer success from `done`");
   });
 
-  test("Build stays local while the host publishes after one-time consent", () => {
+  test("keeps workflow-specific artifacts out of the bundled stages", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
     expect(commanderConfig.stages.build.agent).toBe("builder");
     expect(commanderConfig.stages.review.agent).toBe("reviewer");
     expect(commanderConfig.stages.deliver.agent).toBe("deliverer");
-    expect(stageRules[0]).toContain("`diffwalk inspect`");
-    expect(stageRules[0]).toContain("`diffwalk check`");
-    expect(stageRules[0]).toContain("artifact identity");
-    expect(stageRules[0]).toContain("Do not run `diffwalk publish`");
-    expect(stageRules[0]).not.toContain("then run `diffwalk publish` and retain the printed link");
-    expect(commonRules).toContain("It never publishes");
-    expect(commonRules).toContain("one-time consent");
-    expect(commonRules).toContain("`igniter start <ticket> --publish-review`");
-    expect(stageRules[2]).not.toContain("diffwalk");
+    expect(rules.toLowerCase()).not.toContain("diffwalk");
+    expect(rules).not.toContain("--publish-review");
+    expect(stageRules[0]).toContain("repository instructions");
+    expect(stageRules[0]).toContain("evidence");
     expect(stageRules[2]).toContain("Complete the configured landing procedure");
     expect(stageRules[2]).not.toContain("required delivery artifact");
   });

@@ -1,9 +1,9 @@
 // Deliver after approval with a mid-flight rebase (STA-235). Two approved
-// tickets cross the real CLI -> dispatch HTTP boundary against the stateful
+// tickets cross the real CLI subprocess -> command boundary against the stateful
 // memory Linear client and a real temp git repo: the first lands and moves
 // main forward, the second rebases inside Deliver, lands, and submits the
-// approved checkpoint together with the new landed commit. No fake HTTP
-// server, no real credentials, only temp dirs.
+// approved checkpoint together with the new landed commit. No real
+// credentials, only temp dirs.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

@@ -1,5 +1,5 @@
 # igniter's own factory config (dogfood)
-# Read by dispatch (`igniter serve` / `igniter start`). `LINEAR_API_KEY`
+# Read by Igniter commands. `LINEAR_API_KEY`
 # comes from the environment only.
 
 project: igniter
@@ -8,10 +8,6 @@ team: Starcoder
 # Parallel claim cap. When full, ready tickets wait; finishing one frees a slot.
 # Blocked tickets keep their workspace but do not count against the cap.
 max_running: 3
-
-# Web/API bind address. Never 0.0.0.0; the factory host uses its Tailscale IP.
-# `--port` / `IGNITER_PORT` still override the port portion.
-listen: 127.0.0.1:3457
 
 # Project workflow. Supplying `stages` replaces all three bundled prompts;
 # every prompt path is relative to the repository root.
