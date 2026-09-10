@@ -1,6 +1,6 @@
 // Worker lifecycle only. Linear stage changes belong to begin/submit/approve.
 
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { lstat, rename } from "node:fs/promises";
 import type { CommanderConfig, CommanderStage, DispatchConfig } from "../../config/config.ts";
 import { STAGE_AGENTS } from "../../config/config.ts";
@@ -10,6 +10,7 @@ import type { LinearClientLike } from "../../service/linear/linear.ts";
 import {
   latestReceiptOf,
   latestValidReceipt,
+  submitSchemaFor,
   type AuthoritativeState,
   type FullIssue,
   type ProtocolProgress,
@@ -120,6 +121,8 @@ const STAGE_MARKER: Record<CommanderStage, string> = {
  * to the Global Commander, which submits through ticket-targeted commands.
  */
 export function buildStageWorkOrder(input: StageWorkOrderInput): string {
+  const scratch = dirname(input.resultPath);
+  const submitPath = join(scratch, "submit.json");
   const effort = input.effort !== undefined ? `; effort \`${input.effort}\`` : "";
   const delivery = input.delivery !== undefined
     ? `Project instructions: read \`${input.delivery}\` (relative to the repo root) as the delivery document. Do not search for another one. Also read the repository's AGENTS.md and follow it.\n`
@@ -134,8 +137,8 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
     `${worktreeInstruction(input)}\n` +
     `Agent profile for this stage: harness \`${input.harness}\`; model \`${input.model}\`${effort}.\n` +
-    `Your own scratch dir is \`${input.resultPath.replace(/\/result\.md$/, "")}\`; ` +
-    `write your stage result to \`${input.resultPath}\` and to nowhere else.\n` +
+    `Your own scratch dir is \`${scratch}\`; ` +
+    `write your submit JSON to \`${submitPath}\` and your completion report to \`${input.resultPath}\`.\n` +
     `\n` +
     delivery +
     `\n` +
@@ -149,10 +152,31 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `Do not publish externally on your own; only the configured Deliver stage updates remote branches after owner approval. ` +
     `The tested product's own local services are not the Igniter control plane: ` +
     `start or stop them only as the repository's run or acceptance instructions require. ` +
-    `Your only output is the result file at \`${input.resultPath}\` plus your final report.\n` +
+    `Your output is \`${submitPath}\`, \`${input.resultPath}\`, any evidence required by the stage in your own scratch, and your final report.\n` +
     `\n` +
-    `Write the stage result as structured Markdown covering exactly what the stage prompt asks for, ` +
-    `then end the complete report with:\n` +
+    `Stage output contract (use this format for the stage prompt's reporting requirements):\n` +
+    `Write one JSON object to \`${submitPath}\`, without Markdown fences or completion markers. ` +
+    `The shape below is generated from the same canonical submitSchemaFor source as status.submit_schema; ` +
+    `you do not need to read implementation files or call Igniter or Linear to obtain it. ` +
+    `Replace all placeholders with observed results; examples are not proof of success.\n` +
+    `\n\`\`\`json\n${JSON.stringify(submitSchemaFor(input.stage, input.stage === "build" ? null : input.checkpoint), null, 2)}\n\`\`\`\n\n` +
+    `${input.stage === "build" ? "Use the final committed worktree HEAD as checkpoint, not the starting checkpoint. " : "Keep checkpoint bound to the checkpoint supplied above. "}` +
+    `${input.stage === "deliver" ? "Record the actual landed commit, lineage, merge readiness, and remaining owner steps in owner_actions; if none remain, explicitly state that in the list. " : "Include one result for each exact acceptance criterion above, with no missing or extra criteria. "}` +
+    `Put checks, results, reproduction, evidence, environment, and owner actions in existing JSON fields wherever the stage shape supports them. ` +
+    `Keep \`${input.resultPath}\` short: only stage-required human findings or risks without a JSON field, plus the completion marker. ` +
+    `Do not duplicate the full JSON as a Markdown report. ` +
+    `${input.stage === "build" ? "Preserve code-review findings and fixes, check outcomes, additional evidence links, and unresolved concerns in result.md where they are not already recorded in JSON. " : "Preserve any additional stage-required evidence and unresolved concerns in result.md where they are not already recorded in JSON. "}` +
+    `Explicitly state when there are no additional findings or concerns.\n` +
+    `\n` +
+    `On a correction or restart, remove the old completion marker before editing either artifact. ` +
+    `Finish and locally parse the JSON before writing the completion marker as the last line of result.md. ` +
+    `If work or the artifact is incomplete, report what is missing without a completion marker. ` +
+    `A complete report may describe failed acceptance; completion and JSON validity do not mean tests passed or authorize submission. ` +
+    `The Commander must review both files, evidence, and checkpoint before submitting the unchanged JSON through the existing submit boundary. ` +
+    `Missing, malformed, or schema-invalid artifacts are not successful handoffs; correct the artifact when the Commander returns the error. ` +
+    `Never submit or approve your own result.\n` +
+    `\n` +
+    `End the complete result.md with this marker, and name both artifact paths in your final report:\n` +
     `\n` +
     `\`\`\`text\n` +
     `${STAGE_MARKER[input.stage]}\n` +

@@ -256,21 +256,28 @@ describe("ticket-targeted worker start", () => {
 });
 
 describe("explicit result collection and submission", () => {
-  test("the Commander reads result.md and submits it ticket-targeted", async () => {
+  test("the Commander reviews result.md and submits the sibling JSON artifact", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
-      // The worker writes its result file with the completion marker.
+      // JSON carries the submit payload; Markdown only adds review findings
+      // and the worker's completion signal. Neither file advances the ticket.
       const dir = scratchFor(h.repoRoot, "STA-1", "builder");
       mkdirSync(dir, { recursive: true });
       const resultPath = join(dir, "result.md");
-      writeFileSync(resultPath, `# Build result\n\nCheckpoint: \`${HEAD}\`\n\n\`\`\`text\nBUILD_HANDOFF_COMPLETE\n\`\`\`\n`);
+      const artifactPath = join(dir, "submit.json");
+      writeFileSync(artifactPath, JSON.stringify(buildPayload(), null, 2));
+      writeFileSync(resultPath, "# Build result\n\nCode review: no findings.\nUnresolved concerns: none.\n\nBUILD_HANDOFF_COMPLETE\n");
       const report = readFileSync(resultPath, "utf8");
       expect(report).toContain("BUILD_HANDOFF_COMPLETE");
-      // The Commander converts the validated report to the submit schema.
-      const out = await runCommand({ command: "submit", ticket: "STA-1", payload: buildPayload() }, h.ctx);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      expect(latestValidReceipt(h.world.issues[0]!.comments)).toBeNull();
+      // The Commander reviews the files and evidence, then submits the worker's
+      // JSON directly. CLI stdin coverage lives in cli-artifacts.e2e.test.ts.
+      const payload = JSON.parse(readFileSync(artifactPath, "utf8"));
+      const out = await runCommand({ command: "submit", ticket: "STA-1", payload }, h.ctx);
       expect(out.ok).toBe(true);
       // The first Build waits at Build+Complete for owner acceptance;
       // only the owner handoff moves it toward Review.

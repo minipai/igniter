@@ -142,6 +142,29 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("Never infer success from `done`");
   });
 
+  test("reviews worker artifacts without rewriting their submission payload", async () => {
+    const global = await Bun.file(new URL("./global.md", import.meta.url)).text();
+    for (const document of [commonRules, global]) {
+      expect(document).toContain("`submit.json`");
+      expect(document).toContain("`result.md`");
+      expect(document).toContain("same canonical source as status");
+      expect(document).toContain("code-review");
+      expect(document).toContain("unresolved concerns");
+      expect(document).toContain("`owner_actions`");
+      expect(document).toContain('igniter submit <ticket> --input - < "/absolute/scratch/submit.json"');
+      expect(document).toContain("unchanged");
+      expect(document).toContain("same worker");
+      expect(document).toContain("do not prove");
+      expect(document).not.toContain("converts the report to JSON");
+    }
+    expect(commonRules).toContain("marker as the final line of `result.md`");
+    expect(commonRules).toContain("absent, unfinished, malformed, schema-invalid, or stale artifact");
+    expect(commonRules).toContain("Never supply missing results yourself");
+    expect(global).toContain("Both files are required");
+    expect(global).toContain("Missing files or markers");
+    expect(global).toContain("parse errors, schema omissions, and checkpoint mismatches");
+  });
+
   test("keeps workflow-specific artifacts out of the bundled stages", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
     expect(commanderConfig.stages.build.agent).toBe("builder");

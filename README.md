@@ -175,8 +175,14 @@ Existing scripts should migrate these removed entry points:
 | `status --json` fields `lastPollAt` and per-ticket `commander` | Commands refresh state on demand; read the current stage `worker` field |
 | Automatic owner-move recovery | `igniter reconcile <ticket>`, then explicit worker commands as needed |
 
-Workers report to the Commander. The Commander validates their checkpoint,
-checks, and evidence before `igniter submit ENG-123 --input -`. The first Build
+Workers write `submit.json` in their own scratch using the submit shape embedded
+in their work order from the canonical contract. Their sibling `result.md`
+contains the completion marker and only additional findings or risks. The
+Commander reviews both files, checks the checkpoint and evidence, and submits
+the JSON unchanged with
+`igniter submit ENG-123 --input - < "/absolute/scratch/submit.json"`.
+Missing, unfinished, malformed, or stale artifacts return to the same worker
+for correction; a valid schema never substitutes for content review. The first Build
 waits at Build + Complete for your approval. Your explicit approval
 allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
 from status, to move to Review + Pending. A PASS Review receipt similarly
