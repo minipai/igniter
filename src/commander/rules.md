@@ -1,8 +1,8 @@
 # Commander rules
 
 Deliver exactly one feature per ticket. The Global Commander is Igniter's
-single project-level singleton: `igniter start` starts or resumes that one
-Commander, and `igniter start STA-X` assigns a ticket to the same singleton.
+single project-level Commander: CLI `igniter start` launches it in the calling
+terminal, and `igniter start STA-X` assigns a ticket to that foreground session.
 It supervises every ticket from the project workspace through ticket-targeted
 commands. A ticket workspace holds only the worktree, metadata, scratch, and
 the current stage worker. There is no resident commander-ticket agent and no
@@ -405,7 +405,7 @@ published evidence, owner state, and push or merge state.
 
 ## Session recovery
 
-Igniter restarts this same singleton with `igniter start` after a session
+Restart the foreground Commander with CLI `igniter start` after a session
 loss. Then patrol with `igniter status --json`, read each active ticket with
 `igniter status <ticket> --json`, and rebuild any missing stage worker with
 `igniter worker start <ticket>`. Confirm delivery before `igniter begin <ticket>`

@@ -12,8 +12,7 @@
 // the pre-send baseline. A prompt that leaves every signal untouched is
 // `stalled` (text in the input box, lifecycle unchanged), never success.
 //
-// The same entry covers the Global Commander start/resume and every stage
-// agent start (STA-225/STA-227 reuse this instead of growing their own):
+// The same entry covers every stage worker start:
 // the delivery identity binds project, ticket (when there is one), role,
 // stage, agent, baseline pane revision, and the work order hash, so a retry
 // resends the identical work order to the same agent and never builds a
@@ -23,11 +22,11 @@
 import { createHash } from "node:crypto";
 import type { CommandWorkspaces } from "./workspaces.ts";
 
-/** Who the prompt is for: the Commander or one of the three stage agents. */
-export type PromptRole = "commander" | "builder" | "reviewer" | "deliverer";
+/** Who the prompt is for: one of the three stage workers. */
+export type PromptRole = "builder" | "reviewer" | "deliverer";
 
-/** Which start the prompt belongs to: a Commander command or a stage. */
-export type PromptStage = "command" | "build" | "review" | "deliver";
+/** Which stage the prompt belongs to. */
+export type PromptStage = "build" | "review" | "deliver";
 
 /**
  * Delivery identity: everything a retry must keep identical. `ticket` is

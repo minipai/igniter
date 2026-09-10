@@ -3,15 +3,14 @@
 
 import { assertCommanderAssets } from "../commander/assets.ts";
 import {
-  createClaimLock,
+  createCommandLock,
   createDispatchLog,
-  defaultHost,
   validateStartup,
   type CommandCallOptions,
   type DispatchApi,
   type ResolvedDispatch,
 } from "../dispatch/claims.ts";
-import { createWorkspaceSink, runCommand } from "../dispatch/commands.ts";
+import { runCommand } from "../dispatch/commands.ts";
 import type { DispatchConfig } from "../dispatch/config.ts";
 import type { LinearClientLike } from "../dispatch/linear.ts";
 import {
@@ -29,7 +28,6 @@ export interface DispatchServeOptions {
   client: LinearClientLike;
   workspaces: CommandWorkspaces;
   git?: GitRunner;
-  host?: string;
   port?: number;
   logPath?: string;
   print?: (line: string) => void;
@@ -54,16 +52,9 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
   await assertCommanderAssets();
   const resolved = await validateStartup(options.client, options.config);
   const root = options.repoRoot;
-  const host = options.host ?? defaultHost();
   const logPath = options.logPath ?? `${root.replace(/\/+$/, "")}/.igniter/dispatch.log`;
   const decisions = createDispatchLog(logPath, options.print ?? console.log);
-  const claimLock = createClaimLock();
-  const sink = createWorkspaceSink({
-    workspaces: options.workspaces,
-    config: options.config,
-    repoRoot: root,
-    runGit: options.git,
-  });
+  const commandLock = createCommandLock();
   // Review publication lives only here on the host: the owner consent
   // ledger plus the publisher that uploads to the fixed destination.
   // Stage workers never receive either — they stay local and offline.
@@ -71,30 +62,20 @@ export async function startDispatchServe(options: DispatchServeOptions): Promise
     consents: new MemoryPublicationConsents(),
     publisher: new DiffwalkReviewPublisher(root),
   };
-  let lastRefreshAt: string | null = null;
 
   const commandContext = () => ({
     client: options.client,
     resolved,
-    host,
     decisions,
     workspaces: options.workspaces,
-    sink,
     repoRoot: root,
     git: options.git,
-    lastPollAt: () => lastRefreshAt,
     promptDelivery: options.promptDelivery,
     publication,
   });
-  const markRefresh = (): void => {
-    lastRefreshAt = new Date().toISOString();
-  };
-
   const dispatch: DispatchApi = {
-    command: (argv: string[], commandOptions: CommandCallOptions = {}) => claimLock(async () => {
-      const result = await runCommand(argv, commandContext(), commandOptions);
-      markRefresh();
-      return result;
+    command: (argv: string[], commandOptions: CommandCallOptions = {}) => commandLock(async () => {
+      return runCommand(argv, commandContext(), commandOptions);
     }),
   };
   const server = startServer({

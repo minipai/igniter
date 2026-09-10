@@ -21,13 +21,8 @@ import {
   type PromptDeliveryIdentity,
   type PromptDeliveryPolicy,
 } from "./prompt-delivery";
-import {
-  beginMutation,
-  deriveState,
-  type FullIssue,
-} from "./protocol";
 import { validateStartup, type ResolvedDispatch } from "./claims";
-import { createWorkspaceSink, runCommand, type CommandContext } from "./commands";
+import { runCommand, type CommandContext } from "./commands";
 import { parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
@@ -53,9 +48,9 @@ function identity(over: Partial<PromptDeliveryIdentity> = {}): PromptDeliveryIde
   return {
     project: "igniter",
     ticket: "STA-1",
-    role: "commander",
-    stage: "command",
-    agent: "commander-sta-1",
+    role: "builder",
+    stage: "build",
+    agent: "builder-sta-1",
     workOrder: workOrderHash("work order text"),
     ...over,
   };
@@ -77,14 +72,14 @@ describe("delivery identity", () => {
   test("the key binds project, ticket, role, stage, agent, revision, and work order", () => {
     const base = identity();
     const key = deliveryKey(base, 3);
-    expect(key).toContain("igniter|STA-1|commander|command|commander-sta-1|3|");
+    expect(key).toContain("igniter|STA-1|builder|build|builder-sta-1|3|");
     for (const over of [
       { project: "other" },
       { ticket: "STA-2" },
       { ticket: null },
-      { role: "builder" as const },
-      { stage: "build" as const },
-      { agent: "commander-sta-2" },
+      { role: "reviewer" as const },
+      { stage: "review" as const },
+      { agent: "builder-sta-2" },
       { workOrder: "deadbeef" },
     ]) {
       expect(deliveryKey(identity(over), 3)).not.toBe(key);
@@ -115,7 +110,7 @@ describe("confirmPromptDelivery", () => {
 
   test("a consumed prompt resolves with the observed lifecycle change", async () => {
     const fake = new FakeWorkspaces();
-    await liveAgent(fake, "commander-sta-1");
+    await liveAgent(fake, "builder-sta-1");
     const out = await confirmPromptDelivery(fake, identity(), "work order text", FAST);
     expect(out.attempts).toBe(1);
     expect(out.lostResponse).toBe(false);
@@ -126,19 +121,19 @@ describe("confirmPromptDelivery", () => {
   test("STA-197/STA-222 input-buffer failure: agent_prompted without a lifecycle change never counts", async () => {
     const fake = new FakeWorkspaces();
     fake.promptMode = "input-buffer";
-    await liveAgent(fake, "commander-sta-1");
+    await liveAgent(fake, "builder-sta-1");
     const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
     expect(error.reason).toBe("stalled");
     expect(error.attempts).toBe(2);
     // The diagnosis names project, ticket, role, stage, agent, and reason.
-    for (const part of ["project=igniter", "ticket=STA-1", "role=commander", "stage=command", "agent=commander-sta-1", "stalled"]) {
+    for (const part of ["project=igniter", "ticket=STA-1", "role=builder", "stage=build", "agent=builder-sta-1", "stalled"]) {
       expect(error.message).toContain(part);
     }
     // Retry resends the identical work order to the same agent: no second
     // agent, no second pane, no second run.
-    expect(fake.agents.filter((a) => a.name === "commander-sta-1")).toHaveLength(1);
+    expect(fake.agents.filter((a) => a.name === "builder-sta-1")).toHaveLength(1);
     expect(fake.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-    const inbox = fake.promptsFor("commander-sta-1");
+    const inbox = fake.promptsFor("builder-sta-1");
     expect(inbox).toHaveLength(2);
     expect(inbox[0]).toBe(inbox[1]);
     expect(error.key).toBe(deliveryKey(identity(), 0));
@@ -147,17 +142,17 @@ describe("confirmPromptDelivery", () => {
   test("a lost response converges by read-back without resending", async () => {
     const fake = new FakeWorkspaces();
     fake.promptMode = "lost-response";
-    await liveAgent(fake, "commander-sta-1");
+    await liveAgent(fake, "builder-sta-1");
     const out = await confirmPromptDelivery(fake, identity(), "work order text", FAST);
     expect(out.lostResponse).toBe(true);
     expect(out.attempts).toBe(1);
     expect(fake.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(1);
-    expect(fake.promptsFor("commander-sta-1")).toHaveLength(1);
+    expect(fake.promptsFor("builder-sta-1")).toHaveLength(1);
   });
 
   test("an unreachable Herdr names the delivery instead of hanging", async () => {
     const fake = new FakeWorkspaces();
-    await liveAgent(fake, "commander-sta-1");
+    await liveAgent(fake, "builder-sta-1");
     fake.failMethods.add("snapshot");
     const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
     expect(error.reason).toBe("herdr-unreachable");
@@ -175,18 +170,18 @@ describe("confirmPromptDelivery", () => {
 
   test("a vanished agent reports no-agent instead of a stall", async () => {
     const fake = new FakeWorkspaces();
-    await liveAgent(fake, "commander-sta-1");
+    await liveAgent(fake, "builder-sta-1");
     fake.agents = [];
     const error = await capture(confirmPromptDelivery(fake, identity(), "work order text", FAST));
     expect(error.reason).toBe("no-agent");
-    expect(error.message).toContain("agent=commander-sta-1");
+    expect(error.message).toContain("agent=builder-sta-1");
   });
 
   test("consumed advances only the pane revision; input-buffer moves nothing", async () => {
     const fake = new FakeWorkspaces();
-    const { paneId } = await liveAgent(fake, "commander-sta-1");
-    await fake.prompt("commander-sta-1", "hi");
-    const agent = fake.agents.find((a) => a.name === "commander-sta-1")!;
+    const { paneId } = await liveAgent(fake, "builder-sta-1");
+    await fake.prompt("builder-sta-1", "hi");
+    const agent = fake.agents.find((a) => a.name === "builder-sta-1")!;
     // The agent row is untouched, so wake-up dedup keys (session+revision)
     // stay stable; only the pane shows new output.
     expect(agent.agentStatus).toBe("working");
@@ -194,9 +189,9 @@ describe("confirmPromptDelivery", () => {
     expect(agent.revision).toBeNull();
     expect(fake.paneRevision[paneId]).toBe(1);
     fake.promptMode = "input-buffer";
-    await fake.prompt("commander-sta-1", "hi again");
+    await fake.prompt("builder-sta-1", "hi again");
     expect(fake.paneRevision[paneId]).toBe(1);
-    expect(fake.promptsFor("commander-sta-1")).toEqual(["hi", "hi again"]);
+    expect(fake.promptsFor("builder-sta-1")).toEqual(["hi", "hi again"]);
   });
 });
 
@@ -225,11 +220,9 @@ async function harness(): Promise<Harness> {
   const git = new FakeGit();
   git.head = HEAD;
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-delivery-")), "repo");
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git, promptDelivery: FAST });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
@@ -240,10 +233,8 @@ async function harness(): Promise<Harness> {
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
     promptDelivery: FAST,
   };
   return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
@@ -323,7 +314,7 @@ describe("stage start", () => {
 describe("in-progress recovery", () => {
   function seedActive(h: Harness): void {
     addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
-    h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
+    h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
   }
 
   test("an input-buffer recovery prompt fails without touching Linear", async () => {
@@ -362,11 +353,6 @@ describe("in-progress recovery", () => {
 describe("stage start gate (the contract STA-225 reuses)", () => {
   /** The stage pattern: confirm first, enter In progress only after proof. */
   async function startStage(h: Harness, agent: string): Promise<boolean> {
-    const full = (await h.client.fetchIssue("STA-2")) as FullIssue | null;
-    if (!full) throw new Error("STA-2 vanished from the fake");
-    const state = deriveState(h.resolved, full);
-    const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2" && !w.closed);
-    if (!workspace) throw new Error("STA-2 has no workspace in the fake");
     const order = "build work order for STA-2";
     try {
       await confirmPromptDelivery(
@@ -385,18 +371,13 @@ describe("stage start gate (the contract STA-225 reuses)", () => {
     } catch {
       return false;
     }
-    await beginMutation(
-      { client: h.client, resolved: h.resolved, workspaces: h.workspaces, decisions: h.ctx.decisions, git: h.git, repoRoot: h.repoRoot },
-      workspace.workspaceId,
-      full,
-      state,
-    );
+    expect((await runCommand(["begin", "STA-2"], h.ctx)).ok).toBe(true);
     return true;
   }
 
   function seedStage(h: Harness): void {
     addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-    h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2", status: "build", progress: "pending" }, { commander: false });
+    h.workspaces.seedWorkspace("STA-2", { ticket: "STA-2", status: "build", progress: "pending" });
     const workspace = h.workspaces.workspaces.find((w) => w.label === "STA-2")!;
     const paneId = workspace.panes[0]!;
     h.workspaces.agents.push({

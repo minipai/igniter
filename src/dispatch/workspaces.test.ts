@@ -4,7 +4,6 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  commanderName,
   createHerdrWorkspaces,
   createSocketPathCache,
   extractRunningTickets,
@@ -34,7 +33,7 @@ describe("extractRunningTickets", () => {
     expect(
       extractRunningTickets({
         agents: [
-          { name: "commander-STA-1" },
+          { name: "deliverer-STA-1" },
           { name: "builder-STA-2" },
           { name: "reviewer-STA-3" },
           { name: "bash" },
@@ -57,12 +56,12 @@ describe("extractRunningTickets", () => {
 
   test("lowercase agent names match and read back uppercased", () => {
     expect(
-      extractRunningTickets({ agents: [{ name: "commander-sta-1" }, { name: "builder-sta-2" }] }),
+      extractRunningTickets({ agents: [{ name: "deliverer-sta-1" }, { name: "builder-sta-2" }] }),
     ).toEqual(new Set(["STA-1", "STA-2"]));
-    expect(ticketFromAgentName("commander-sta-176")).toBe("STA-176");
-    expect(ticketFromAgentName("commander-STA-176")).toBe("STA-176");
+    expect(ticketFromAgentName("deliverer-sta-176")).toBe("STA-176");
+    expect(ticketFromAgentName("deliverer-STA-176")).toBe("STA-176");
     expect(ticketFromAgentName("bash")).toBeNull();
-    expect(commanderName("STA-176")).toBe("commander-sta-176");
+    expect(ticketFromAgentName("commander-sta-176")).toBeNull();
   });
 
   test("tokensByTicket matches by label or ticket token", () => {
@@ -71,7 +70,7 @@ describe("extractRunningTickets", () => {
         { workspaceId: "w1", label: "STA-1", tokens: { ticket: "STA-1" } },
         { workspaceId: "w2", label: "STA-2", tokens: { stage: "build" } },
       ],
-      agents: [{ name: "commander-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2", session: null, revision: null }],
+      agents: [{ name: "deliverer-sta-2", agentStatus: "working", workspaceId: "w2", paneId: "p2", session: null, revision: null }],
       panes: [],
     };
     const byTicket = tokensByTicket(snapshot);
@@ -202,7 +201,7 @@ describe("startAgent against a live socket", () => {
     });
     try {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
-      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "commander-sta-1" });
+      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "deliverer-sta-1" });
       expect(starts).toBe(3);
       expect(fake.calls[0]).toEqual({
         method: "pane.send_input",
@@ -252,7 +251,7 @@ describe("startAgent against a live socket", () => {
     });
     try {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
-      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "commander-sta-1" });
+      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "deliverer-sta-1" });
       expect(gets).toBe(2);
       expect(fake.calls.filter((c) => c.method === "agent.start")).toHaveLength(1);
     } finally {

@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkspaceSinkError } from "./claims";
+import { WorkspaceError } from "./claims";
 import { FakeGit } from "./fake-git";
 import { ensureTicketWorktree, ticketWorktree, WORKTREE_BASE } from "./worktrees";
 
@@ -56,13 +56,13 @@ describe("ensureTicketWorktree", () => {
     ]);
   });
 
-  test("a git failure throws WorkspaceSinkError with the stderr", async () => {
+  test("a git failure throws WorkspaceError with the stderr", async () => {
     const root = mkdtempSync(join(tmpdir(), "igniter-runtime-root-"));
     const git = new FakeGit();
     git.failOn = ["worktree"];
     git.failMessage = "fatal: not a git repository";
     const error = await ensureTicketWorktree(git, join(root, "repo"), "STA-1").catch((e) => e);
-    expect(error).toBeInstanceOf(WorkspaceSinkError);
+    expect(error).toBeInstanceOf(WorkspaceError);
     expect((error as Error).message).toContain("not a git repository");
   });
 });

@@ -10,7 +10,6 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createWorkspaceSink,
   runCommand,
   type CommandContext,
 } from "./commands";
@@ -78,21 +77,17 @@ async function harness(): Promise<Harness> {
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-pub-")), "repo");
   const consents = new MemoryPublicationConsents();
   const publisher = new FakeReviewPublisher();
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
     promptDelivery: FAST,
     publication: { consents, publisher },
   };

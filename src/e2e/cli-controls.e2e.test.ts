@@ -31,8 +31,8 @@ function progressNames(labels: { name: string }[] | undefined): string[] {
   return (labels ?? []).map((label) => label.name).sort();
 }
 
-describe("e2e CLI status and workspace state", () => {
-  test("ticket status and state --json use Linear truth plus the calling Herdr workspace", async () => {
+describe("e2e CLI explicit ticket status", () => {
+  test("ticket status uses Linear truth and removed workspace forms refuse without effects", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-20",
@@ -68,25 +68,21 @@ describe("e2e CLI status and workspace state", () => {
         submit_schema: { kind: "build", checkpoint: "<worktree HEAD>" },
       });
 
-      const outside = await e2e.cli(["state", "--json"]);
-      expectFail(outside, "runs inside a Herdr workspace only");
-      expect(outside.stdout).toBe("");
-      expect(outside.stderr).toContain("HERDR_ENV=1");
-
-      const state = expectOk(
-        await e2e.cli(["state", "--json"], {
-          env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: workspace.workspaceId },
-        }),
-      );
-      expect(state.stderr).toBe("");
-      const stateJson = JSON.parse(state.stdout) as typeof statusJson & { checkpoint: string | null };
-      expect(stateJson).toMatchObject({
-        ticket: { identifier: "STA-20", title: "Control contract", criteria: ["works"] },
-        status: "build",
-        progress: "in_progress",
-        checkpoint: null,
-        next: ["submit", "block"],
-      });
+      const callsBefore = e2e.client.calls.length;
+      const workerCallsBefore = e2e.workspaces.calls.length;
+      for (const env of [{}, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: workspace.workspaceId }] as Record<string, string>[]) {
+        const removed = await e2e.cli(["state", "--json"], { env });
+        expectFail(removed, "status <ticket> --json");
+        for (const argv of [["begin"], ["submit", "--input", "-"], ["block", "--reason", "waiting"], ["unblock"]]) {
+          expectFail(await e2e.cli(argv, { env }), `usage: igniter ${argv[0]} <ticket>`);
+        }
+      }
+      expect(e2e.client.calls).toHaveLength(callsBefore);
+      expect(e2e.workspaces.calls).toHaveLength(workerCallsBefore);
+      const inside = expectOk(await e2e.cli(["status", "STA-20", "--json"], {
+        env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "unrelated-workspace" },
+      }));
+      expect(JSON.parse(inside.stdout)).toEqual(statusJson);
     });
   });
 });

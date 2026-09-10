@@ -5,22 +5,19 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
-import { commanderAssetPaths } from "../commander/assets";
+import { join } from "node:path";
 import {
-  createWorkspaceSink,
-  buildWorkOrder,
   runCommand,
-  scratchPathsFor,
   type CommandContext,
 } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "./claims";
-import { DEFAULT_COMMANDER_CONFIG, parseDispatchConfig } from "./config";
+import { parseDispatchConfig } from "./config";
 import { recordStageProfiles } from "./agents";
 import { LinearClient } from "./linear";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
 import { FakeWorkspaces } from "./fake-workspaces";
+import { scratchFor } from "./worker-scope";
 
 const BUILD = "st-build";
 const REVIEW = "st-review";
@@ -56,21 +53,17 @@ async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient
   const git = new FakeGit();
   git.head = HEAD;
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-runtime-root-")), "repo");
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
   };
   return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
 }
@@ -90,13 +83,13 @@ describe("argv parsing", () => {
         ["begin", "STA-1", "--builder", "m"],
         ["start", "STA-1", "--bogus"],
         ["start", "STA-1", "STA-2"],
-        ["pause", "STA-1", "--bogus"], ["state"], ["state", "x"],
+        ["pause", "STA-1", "--bogus"],
         ["begin"], ["submit"], ["submit", "--input", "file"],
         ["submit", "--input", "-"],
         ["block"], ["block", "--reason", ""], ["block", "--reason", "x"],
         ["unblock"],
       ]) {
-        const out = await runCommand(argv, h.ctx);
+        const out = await runCommand(argv, h.ctx, { directStart: true });
         expect(out.ok).toBe(false);
         expect(out.text).toContain("usage: igniter");
       }
@@ -106,24 +99,32 @@ describe("argv parsing", () => {
     }
   });
 
-  test("legacy workspace commands without a workspace id refuse", async () => {
+  test("removed state points to explicit status without reading workspace metadata", async () => {
     const h = await harness();
     try {
-      const state = await runCommand(["state", "--json"], h.ctx);
-      expect(state.ok).toBe(false);
-      expect(state.text).toContain("Herdr workspace only");
-      const begin = await runCommand(["begin"], h.ctx);
-      expect(begin.ok).toBe(false);
-      expect(begin.text).toContain("usage: igniter begin");
-      // Ticket-targeted commands need no workspace id: they fail on Linear,
-      // never on a missing HERDR_WORKSPACE_ID.
-      const out = await runCommand(["block", "STA-1", "--reason", "x"], h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).not.toContain("Herdr workspace only");
-    } finally {
-      h.stop();
-    }
+      for (const argv of [["state"], ["state", "--json"]]) {
+        const out = await runCommand(argv, h.ctx);
+        expect(out).toEqual({ ok: false, text: "`igniter state` was removed; use `igniter status <ticket> --json`" });
+      }
+      expect(h.workspaces.calls).toEqual([]);
+    } finally { h.stop(); }
   });
+
+  test("missing tickets refuse usage even when an old caller supplies workspace metadata", async () => {
+    const h = await harness();
+    try {
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
+      h.client.fetchIssue = async () => { throw new Error("must not read Linear"); };
+      for (const argv of [["begin"], ["submit", "--input", "-"], ["block", "--reason", "waiting"], ["unblock"]]) {
+        const options = { workspaceId: "ws-1", input: "{}" };
+        const out = await runCommand(argv, h.ctx, options);
+        expect(out.ok).toBe(false);
+        expect(out.text).toContain(`usage: igniter ${argv[0]} <ticket>`);
+      }
+      expect(h.workspaces.calls).toEqual([]);
+    } finally { h.stop(); }
+  });
+
 });
 
 describe("status", () => {
@@ -154,7 +155,7 @@ describe("status", () => {
         checkpoint: "abc",
         receipt_kind: "review-pass",
         receipt_id: "comment-9",
-      }, { commanderStatus: "idle" });
+      });
       const out = await runCommand(["status"], h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("1 / 3 slots");
@@ -165,7 +166,7 @@ describe("status", () => {
       expect(data.slots).toEqual({ used: 1, max: 3 });
       expect(data.tickets).toMatchObject([
         { identifier: "STA-1", progress: "in_progress", hasWorkspace: true },
-        { identifier: "STA-2", progress: "complete", commander: "idle" },
+        { identifier: "STA-2", progress: "complete", worker: "missing" },
       ]);
     } finally {
       h.stop();
@@ -373,7 +374,7 @@ describe("worker start profiles", () => {
         ticket: "STA-7",
         profile_builder: JSON.stringify({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
         profile_reviewer: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
-      }, { commander: false });
+      });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
@@ -432,83 +433,13 @@ describe("worker start profiles", () => {
 
 });
 
-describe("start (singleton Commander)", () => {
-  test("start boots the one Commander with the patrol order", async () => {
-    const h = await harness();
-    try {
-      const out = await runCommand(["start"], h.ctx);
-      expect(out.ok).toBe(true);
-      expect(out.text).toContain("commander started in ws-1");
-      expect(out.text).toContain("patrolling");
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
-      const inbox = h.workspaces.promptsFor("commander");
-      expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("src/commander/global.md");
-      expect(inbox[0]).toContain("igniter");
-      expect(inbox[0]).not.toContain("commander-sta-");
-      expect(h.workspaces.workspaces).toHaveLength(1);
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("start STA-X reuses the singleton and assigns the ticket", async () => {
-    const h = await harness();
-    try {
-      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      const first = await runCommand(["start", "STA-1"], h.ctx);
-      expect(first.ok).toBe(true);
-      expect(first.text).toContain("assigned STA-1");
-      const second = await runCommand(["start", "STA-2"], h.ctx);
-      expect(second.ok).toBe(true);
-      expect(second.text).toContain("assigned STA-2");
-      // One workspace, one agent, never commander-<ticket>.
-      expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      expect(h.world.issues[0]!.stateId).toBe(TODO);
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("a repeated identical start reuses without a second order", async () => {
-    const h = await harness();
-    try {
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      const again = await runCommand(["start"], h.ctx);
-      expect(again.ok).toBe(true);
-      expect(again.text).toContain("reused without a second order");
-      expect(h.workspaces.promptsFor("commander")).toHaveLength(1);
-      expect(h.workspaces.agents).toHaveLength(1);
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("a lost Commander agent is rebuilt on takeover", async () => {
-    const h = await harness();
-    try {
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      h.workspaces.agents = [];
-      const out = await runCommand(["start"], h.ctx);
-      expect(out.ok).toBe(true);
-      expect(out.text).toContain("commander started in ws-1");
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      expect(h.workspaces.promptsFor("commander")).toHaveLength(1);
-    } finally {
-      h.stop();
-    }
-  });
-
+describe("foreground start", () => {
   test("start refuses unknown tickets and finished ones", async () => {
     const h = await harness();
     try {
-      expect((await runCommand(["start", "STA-404"], h.ctx)).ok).toBe(false);
+      expect((await runCommand(["start", "STA-404"], h.ctx, { directStart: true })).ok).toBe(false);
       addIssue(h.world, { identifier: "STA-9", stateId: DONE, priority: 1, description: CRITERIA });
-      const done = await runCommand(["start", "STA-9"], h.ctx);
+      const done = await runCommand(["start", "STA-9"], h.ctx, { directStart: true });
       expect(done.ok).toBe(false);
       expect(done.text).toContain("ticket is Done");
       expect(h.workspaces.workspaces).toHaveLength(0);
@@ -589,149 +520,14 @@ describe("fail", () => {
   });
 });
 
-describe("work order", () => {
-  test("carries every fact the commander needs", () => {
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      builderModel: "b-model",
-      commanderConfig: DEFAULT_COMMANDER_CONFIG,
-    });
-    for (const needle of [
-      "STA-176",
-      "Dispatch commands",
-      "https://linear.app/starcoder/issue/STA-176",
-      "Workspace: a git worktree at /repo/.igniter/runtime/worktrees/sta-176 on branch feature/sta-176 (base main), created by worker start.",
-      "do not create another branch",
-      "b-model",
-      "gpt-5.6-sol",
-      "gpt-5.6-luna",
-      "gpt-6-astra",
-      "/stages/build.md",
-      "/stages/review.md",
-      "/stages/deliver.md",
-      "harness `codex`",
-      "/rules.md",
-      "AGENTS.md",
-      "`igniter status STA-176 --json`",
-      "`igniter begin STA-176`",
-      "`igniter submit STA-176 --input -`",
-      "`igniter block STA-176 --reason",
-      "`igniter unblock STA-176`",
-    ]) {
-      expect(order).toContain(needle);
-    }
-    expect(order).not.toContain("LINEAR_API_KEY");
-    expect(order).not.toContain("GraphQL");
-    expect(order).not.toContain("igniter stage");
-    expect(order).not.toContain("`src/commander/");
-  });
-
-  test("carries a repository harness override into the Commander work order", () => {
-    const commanderConfig = parseDispatchConfig({
-      project: "igniter",
-      agents: { reviewer: { harness: "codex", model: "r-model" } },
-    }).commander;
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig,
-    });
-
-    expect(order).toContain("Acceptance: prompt `/");
-    expect(order).toContain("/stages/review.md`; agent `reviewer`; harness `codex`; model `r-model`");
-  });
-
-  test("work order carries bundled absolute paths that exist outside the target repo", async () => {
-    // A target repo with no src/commander/ at all.
-    const repoRoot = mkdtempSync(join(tmpdir(), "igniter-target-"));
-    const assets = commanderAssetPaths();
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig: DEFAULT_COMMANDER_CONFIG,
-      assets,
-    });
-    expect(order).toContain(assets.rules);
-    for (const stage of ["build", "review", "deliver"] as const) {
-      const prompt = assets.prompts[stage];
-      expect(order).toContain(prompt);
-      expect(isAbsolute(prompt)).toBe(true);
-      expect(prompt.startsWith(repoRoot)).toBe(false);
-      expect(await Bun.file(prompt).exists()).toBe(true);
-      expect((await Bun.file(prompt).text()).length).toBeGreaterThan(0);
-    }
-    expect(isAbsolute(assets.rules)).toBe(true);
-    expect(await Bun.file(assets.rules).exists()).toBe(true);
-  });
-
-  test("agent overrides merge while bundled prompt paths stay fixed", async () => {
-    const assets = commanderAssetPaths();
-    const commanderConfig = parseDispatchConfig({
-      project: "igniter",
-      agents: { builder: { model: "custom/builder" } },
-    }).commander;
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig,
-      assets,
-    });
-    expect(order).toContain("model `custom/builder`");
-    for (const stage of ["build", "review", "deliver"] as const) {
-      expect(order).toContain(assets.prompts[stage]);
-    }
-  });
-
-  test("Deliver uses the explicit deliverer profile and the work order renders effort", () => {
-    const commanderConfig = parseDispatchConfig({
-      project: "igniter",
-      agents: { deliverer: { harness: "claude", model: "d-model", effort: "max" } },
-    }).commander;
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig,
-    });
-    // Deliver no longer reuses the Builder profile.
-    expect(order).toContain("Deliver: prompt `/");
-    expect(order).toContain("/stages/deliver.md`; agent `deliverer`; harness `claude`; model `d-model`; effort `max`");
-    // Bundled effort renders on the stages that set it.
-    const bundled = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig: DEFAULT_COMMANDER_CONFIG,
-    });
-    expect(bundled).toContain("Acceptance: prompt `/");
-    expect(bundled).toContain("harness `codex`; model `gpt-5.6-sol`; effort `high`");
-    expect(bundled).toContain("Builder fallback: harness `codex`; model `gpt-6-astra`; effort `high`");
-  });
-
+describe("worker work order", () => {
   test("a worker start reuses the recorded stage profiles when the configuration drifts", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Drifted config", labelIds: [PENDING] });
       // The run recorded the bundled profiles at claim time.
       const recorded = recordStageProfiles(h.ctx.resolved.config);
-      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", ...recorded }, { commander: false });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", ...recorded });
       // The configuration drifts mid-run: new harnesses, models, efforts.
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
@@ -772,55 +568,13 @@ describe("work order", () => {
     }
   });
 
-  test("a configured delivery document tells the commander to read it, not search", () => {
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      builderModel: "b-model",
-      commanderConfig: DEFAULT_COMMANDER_CONFIG,
-      delivery: "CONTRIBUTING.md",
-    });
-    expect(order).toContain("Project settings: read `CONTRIBUTING.md` (relative to the repo root)");
-    expect(order).toContain("Do not search for another one.");
-    expect(order).not.toContain("No delivery document is configured");
-  });
-});
-
-describe("worker scratch", () => {
-  test("the work order names each worker scratch without invented harness flags", () => {
-    const scratch = scratchPathsFor("/repo", "STA-176");
-    const order = buildWorkOrder({
-      identifier: "STA-176",
-      title: "Dispatch commands",
-      issueUrl: "https://linear.app/starcoder/issue/STA-176",
-      worktreePath: "/repo/.igniter/runtime/worktrees/sta-176",
-      branch: "feature/sta-176",
-      commanderConfig: DEFAULT_COMMANDER_CONFIG,
-      scratch,
-    });
-    expect(order).toContain(scratch.builder);
-    expect(order).toContain(scratch.reviewer);
-    expect(order).toContain(scratch.deliverer);
-    expect(order).toContain("harness `codex`");
-    expect(order).toContain(scratch.builder);
-    expect(order).toContain("Do not invent generic permission flags");
-    expect(order).not.toContain("--claude-allow-dir");
-    expect(order).not.toContain("--codex-allow-path");
-    expect(order).not.toContain("--opencode-allow");
-    expect(order).not.toContain("--remote-control");
-    expect(order).toContain("escalate to the owner");
-  });
-
   test("worker start creates every worker scratch and records it in workspace metadata", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-8", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const out = await runCommand(["worker", "start", "STA-8"], h.ctx);
       expect(out.ok).toBe(true);
-      const scratch = scratchPathsFor(h.repoRoot, "STA-8");
+      const scratch = { builder: scratchFor(h.repoRoot, "STA-8", "builder"), reviewer: scratchFor(h.repoRoot, "STA-8", "reviewer"), deliverer: scratchFor(h.repoRoot, "STA-8", "deliverer") };
       const { existsSync } = await import("node:fs");
       expect(existsSync(scratch.builder)).toBe(true);
       expect(existsSync(scratch.reviewer)).toBe(true);

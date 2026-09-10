@@ -36,9 +36,8 @@ async function fixture(stage = "build", comments: { id: string; body: string }[]
   git.head = HEAD;
   git.ancestors.add(`${HEAD} main`);
   const ctx: CommandContext = {
-    client, resolved, workspaces, git, repoRoot: "/fake/sta-244", host: "test",
-    decisions: { record: async () => {} }, lastPollAt: () => null,
-    sink: async () => { throw new Error("Linear commands cannot prepare workers"); },
+    client, resolved, workspaces, git, repoRoot: "/fake/sta-244",
+    decisions: { record: async () => {} },
   };
   client.calls = [];
   return { ctx, issue, client, workspaces, git };
