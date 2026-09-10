@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { validateStartup } from "../../config/claims.ts";
-import { runCommand, type CommandContext } from "../commands.ts";
+import { runCommand, type CommandContext } from "../../run.ts";
 import { parseDispatchConfig } from "../../config/config.ts";
 import { FakeGit } from "../../testing/fake-git.ts";
 import { MemoryLinearClient, memoryAddIssue, standardMemoryWorld } from "../../service/linear/fake-memory-linear.ts";

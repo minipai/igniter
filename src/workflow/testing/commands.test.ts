@@ -9,14 +9,14 @@ import { join } from "node:path";
 import {
   runCommand,
   type CommandContext,
-} from "./commands";
+} from "../run";
 import { validateStartup, type ResolvedDispatch } from "../config/claims";
 import { parseDispatchConfig } from "../config/config";
-import { recordStageProfiles } from "./stage/agents";
+import { recordStageProfiles } from "../lifecycle/stage/agents";
 import { LinearClient } from "../service/linear/linear";
 import { addIssue, standardWorld, startFakeLinear } from "../service/linear/fake-linear";
-import { FakeGit } from "../testing/fake-git";
-import { FakeWorkspaces } from "../testing/fake-workspaces";
+import { FakeGit } from "./fake-git";
+import { FakeWorkspaces } from "./fake-workspaces";
 import { scratchFor } from "../service/worktree/worker-scope";
 
 const BUILD = "st-build";

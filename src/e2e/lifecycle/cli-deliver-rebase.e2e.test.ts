@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { memoryAddIssue } from "../../workflow/service/linear/fake-memory-linear.ts";
-import { latestValidReceipt, parseReceiptBlock } from "../../workflow/command/ticket/protocol.ts";
+import { latestValidReceipt, parseReceiptBlock } from "../../workflow/lifecycle/ticket/protocol.ts";
 import {
   buildPayload,
   commitWorktreeFile,

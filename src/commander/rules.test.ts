@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildCommanderLaunchPrompt } from "../workflow/command/stage/commander-start.ts";
+import { buildCommanderLaunchPrompt } from "../workflow/lifecycle/stage/commander-start.ts";
 
 const commonRules = await Bun.file(new URL("./rules.md", import.meta.url)).text();
 const commanderConfig = Bun.YAML.parse(

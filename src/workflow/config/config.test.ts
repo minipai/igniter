@@ -11,7 +11,7 @@ import {
   parseDispatchConfig,
 } from "./config";
 import { commanderAssetPaths } from "../../commander/assets";
-import { promptPathForStage } from "../command/stage/stage-start";
+import { promptPathForStage } from "../lifecycle/stage/stage-start";
 
 function configDir(yaml: string): string {
   const dir = mkdtempSync(join(tmpdir(), "igniter-config-"));

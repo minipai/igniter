@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { MemoryLinearClient, standardMemoryWorld, type MemoryWorld } from "../../workflow/service/linear/fake-memory-linear.ts";
 import { FakeWorkspaces } from "../../workflow/testing/fake-workspaces.ts";
-import type { PromptDeliveryPolicy } from "../../workflow/command/delivery/prompt-delivery.ts";
+import type { PromptDeliveryPolicy } from "../../workflow/lifecycle/delivery/prompt-delivery.ts";
 
 export const CLI_PATH = new URL("./cli-entry.ts", import.meta.url).pathname;
 

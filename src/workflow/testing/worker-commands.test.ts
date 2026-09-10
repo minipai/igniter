@@ -2,16 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { workerCommand } from "./worker-commands.ts";
-import { type CommandContext } from "./commands.ts";
+import { workerCommand } from "../run.ts";
+import { type CommandContext } from "../run.ts";
 import { validateStartup } from "../config/claims.ts";
 import { parseDispatchConfig } from "../config/config.ts";
 import { MemoryLinearClient, memoryAddIssue, standardMemoryWorld } from "../service/linear/fake-memory-linear.ts";
-import { FakeWorkspaces } from "../testing/fake-workspaces.ts";
-import { FakeGit } from "../testing/fake-git.ts";
+import { FakeWorkspaces } from "./fake-workspaces.ts";
+import { FakeGit } from "./fake-git.ts";
 import { ticketWorktree } from "../service/worktree/worktrees.ts";
-import { receiptBlock } from "./ticket/protocol.ts";
-import type { WorkerRequest } from "./command-request.ts";
+import { receiptBlock } from "../lifecycle/ticket/protocol.ts";
+import type { WorkerRequest } from "../request.ts";
 
 async function setup(state = "st-todo", labels: string[] = []) {
   const world = standardMemoryWorld();

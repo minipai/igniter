@@ -2,7 +2,7 @@
 import { executeCommand, runCli } from "../../cli.ts";
 import { LinearError, type LinearClientLike } from "../../workflow/service/linear/linear.ts";
 import type { CommandWorkspaces } from "../../workflow/service/workspace/workspaces.ts";
-import type { PromptDeliveryPolicy } from "../../workflow/command/delivery/prompt-delivery.ts";
+import type { PromptDeliveryPolicy } from "../../workflow/lifecycle/delivery/prompt-delivery.ts";
 
 const rpcUrl = process.env["IGNITER_E2E_RPC"];
 if (!rpcUrl) throw new Error("IGNITER_E2E_RPC is missing");

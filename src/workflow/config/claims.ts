@@ -10,7 +10,7 @@ import {
   progressOf,
   type ProtocolProgress,
   type ProtocolStatus,
-} from "../command/ticket/protocol.ts";
+} from "../lifecycle/ticket/protocol.ts";
 export type { ProtocolStatus, ProtocolProgress };
 
 export interface ResolvedDispatch {
