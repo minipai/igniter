@@ -207,11 +207,14 @@ name either a repository prompt or a bundled fallback.
 Pass the worker:
 
 - its absolute configured stage prompt path;
-- the feature request and criteria;
-- only the ticket, checkpoint, repository, project-setting, and runbook facts
-  listed by that prompt;
+- the inputs that stage prompt allows, supplied by the generated work order;
 - the worker's own scratch result path; and
 - an instruction to read and follow repository rules.
+
+Each rule has one owner: this document owns roles, handoffs, and the
+Commander's approval scope; each stage prompt owns that stage's inputs and
+procedure; the generated work order supplies the per-run facts and the
+worker's hard boundaries. Keep those homes consistent.
 
 The Commander does not read stage prompts into its own context. It passes the
 absolute configured path from the work order for the worker to read directly.
@@ -248,11 +251,16 @@ pane or agent. A same-text dialog at a new revision is a new dialog.
 
 Ask the owner before approving home configs, credentials, system locations,
 remote hosts, broader filesystem access, external writes, destructive actions,
-or any network access. Never start OpenCode with `--auto`.
+or external network access. The tested product's own local service, started
+and stopped by the repository's run or acceptance instructions, is inside the
+pre-authorized scope: approve it without a new owner question. Never start
+OpenCode with `--auto`.
 
-Stage workers stay inside the ticket worktree and their own scratch and run
-only the checks and artifact steps required by the repository workflow. Ask
-the owner before any step that crosses those boundaries.
+Stage workers stay inside the ticket worktree, their own scratch, and the
+repository's authorized run, check, and acceptance steps, including the tested
+product's local service. Ask the owner before any step that crosses those
+boundaries, and never let a worker operate Igniter or Linear state or publish
+externally outside its configured stage.
 
 ## Worker reports
 

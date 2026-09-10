@@ -110,17 +110,17 @@ const STAGE_MARKER: Record<CommanderStage, string> = {
 };
 
 /**
- * The stage worker's first and only prompt. It names the absolute configured
- * prompt, the feature request and criteria, the repository instructions, the
- * checkpoint, and the result path. It forbids Igniter CLI use, Linear calls,
+ * The stage worker's initial work order. It names the absolute configured
+ * prompt, the stage's allowed inputs, the repository instructions, the
+ * checkpoint, and the result path. Build and Deliver receive the full feature
+ * request and Git context; Acceptance receives only the requirement,
+ * observable criteria, and public runbook, so nothing undermines its
+ * black-box contract. Every stage is forbidden Igniter CLI use, Linear calls,
  * receipt submission, and ticket-state operations: the worker reports only
  * to the Global Commander, which submits through ticket-targeted commands.
  */
 export function buildStageWorkOrder(input: StageWorkOrderInput): string {
   const effort = input.effort !== undefined ? `; effort \`${input.effort}\`` : "";
-  const criteria = input.criteria.length > 0
-    ? input.criteria.map((c) => `- [ ] ${c}`).join("\n")
-    : "- [ ] (no criteria listed; read the feature request below)";
   const delivery = input.delivery !== undefined
     ? `Project instructions: read \`${input.delivery}\` (relative to the repo root) as the delivery document. Do not search for another one. Also read the repository's AGENTS.md and follow it.\n`
     : `No delivery document is configured in \`.igniter/config.yaml\`. Read the repository's AGENTS.md (or equivalent) for how to run, check, and accept the project; do not invent project settings.\n`;
@@ -132,25 +132,23 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `Do not read any other stage prompt.\n` +
     `\n` +
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
-    `Work there; do not create another branch or worktree.\n` +
+    `${worktreeInstruction(input)}\n` +
     `Agent profile for this stage: harness \`${input.harness}\`; model \`${input.model}\`${effort}.\n` +
     `Your own scratch dir is \`${input.resultPath.replace(/\/result\.md$/, "")}\`; ` +
     `write your stage result to \`${input.resultPath}\` and to nowhere else.\n` +
     `\n` +
     delivery +
     `\n` +
-    `Feature request:\n` +
-    `${input.description ?? "(no description)"}\n` +
+    stageInputBlock(input) +
     `\n` +
-    `Acceptance criteria:\n` +
-    `${criteria}\n` +
-    `\n` +
-    `Checkpoint to work from: \`${input.checkpoint}\`. ` +
-    `Inspect the worktree diff and branch log first; never reset, clean, or discard unrelated work.\n` +
+    `Checkpoint to work from: \`${input.checkpoint}\`. ${checkpointInstruction(input)}\n` +
     `\n` +
     `Boundaries (hard): report only to the Global Commander. ` +
     `Do not run any \`igniter\` command, do not call Linear directly or through MCP, ` +
     `do not publish Linear receipts or comments, and do not operate ticket state. ` +
+    `Do not publish externally on your own; only the configured Deliver stage updates remote branches after owner approval. ` +
+    `The tested product's own local services are not the Igniter control plane: ` +
+    `start or stop them only as the repository's run or acceptance instructions require. ` +
     `Your only output is the result file at \`${input.resultPath}\` plus your final report.\n` +
     `\n` +
     `Write the stage result as structured Markdown covering exactly what the stage prompt asks for, ` +
@@ -160,6 +158,53 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `${STAGE_MARKER[input.stage]}\n` +
     `\`\`\`\n`
   );
+}
+
+/**
+ * The inputs the stage prompt allows. Acceptance must not receive the raw
+ * description, which can carry an implementation plan or Builder conclusion;
+ * it gets the requirement (the ticket title) and the observable criteria
+ * instead. Build and Deliver get the full request.
+ */
+function stageInputBlock(input: StageWorkOrderInput): string {
+  if (input.stage === "review") {
+    return (
+      `Requirement: ${input.title}\n` +
+      `\n` +
+      `Observable acceptance criteria:\n` +
+      `${criteriaList(input)}\n` +
+      `\n` +
+      `Public entry: the repository's run and acceptance instructions, with their runbook and non-secret test data.\n`
+    );
+  }
+  return (
+    `Feature request:\n` +
+    `${input.description ?? "(no description)"}\n` +
+    `\n` +
+    `Acceptance criteria:\n` +
+    `${criteriaList(input)}\n`
+  );
+}
+
+function criteriaList(input: StageWorkOrderInput): string {
+  if (input.criteria.length > 0) return input.criteria.map((c) => `- [ ] ${c}`).join("\n");
+  return input.stage === "review"
+    ? "- [ ] (no observable criteria listed; report the missing criteria instead of guessing)"
+    : "- [ ] (no criteria listed; read the feature request above)";
+}
+
+/** Acceptance stays black-box: it may not read the source, diff, or history. */
+function checkpointInstruction(input: StageWorkOrderInput): string {
+  return input.stage === "review"
+    ? `Do not read source files, git history, or diffs; test the committed checkpoint only through its public surface.`
+    : `Inspect the worktree diff and branch log first; never reset, clean, or discard unrelated work.`;
+}
+
+/** Acceptance runs from the worktree but never edits it. */
+function worktreeInstruction(input: StageWorkOrderInput): string {
+  return input.stage === "review"
+    ? `Run from there; do not modify the worktree and do not create another branch or worktree.`
+    : `Work there; do not create another branch or worktree.`;
 }
 
 export interface StageStartDeps {

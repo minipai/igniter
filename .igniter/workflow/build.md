@@ -2,7 +2,8 @@
 
 Implement one feature in the prepared worktree. Read the repository
 instructions before writing. The work order provides the request, acceptance
-criteria, paths, and any failures from an earlier attempt.
+criteria, and paths; a correction arrives as a separate send naming only the
+failed criteria.
 
 - Inspect the existing branch and diff.
 - Implement the scoped production change without overwriting unrelated work.
