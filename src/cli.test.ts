@@ -269,38 +269,24 @@ describe("cli dispatch forwarding", () => {
   });
 });
 
-describe("cli workspace commands", () => {
-  test("outside a workspace the CLI refuses before any HTTP", async () => {
-    const fake = startFakeDispatch(() => ({ ok: true, text: "unreachable" }));
-    try {
-      const result = await runCliFull(["state", "--json"], {
-        cwd: repoPointingAt(fake.port),
-        env: outsideWorkspaceEnv(),
-      });
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("runs inside a Herdr workspace only");
-      expect(fake.seen).toEqual([]);
-    } finally {
-      fake.stop();
-    }
+describe("cli explicit ticket commands", () => {
+  test("removed state reports its replacement even inside a Herdr workspace", async () => {
+    const result = await runCliFull(["state", "--json"], {
+      cwd: tmpdir(), env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("was removed; use `igniter status <ticket> --json`");
   });
 
-  test("state forwards the workspace id, never a ticket", async () => {
-    const fake = startFakeDispatch((seen) => {
-      expect(seen.workspaceId).toBe("ws-7");
-      return { ok: true, text: '{"status":"build"}' };
+  test.each([
+    { args: ["begin"] }, { args: ["submit", "--input", "-"] }, { args: ["submit", "--input=-"] },
+    { args: ["block", "--reason", "waiting"] }, { args: ["block", "--reason=waiting"] }, { args: ["unblock"] },
+  ])("missing ticket is rejected before config, HTTP, or stdin: %j", async ({ args }) => {
+    const result = await runCliFull([...args], {
+      cwd: tmpdir(), env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
     });
-    try {
-      const result = await runCliFull(["state", "--json"], {
-        cwd: repoPointingAt(fake.port),
-        env: { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" },
-      });
-      expect(result.code).toBe(0);
-      expect(result.stdout).toContain('"status":"build"');
-      expect(fake.seen).toEqual([{ argv: ["state", "--json"], workspaceId: "ws-7" }]);
-    } finally {
-      fake.stop();
-    }
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(`usage: igniter ${args[0]} <ticket>`);
   });
 
   test("submit carries stdin to the server verbatim without a workspace id", async () => {
@@ -358,7 +344,11 @@ describe("cli command coverage", () => {
         ["start", "STA-1"],
         ["begin", "STA-1"],
         ["submit", "STA-1", "--input", "-"],
+        ["submit", "--input", "-", "STA-1"],
+        ["submit", "--input=-", "STA-1"],
         ["block", "STA-1", "--reason", "waiting"],
+        ["block", "--reason", "waiting", "STA-1"],
+        ["block", "--reason=waiting", "STA-1"],
         ["unblock", "STA-1"],
         ["reconcile", "STA-1"],
         ["approve", "STA-1", "--receipt", "receipt-build-1"],
@@ -380,27 +370,6 @@ describe("cli command coverage", () => {
       expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
       expect(fake.seen.every((entry) => entry.workspaceId === undefined)).toBe(true);
       expect(fake.seen.filter((entry) => entry.argv[0] === "start").every((entry) => entry.directStart === true)).toBe(true);
-    } finally {
-      fake.stop();
-    }
-  });
-
-  test("every legacy workspace command forwards the workspace id", async () => {
-    const fake = startFakeDispatch((seen) => ({ ok: true, text: seen.argv.join(" ") }));
-    try {
-      const dir = repoPointingAt(fake.port);
-      const env = { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "ws-7" };
-      const cases: string[][] = [
-        ["state", "--json"],
-        ["begin"],
-      ];
-      for (const argv of cases) {
-        const result = await runCliFull(argv, { cwd: dir, env });
-        expect(result.code).toBe(0);
-        expect(result.stdout).toContain(argv.join(" "));
-      }
-      expect(fake.seen.map((entry) => entry.argv)).toEqual(cases);
-      expect(fake.seen.every((entry) => entry.workspaceId === "ws-7")).toBe(true);
     } finally {
       fake.stop();
     }

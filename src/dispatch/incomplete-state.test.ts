@@ -9,7 +9,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createWorkspaceSink,
   runCommand,
   type CommandContext,
 } from "./commands";
@@ -62,21 +61,17 @@ async function harness(maxRunning = 3): Promise<Harness> {
   const git = new FakeGit();
   git.head = HEAD;
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-incomplete-")), "repo");
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
   };
   return { ctx, lines, workspaces, git, client, resolved, world, stop: () => fake.stop() };
 }

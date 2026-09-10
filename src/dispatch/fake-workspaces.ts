@@ -3,7 +3,6 @@
 // here with no daemon, no socket, and no real panes.
 
 import {
-  commanderName,
   extractRunningTickets,
   KNOWN_AGENT_KINDS,
   type CommandWorkspaces,
@@ -218,7 +217,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
   seedWorkspace(
     label: string,
     tokens: Record<string, string> = {},
-    options: { commander?: boolean; commanderStatus?: string; paneText?: string } = {},
+    options: { paneText?: string } = {},
   ): FakeWorkspace {
     this.workspaceCounter += 1;
     this.paneCounter += 1;
@@ -232,18 +231,6 @@ export class FakeWorkspaces implements CommandWorkspaces {
       closed: false,
     };
     this.workspaces.push(workspace);
-    if (options.commander ?? true) {
-      this.agents.push({
-        name: commanderName(label),
-        kind: "claude",
-        agentStatus: options.commanderStatus ?? "working",
-        workspaceId,
-        paneId,
-        session: null,
-        revision: null,
-        inbox: [],
-      });
-    }
     if (options.paneText !== undefined) this.paneText[paneId] = options.paneText;
     return workspace;
   }

@@ -1,10 +1,10 @@
 // Stage-aware Linear delivery protocol (STA-186).
 //
 // Linear status and Progress are the authoritative state; Herdr workspace
-// metadata only mirrors them. Every mutation below follows one order:
+// metadata never authorizes their mutations. Every mutation follows one order:
 //
 //   validate -> publish receipt/evidence -> readback -> metadata identity
-//   -> status/label -> final readback/mirror
+//   -> status/label -> final readback
 //
 // There is no transaction between Linear and Herdr, so the order plus the
 // submission identity plus read-back is what converges a retry instead of
@@ -19,12 +19,9 @@
 import { createHash } from "node:crypto";
 import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "./linear.ts";
 import type { BuildPublicationGate } from "./review-publication.ts";
-import type { ResolvedDispatch, DecisionLog, CommandResult, ClaimSink, ClaimedTicket } from "./claims.ts";
-import { WorkspaceSinkError } from "./claims.ts";
-import { launchProblems } from "./agents.ts";
-import type { CommandWorkspaces, SnapshotWorkspace } from "./workspaces.ts";
-import { commanderName } from "./workspaces.ts";
-import { cleanupTicketCheckout, ticketWorktree, type GitRunner } from "./worktrees.ts";
+import type { ResolvedDispatch, DecisionLog, CommandResult } from "./claims.ts";
+import type { CommandWorkspaces } from "./workspaces.ts";
+import { ticketWorktree, type GitRunner } from "./worktrees.ts";
 import { LinearError } from "./linear.ts";
 
 export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done";
@@ -39,8 +36,6 @@ export function statusNeedsProgress(status: ProtocolStatus): boolean {
 }
 
 export interface ProtocolDeps {
-  /** Explicit Linear commands never wake, stop, or clean workers. */
-  linearOnly?: boolean;
   client: LinearClientLike;
   resolved: ResolvedDispatch;
   workspaces: CommandWorkspaces;
@@ -953,8 +948,8 @@ export async function setProgress(
  * never reach this path — `bareTodoState` must already have named the ticket
  * a bare Todo. Linear is read back and verified before returning; the write
  * itself carries the same owner-race behavior as every other `setProgress`
- * call, and the claim lock serializes dispatch commands. The ticket stays
- * Todo: the caller's normal claim path moves it to Build.
+ * call, and the command lock serializes dispatch commands. The ticket stays
+ * Todo until an explicit begin command records the Build stage start.
  */
 export async function normalizeBareTodo(
   deps: ProtocolDeps,
@@ -1024,27 +1019,13 @@ export async function worktreeHead(deps: ProtocolDeps, identifier: string): Prom
 }
 
 // ---------------------------------------------------------------------------
-// Workspace mirror (Herdr only mirrors, after the Linear read-back)
+// Workspace metadata for status display
 // ---------------------------------------------------------------------------
 
 export type WorkspaceMeta = Record<string, string>;
 
-export function metaOf(workspace: SnapshotWorkspace): WorkspaceMeta {
-  return { ...workspace.tokens };
-}
-
-/** Mirror the authoritative pair plus receipt identity into workspace metadata. */
-export async function mirror(
-  deps: ProtocolDeps,
-  workspaceId: string,
-  tokens: Record<string, string | null>,
-): Promise<void> {
-  if (deps.linearOnly) return;
-  await deps.workspaces.reportMetadata(workspaceId, tokens);
-}
-
 // ---------------------------------------------------------------------------
-// state --json
+// status <ticket> --json
 // ---------------------------------------------------------------------------
 
 export interface StateJson {
@@ -1172,38 +1153,10 @@ export function describeState(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Claim path (shared by the watcher and `igniter start`)
-// ---------------------------------------------------------------------------
-
-export interface ClaimOptions {
-  builder?: string;
-}
-
-export interface AdoptOptions {
-  builder?: string;
-}
-
-export interface ClaimDeps extends ProtocolDeps {
-  sink: ClaimSink;
-  host: string;
-}
-
-/** A ticket is claimable only as Todo+Pending with observable criteria. */
-export function claimable(state: AuthoritativeState): string | null {
-  if (state.status !== "todo" || state.progress !== "pending") {
-    return `claim needs Todo+Pending, got ${state.status}+${state.progress ?? "no progress"}`;
-  }
-  if (state.criteria.length === 0) {
-    return `claim needs an acceptance-criteria checklist in the description`;
-  }
-  return null;
-}
-
 /**
  * Build tickets holding a slot: every Build-state issue whose Progress is
  * anything but Blocked. Blocked workspaces stay open but free their slot.
- * Tickets with an unreadable Progress pair still hold one: never claim
+ * Tickets with an unreadable Progress pair still hold one: never start Build
  * over a ticket dispatch cannot see.
  */
 export async function countBuildSlots(client: LinearClientLike, resolved: ResolvedDispatch): Promise<number> {
@@ -1216,224 +1169,6 @@ export async function countBuildSlots(client: LinearClientLike, resolved: Resolv
     if (progresses.length !== 1 || progresses[0] !== "blocked") used += 1;
   }
   return used;
-}
-
-/**
- * Claim a Todo+Pending ticket with observable criteria: the sink opens the
- * worktree and workspace, writes the ticket metadata, and starts the
- * Commander; then Linear moves to Build+In progress. Throws ProtocolError
- * on any refusal (no writes) and WorkspaceSinkError past the workspace
- * point. The watcher and `igniter start` share exactly this path.
- */
-export async function claimTicket(
-  deps: ClaimDeps,
-  full: FullIssue,
-  options: ClaimOptions = {},
-): Promise<ClaimedTicket & { workspaceId: string; commander: string; builder: string }> {
-  const { resolved } = deps;
-  const state = deriveState(resolved, full);
-  const blocked = claimable(state);
-  if (blocked) {
-    throw new ProtocolError(`refused: ${full.identifier} is not claimable: ${blocked}`);
-  }
-  const used = await countBuildSlots(deps.client, resolved);
-  if (used >= resolved.config.maxRunning) {
-    throw new ProtocolError(
-      `refused: at max_running (${resolved.config.maxRunning}); ${used} Build tickets hold slots`,
-    );
-  }
-  const kind = resolved.config.commander.agents.commander.harness;
-  const builder = options.builder ?? resolved.config.commander.agents.builder.model;
-  const kinds = await deps.workspaces.agentKinds();
-  if (!kinds.includes(kind)) {
-    throw new ProtocolError(`refused: unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
-  }
-  const problems = launchProblems(resolved.config);
-  if (problems.length > 0) {
-    throw new ProtocolError(`refused: ${problems.join("; ")}`);
-  }
-  const from = full.state.name;
-  const ticket: ClaimedTicket = {
-    id: full.id,
-    identifier: full.identifier,
-    title: full.title,
-    host: deps.host,
-    slot: used,
-    builder,
-  };
-  let opened: { workspaceId: string; commander: string; builder: string };
-  try {
-    opened = (await deps.sink(ticket)) ?? { workspaceId: "", commander: kind, builder };
-  } catch (error) {
-    if (error instanceof WorkspaceSinkError) throw error;
-    throw new WorkspaceSinkError((error as Error).message);
-  }
-  try {
-    await moveStatus(deps, full, "build", "in_progress");
-  } catch (error) {
-    throw new WorkspaceSinkError((error as Error).message, opened.workspaceId || undefined);
-  }
-  if (opened.workspaceId) {
-    await mirror(deps, opened.workspaceId, { status: "build", progress: "in_progress" });
-  }
-  await deps.decisions.record(full.identifier, `claimed: ${from} → ${resolved.config.states.build} (slot ${used})`);
-  if (opened.workspaceId) {
-    await deps.decisions.record(
-      full.identifier,
-      `workspace opened (${opened.workspaceId}) commander=${opened.commander} builder=${opened.builder}`,
-    );
-  }
-  return { ...ticket, ...opened };
-}
-
-/**
- * Adopt a ticket whose workspace was lost: reopen through the same sink and
- * mirror the authoritative Linear state into it. Linear is never written
- * here — the receipt history in the comments already carries the run's
- * identity, so even a Complete stage is kept as is (its `state --json`
- * note says what it waits for) instead of being reset to Pending.
- */
-export async function adoptTicket(
-  deps: ClaimDeps,
-  full: FullIssue,
-  options: AdoptOptions = {},
-): Promise<{ workspaceId: string; commander: string; builder: string }> {
-  const state = deriveState(deps.resolved, full);
-  if (state.status !== "build" && state.status !== "review" && state.status !== "deliver") {
-    throw new ProtocolError(
-      `refused: adopt needs a Build, Review, or Deliver ticket, got ${state.status}`,
-    );
-  }
-  const kind = deps.resolved.config.commander.agents.commander.harness;
-  const kinds = await deps.workspaces.agentKinds();
-  if (!kinds.includes(kind)) {
-    throw new ProtocolError(`refused: unknown agent kind "${kind}"; known kinds: ${kinds.join(", ")}`);
-  }
-  const problems = launchProblems(deps.resolved.config);
-  if (problems.length > 0) {
-    throw new ProtocolError(`refused: ${problems.join("; ")}`);
-  }
-  const ticket: ClaimedTicket = {
-    id: full.id,
-    identifier: full.identifier,
-    title: full.title,
-    host: deps.host,
-    slot: 0,
-    builder: options.builder ?? deps.resolved.config.commander.agents.builder.model,
-  };
-  let opened: { workspaceId: string; commander: string; builder: string };
-  try {
-    opened = (await deps.sink(ticket)) ?? { workspaceId: "", commander: deps.resolved.config.commander.agents.commander.harness, builder: ticket.builder ?? "" };
-  } catch (error) {
-    if (error instanceof WorkspaceSinkError) throw error;
-    throw new WorkspaceSinkError((error as Error).message);
-  }
-  if (!opened.workspaceId) {
-    await deps.decisions.record(full.identifier, `adopted: no workspace found`);
-    return opened;
-  }
-  const linear = latestValidReceipt(full.comments);
-  try {
-    await mirror(deps, opened.workspaceId, {
-      status: state.status,
-      progress: state.progress,
-      checkpoint: linear?.receipt.checkpoint ?? null,
-      landed: linear?.receipt.landed ?? null,
-      receipt_id: linear?.id ?? null,
-      receipt_kind: linear?.receipt.kind ?? null,
-      submission: linear?.receipt.submission ?? null,
-    });
-  } catch (error) {
-    throw new WorkspaceSinkError((error as Error).message, opened.workspaceId);
-  }
-  await deps.decisions.record(
-    full.identifier,
-    `adopted: no workspace found, reopened (${opened.workspaceId}) at ${state.status}+${state.progress ?? "no progress"} (Linear kept)`,
-  );
-  return opened;
-}
-
-/**
- * Finish a half-written claim: the workspace is already open with ticket
- * metadata, but Linear never reached Build+In progress. Moves Linear and
- * mirrors, without opening a second workspace.
- */
-export async function finishClaim(
-  deps: ClaimDeps,
-  full: FullIssue,
-  workspaceId: string,
-  meta: WorkspaceMeta,
-  slot: number,
-): Promise<ClaimedTicket & { workspaceId: string; commander: string; builder: string }> {
-  const { resolved } = deps;
-  const state = deriveState(resolved, full);
-  const blocked = claimable(state);
-  if (blocked) {
-    throw new ProtocolError(`refused: ${full.identifier} is not claimable: ${blocked}`);
-  }
-  const ticket: ClaimedTicket = {
-    id: full.id,
-    identifier: full.identifier,
-    title: full.title,
-    host: deps.host,
-    slot,
-    builder: meta["builder"] ?? resolved.config.commander.agents.builder.model,
-  };
-  let opened: { workspaceId: string; commander: string; builder: string };
-  try {
-    opened = (await deps.sink(ticket, { workspaceId })) ?? {
-      workspaceId,
-      commander: resolved.config.commander.agents.commander.harness,
-      builder: ticket.builder ?? "",
-    };
-  } catch (error) {
-    if (error instanceof WorkspaceSinkError) throw error;
-    throw new WorkspaceSinkError((error as Error).message, workspaceId);
-  }
-  if (opened.workspaceId !== workspaceId) {
-    throw new WorkspaceSinkError(
-      `existing claim recovery returned workspace ${opened.workspaceId}, expected ${workspaceId}`,
-      workspaceId,
-    );
-  }
-  const from = full.state.name;
-  await moveStatus(deps, full, "build", "in_progress");
-  await mirror(deps, workspaceId, { status: "build", progress: "in_progress" });
-  await deps.decisions.record(full.identifier, `claimed: ${from} → ${resolved.config.states.build} (slot ${slot})`);
-  await deps.decisions.record(full.identifier, `claim finished in existing workspace (${workspaceId})`);
-  return { ...ticket, ...opened };
-}
-
-// ---------------------------------------------------------------------------
-// Workspace mutations
-// ---------------------------------------------------------------------------
-
-/** Pending becomes In progress; the status never changes here. */
-export async function beginMutation(
-  deps: ProtocolDeps,
-  _workspaceId: string,
-  full: FullIssue,
-  state: AuthoritativeState,
-): Promise<void> {
-  const { resolved } = deps;
-  if ((state.status !== "build" && state.status !== "review" && state.status !== "deliver") || state.progress !== "pending") {
-    throw new ProtocolError(
-      `refused: begin needs Build, Review, or Deliver + Pending; ` +
-        `${full.identifier} is ${state.status}+${state.progress ?? "no progress"}`,
-    );
-  }
-  full = await recordStageStart(deps, full, state.status);
-  await setProgress(deps, full, "in_progress");
-  const verified = await readback(deps, full.id);
-  const restate = deriveState(resolved, verified);
-  if (restate.status !== state.status || restate.progress !== "in_progress") {
-    throw new ProtocolError(`Linear did not converge on ${state.status}+in_progress; retry the command`);
-  }
-
-  await deps.decisions.record(
-    full.identifier,
-    `begin: ${state.status}+pending → ${state.status}+in_progress`,
-  );
 }
 
 /** A durable start boundary prevents an old submit from rewinding a newer round. */
@@ -1495,25 +1230,24 @@ export function stageStartedAfterReceipt(full: FullIssue, submission: string, st
  */
 export async function submitMutation(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   state: AuthoritativeState,
   raw: unknown,
 ): Promise<string> {
   const mergedDone = statusOf(deps.resolved, full.state.id) === "done";
-  const resumed = await resumeWrittenTransition(deps, workspaceId, full, state, raw);
+  const resumed = await resumeWrittenTransition(deps, full, state, raw);
   if (resumed) return resumed;
   const repeated = mergedDone ? null : completedSubmission(full, state, raw);
   if (repeated) return repeated;
   if (state.progress !== "in_progress") {
     throw new ProtocolError(
       `refused: submit needs an In progress stage; ` +
-        `${full.identifier} is ${state.status}+${state.progress ?? "no progress"} (run \`igniter begin\` first)`,
+        `${full.identifier} is ${state.status}+${state.progress ?? "no progress"} (run \`igniter begin ${full.identifier}\` first)`,
     );
   }
   if (state.status === "build") {
     const payload = parseBuildSubmit(raw, state.criteria);
-    return submitBuild(deps, workspaceId, full, payload);
+    return submitBuild(deps, full, payload);
   }
   if (state.status === "review") {
     if (!isRecord(raw) || raw["kind"] !== "review") {
@@ -1534,7 +1268,7 @@ export async function submitMutation(
       );
     }
     checkNotSuperseded(full, payload.checkpoint);
-    return submitReview(deps, workspaceId, full, payload);
+    return submitReview(deps, full, payload);
   }
   if (state.status === "deliver") {
     if (!isRecord(raw) || raw["kind"] !== "deliver") {
@@ -1556,8 +1290,8 @@ export async function submitMutation(
     }
     checkNotSuperseded(full, payload.checkpoint);
     return mergedDone
-      ? submitMergedDelivery(deps, workspaceId, full, payload)
-      : submitDeliver(deps, workspaceId, full, payload);
+      ? submitMergedDelivery(deps, full, payload)
+      : submitDeliver(deps, full, payload);
   }
   throw new ProtocolError(
     `refused: submit applies to Build, Review, or Deliver; ${full.identifier} is ${state.status}`,
@@ -1567,78 +1301,23 @@ export async function submitMutation(
 /** Finish the only cross-status partial writes a lost readback can expose. */
 async function resumeWrittenTransition(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   state: AuthoritativeState,
   raw: unknown,
 ): Promise<string | null> {
   if (!isRecord(raw)) return null;
-  // Complete/Pending already reached the target. Linear-only callers have
-  // no workspace mirror to heal and use the ordinary duplicate acknowledgement.
-  if (deps.linearOnly && state.progress !== "in_progress") return null;
-  if (raw["kind"] === "build" && state.status === "build" && state.progress === "complete") {
-    // Initial-build partial: the receipt landed and Linear converged on
-    // Build+Complete, but the mirror still names the pre-submit
-    // Build+In progress marker. Heal the mirror; Linear is already truth.
-    if (!latestReceiptOf(full.comments, "build")) return null;
-    const payload = parseBuildSubmit(raw, state.criteria);
-    const submission = submissionId({ ticket: full.identifier, ...payload });
-    const receipt = findReceipt(full.comments, "build", submission);
-    if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
-    await mirror(deps, workspaceId, {
-      status: "build",
-      progress: "complete",
-      checkpoint: payload.checkpoint,
-      receipt_id: receipt.id,
-      receipt_kind: "build",
-      submission,
-    });
-    return `resumed build ${payload.checkpoint} → Build+Complete (receipt ${receipt.id})`;
-  }
-  if (raw["kind"] === "build" && state.status === "review" && state.progress === "pending") {
-    // Correction-build partial: the receipt landed and Linear converged
-    // on Review+Pending, but the mirror still names the pre-submit
-    // Build+In progress marker. Only a correction converges here — an
-    // initial retry landing in Review+Pending belongs to the owner
-    // handoff, so it falls through to the already-submitted
-    // acknowledgement below instead of claiming the transition.
-    if (!latestReceiptOf(full.comments, "build")) return null;
-    const payload = parseBuildSubmit(raw, state.criteria);
-    const submission = submissionId({ ticket: full.identifier, ...payload });
-    const receipt = findReceipt(full.comments, "build", submission);
-    if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
-    const prior = latestValidReceiptExcluding(full.comments, submission);
-    if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
-    await mirror(deps, workspaceId, {
-      status: "review",
-      progress: "pending",
-      checkpoint: payload.checkpoint,
-      receipt_id: receipt.id,
-      receipt_kind: "build",
-      submission,
-    });
-    return `resumed build ${payload.checkpoint} → Review+Pending (correction after ${prior.receipt.kind}; receipt ${receipt.id})`;
-  }
+  // Complete/Pending already reached the target: acknowledge the receipt below.
+  if (state.progress !== "in_progress") return null;
   if (raw["kind"] === "build" && state.status === "review" && state.progress === "in_progress") {
     if (!latestReceiptOf(full.comments, "build")) return null;
     const payload = parseBuildSubmit(raw, state.criteria);
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "build", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, full, "build", submission))) return null;
+    if (!partialSubmissionMarked(full, submission)) return null;
     const prior = latestValidReceiptExcluding(full.comments, submission);
     if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
     await moveStatus(deps, full, "review", "pending");
-    await mirror(deps, workspaceId, {
-      status: "review",
-      progress: "pending",
-      checkpoint: payload.checkpoint,
-      receipt_id: receipt.id,
-      receipt_kind: "build",
-      submission,
-    });
     return `resumed build ${payload.checkpoint} → Review+Pending (receipt ${receipt.id})`;
   }
   if (raw["kind"] === "review" && state.status === "build" && state.progress === "in_progress") {
@@ -1648,41 +1327,17 @@ async function resumeWrittenTransition(
     const submission = submissionId({ ticket: full.identifier, ...payload });
     const receipt = findReceipt(full.comments, "review-fail", submission);
     if (!receipt?.id) return null;
-    if (!(await partialSubmissionMarked(deps, workspaceId, full, "review", submission))) return null;
+    if (!partialSubmissionMarked(full, submission)) return null;
     await moveStatus(deps, full, "build", "pending");
-    await mirror(deps, workspaceId, {
-      status: "build",
-      progress: "pending",
-      checkpoint: payload.checkpoint,
-      receipt_id: null,
-      receipt_kind: null,
-      submission: null,
-    });
     return `resumed review FAIL ${payload.checkpoint} → Build+Pending (receipt ${receipt.id})`;
   }
   return null;
 }
 
-/**
- * Linear-only retries require the latest receipt and no later stage start.
- * Legacy protocol callers retain their source-stage workspace mirror check.
- */
-async function partialSubmissionMarked(
-  deps: ProtocolDeps,
-  workspaceId: string,
-  full: FullIssue,
-  source: "build" | "review",
-  submission: string,
-): Promise<boolean> {
-  if (stageStartedAfterReceipt(full, submission)) return false;
-  if (deps.linearOnly) {
-    return latestValidReceipt(full.comments)?.receipt.submission === submission;
-  }
-  const snapshot = await deps.workspaces.snapshot();
-  const workspace = snapshot.workspaces.find((candidate) => candidate.workspaceId === workspaceId);
-  return workspace?.tokens["status"] === source
-    && workspace.tokens["progress"] === "in_progress"
-    && workspace.tokens["submission"] === submission;
+/** Retries require the latest receipt and no later stage start. */
+function partialSubmissionMarked(full: FullIssue, submission: string): boolean {
+  return !stageStartedAfterReceipt(full, submission)
+    && latestValidReceipt(full.comments)?.receipt.submission === submission;
 }
 
 /**
@@ -1768,7 +1423,6 @@ export function latestReceiptOf(
 
 async function submitBuild(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   payload: BuildSubmit,
 ): Promise<string> {
@@ -1811,7 +1465,7 @@ async function submitBuild(
       capture: payload.diffwalk.capture,
       destination: payload.diffwalk.destination,
       head,
-      workspaceTokens: await workspaceTokensOf(deps, workspaceId, full.identifier),
+      workspaceTokens: await workspaceTokensOf(deps, full.identifier),
       comments: full.comments,
       submission,
     });
@@ -1820,18 +1474,9 @@ async function submitBuild(
   const body = buildReceiptBody(payload, submission, reviewUrl);
   const commentId = await publishReceipt(deps, full.id, "build", submission, body);
   await verifyReceipt(deps, full.id, "build", submission);
-  await mirror(deps, workspaceId, {
-    status: "build",
-    progress: "in_progress",
-    checkpoint: payload.checkpoint,
-    receipt_id: commentId,
-    receipt_kind: "build",
-    submission,
-  });
   const review = reviewUrl !== undefined ? ` (review ${reviewUrl})` : "";
   if (correctionKind !== null) {
     await moveStatus(deps, full, "review", "pending");
-    await mirror(deps, workspaceId, { status: "review", progress: "pending" });
     const text =
       `submitted build ${payload.checkpoint} → Review+Pending ` +
       `(correction after ${correctionKind} receipt ${prior!.id ?? prior!.receipt.submission}; receipt ${commentId}${review})`;
@@ -1839,7 +1484,6 @@ async function submitBuild(
     return text;
   }
   await moveStatus(deps, full, "build", "complete");
-  await mirror(deps, workspaceId, { status: "build", progress: "complete" });
   const text =
     `submitted build ${payload.checkpoint} → Build+Complete ` +
     `(awaiting owner Diffwalk review; receipt ${commentId}${review})`;
@@ -1850,7 +1494,6 @@ async function submitBuild(
 /** Current ticket workspace tokens for the publication lifecycle check. */
 async function workspaceTokensOf(
   deps: ProtocolDeps,
-  workspaceId: string,
   identifier: string,
 ): Promise<Record<string, string>> {
   let snapshot;
@@ -1859,7 +1502,7 @@ async function workspaceTokensOf(
   } catch (error) {
     throw new ProtocolError(`herdr unreachable while verifying publication consent: ${(error as Error).message}`);
   }
-  const workspace = snapshot.workspaces.find((candidate) => workspaceId ? candidate.workspaceId === workspaceId : candidate.tokens["ticket"] === identifier);
+  const workspace = snapshot.workspaces.find((candidate) => candidate.tokens["ticket"] === identifier);
   if (!workspace) {
     throw new ProtocolError(`no workspace for ${identifier}; run \`igniter worker start ${identifier}\` first`);
   }
@@ -1868,7 +1511,6 @@ async function workspaceTokensOf(
 
 async function submitReview(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   payload: ReviewSubmit,
 ): Promise<string> {
@@ -1893,36 +1535,12 @@ async function submitReview(
   const commentId = await publishReceipt(deps, full.id, kind, submission, body);
   await verifyReceipt(deps, full.id, kind, submission);
   if (payload.verdict === "pass") {
-    await mirror(deps, workspaceId, {
-      status: "review",
-      progress: "in_progress",
-      checkpoint: payload.checkpoint,
-      receipt_id: commentId,
-      receipt_kind: kind,
-      submission,
-    });
     await moveStatus(deps, full, "review", "complete");
-    await mirror(deps, workspaceId, { status: "review", progress: "complete" });
     const text = `submitted review PASS ${payload.checkpoint} → Review+Complete (receipt ${commentId})`;
     await deps.decisions.record(full.identifier, text);
     return text;
   }
-  await mirror(deps, workspaceId, {
-    status: "review",
-    progress: "in_progress",
-    checkpoint: payload.checkpoint,
-    receipt_id: commentId,
-    receipt_kind: kind,
-    submission,
-  });
   await moveStatus(deps, full, "build", "pending");
-  await mirror(deps, workspaceId, {
-    status: "build",
-    progress: "pending",
-    receipt_id: null,
-    receipt_kind: null,
-    submission: null,
-  });
   const text = `submitted review FAIL ${payload.checkpoint} → Build+Pending (receipt ${commentId})`;
   await deps.decisions.record(full.identifier, text);
   return text;
@@ -1930,7 +1548,6 @@ async function submitReview(
 
 async function submitDeliver(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   payload: DeliverSubmit,
 ): Promise<string> {
@@ -1959,17 +1576,7 @@ async function submitDeliver(
   const body = deliverReceiptBody(payload, submission);
   const commentId = await publishReceipt(deps, full.id, "deliver", submission, body);
   await verifyReceipt(deps, full.id, "deliver", submission);
-  await mirror(deps, workspaceId, {
-    status: "deliver",
-    progress: "in_progress",
-    checkpoint: payload.checkpoint,
-    landed: payload.landed,
-    receipt_id: commentId,
-    receipt_kind: "deliver",
-    submission,
-  });
   await moveStatus(deps, full, "deliver", "complete");
-  await mirror(deps, workspaceId, { status: "deliver", progress: "complete" });
   const text = `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Deliver+Complete (receipt ${commentId})`;
   await deps.decisions.record(full.identifier, text);
   return text;
@@ -1978,7 +1585,6 @@ async function submitDeliver(
 /** Record a delivery after Linear's GitHub integration already moved Done. */
 async function submitMergedDelivery(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   payload: DeliverSubmit,
 ): Promise<string> {
@@ -1998,24 +1604,14 @@ async function submitMergedDelivery(
   }
   const submission = submissionId({ ticket: full.identifier, ...payload });
   const body = deliverReceiptBody(payload, submission);
-  const commentId = await publishReceipt(deps, full.id, "deliver", submission, body);
+  await publishReceipt(deps, full.id, "deliver", submission, body);
   await verifyReceipt(deps, full.id, "deliver", submission);
-  await mirror(deps, workspaceId, {
-    status: "done",
-    progress: "in_progress",
-    checkpoint: payload.checkpoint,
-    landed: payload.landed,
-    receipt_id: commentId,
-    receipt_kind: "deliver",
-    submission,
-  });
   const fresh = await readback(deps, full.id);
   const receipt = findReceipt(fresh.comments, "deliver", submission);
   if (!receipt) throw new ProtocolError(`Linear lost the delivery receipt mid-protocol; retry the command`);
   const landed = await landDone(
     deps,
     fresh,
-    receipt,
     `submitted deliver approved ${payload.checkpoint} landed ${payload.landed} → Done`,
   );
   const text = landed.result?.text ??
@@ -2027,7 +1623,6 @@ async function submitMergedDelivery(
 /** Keep the status, move to Blocked with a reason. Build frees its slot. */
 export async function blockMutation(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   state: AuthoritativeState,
   reason: string,
@@ -2046,7 +1641,6 @@ export async function blockMutation(
   if (restate.progress !== "blocked") {
     throw new ProtocolError(`Linear did not converge on ${state.status}+blocked; retry the command`);
   }
-  await mirror(deps, workspaceId, { status: state.status, progress: "blocked", block_reason: reason });
   const slot = state.status === "build" ? " (build slot freed)" : "";
   await deps.decisions.record(full.identifier, `blocked: ${state.status} kept, reason "${reason}"${slot}`);
 }
@@ -2054,7 +1648,6 @@ export async function blockMutation(
 /** Keep the status, return from Blocked to Pending. Never straight to In progress. */
 export async function unblockMutation(
   deps: ProtocolDeps,
-  workspaceId: string,
   full: FullIssue,
   state: AuthoritativeState,
 ): Promise<void> {
@@ -2070,10 +1663,9 @@ export async function unblockMutation(
   if (restate.status !== state.status || restate.progress !== "pending") {
     throw new ProtocolError(`Linear did not converge on ${state.status}+pending; retry the command`);
   }
-  await mirror(deps, workspaceId, { status: state.status, progress: "pending", block_reason: null });
   await deps.decisions.record(
     full.identifier,
-    `unblocked: ${state.status}+blocked → ${state.status}+pending; run \`igniter begin\``,
+    `unblocked: ${state.status}+blocked → ${state.status}+pending; run \`igniter begin ${full.identifier}\``,
   );
 }
 
@@ -2308,7 +1900,7 @@ export async function convergeIncompleteState(
     const text =
       `repaired: ${full.identifier} ${diagnosis.status}+${from} → ${diagnosis.status}+${target} ` +
       `(${latest.receipt.kind} receipt ${latest.receipt.submission} binds ${latest.receipt.checkpoint}; checkpoint and receipts kept)`;
-    return { result: { ok: true, text }, followUp: null, closeDue: null };
+    return { result: { ok: true, text } };
   }
 
   return parkIncomplete(deps, full);
@@ -2355,8 +1947,6 @@ function alreadyConverged(deps: ProtocolDeps, full: FullIssue, fresh: FullIssue)
       ok: true,
       text: `${full.identifier}: Linear already converged while diagnosing (now ${freshPairText(deps.resolved, fresh)}); no change made`,
     },
-    followUp: null,
-    closeDue: null,
   };
 }
 
@@ -2406,7 +1996,7 @@ async function parkIncomplete(
     `${full.identifier}: ${diagnosis.status}+${progressKeyOf(diagnosis)} is incomplete — ` +
     `${parkReasonText(diagnosis, reason, latest, prior)}; ` +
     `parked as ${stage}+Blocked (no worker started; run \`igniter reconcile ${full.identifier}\` after fixing)`;
-  return { result: { ok: false, text }, followUp: null, closeDue: null };
+  return { result: { ok: false, text } };
 }
 
 // ---------------------------------------------------------------------------
@@ -2416,21 +2006,9 @@ async function parkIncomplete(
 // completion)
 // ---------------------------------------------------------------------------
 
-/** Follow-up work a later poll retries: mirror the converged state and wake the Commander. */
-export interface OwnerMoveFollowUp {
-  /** Null when Herdr was unreachable: the retry locates the workspace by ticket. */
-  workspaceId: string | null;
-  tokens: Record<string, string | null>;
-  wakeText: string;
-}
-
 export interface OwnerMoveOutcome {
-  /** Null when Linear is already converged: the watcher stays silent. */
+  /** Null when Linear is already converged. */
   result: CommandResult | null;
-  /** Set when the mirror or the wake-up failed and a later poll should retry. */
-  followUp: OwnerMoveFollowUp | null;
-  /** Set when the Done workspace close failed and a later poll should retry it. */
-  closeDue: { workspaceId: string | null; checkpoint: string } | null;
 }
 
 /** The receipt checkpoint must still bind the ticket branch lineage. */
@@ -2450,34 +2028,14 @@ export async function checkpointInLineage(
   }
 }
 
-function wakeTextFor(
-  identifier: string,
-  status: ProtocolStatus,
-  checkpoint: string,
-  submission: string,
-): string {
-  return (
-    `igniter: the owner moved ${identifier}; Linear is now ${status}+pending ` +
-    `(receipt ${submission} binds ${checkpoint}). Run \`igniter state --json\` and continue from there; do not restart.`
-  );
-}
-
-/**
- * Normalize one owner move from the current Linear state alone. Returns
- * null when Linear is already converged (a Complete the owner still owns,
- * or a clean Done): the watcher records nothing. Anything else returns a
- * line and leaves Linear alone, except the three approved handoffs, which
- * clear the inherited Complete first and only then best-effort mirror,
- * wake, or close — a Herdr failure never rolls a verified Linear
- * transition back.
- */
+/** Reconcile an explicit ticket from its Linear status, Progress, and receipts. */
 export async function normalizeOwnerMove(
   deps: ProtocolDeps,
   full: FullIssue,
 ): Promise<OwnerMoveOutcome> {
   const { resolved } = deps;
-  const fail = (text: string): OwnerMoveOutcome => ({ result: { ok: false, text }, followUp: null, closeDue: null });
-  const quiet = (): OwnerMoveOutcome => ({ result: null, followUp: null, closeDue: null });
+  const fail = (text: string): OwnerMoveOutcome => ({ result: { ok: false, text } });
+  const quiet = (): OwnerMoveOutcome => ({ result: null });
   if (full.projectId !== resolved.projectId) {
     return fail(`${full.identifier} is not in project "${resolved.config.project}"; ignoring`);
   }
@@ -2530,7 +2088,7 @@ export async function normalizeOwnerMove(
           `the owner lands the delivery first, then moves to Done`,
       );
     }
-    return landDone(deps, reread, latest);
+    return landDone(deps, reread);
   }
 
   // An inherited Complete only converges when its receipt checkpoint still
@@ -2570,7 +2128,7 @@ export async function normalizeOwnerMove(
     // An initial Build+Complete bound to its build receipt waits for the
     // owner's Diffwalk review in Linear: only the owner moves it to
     // Review. Reconcile keeps it still — no transition, no line, no
-    // Acceptance wake-up — however often it runs.
+    // worker start — however often it runs.
     if (kind === "build") return quiet();
     if (kind === "review-pass" || kind === "review-fail") {
       return inheritInto(deps, reread, latest, "build", "sent back: Review+Complete → Build+Pending");
@@ -2585,12 +2143,7 @@ export async function normalizeOwnerMove(
   );
 }
 
-/**
- * Clear the inherited Complete into Pending inside the moved-to status,
- * then best-effort mirror the converged pair plus the Linear receipt and
- * wake the Commander. The Linear transition stands whatever Herdr does;
- * a failed mirror or wake-up returns as follow-up work for a later poll.
- */
+/** Clear an inherited Complete only after the receipt authorizes the handoff. */
 async function inheritInto(
   deps: ProtocolDeps,
   full: FullIssue,
@@ -2603,162 +2156,24 @@ async function inheritInto(
   const verified = await readback(deps, full.id);
   const restate = deriveState(deps.resolved, verified);
   if (restate.status !== status || restate.progress !== "pending") {
-    throw new ProtocolError(`Linear did not converge on ${status}+pending; the next poll retries`);
+    throw new ProtocolError(`Linear did not converge on ${status}+pending; retry the command`);
   }
-  const tokens: Record<string, string | null> = {
-    status,
-    progress: "pending",
-    checkpoint,
-    receipt_id: latest.id,
-    receipt_kind: latest.receipt.kind,
-    submission,
-  };
-  const wakeText = wakeTextFor(full.identifier, status, checkpoint, submission);
-  const followUp = await mirrorAndWake(deps, full, tokens, wakeText);
-  const suffix = followUp ? `; mirror or wake-up deferred, the next poll retries` : "";
-  const text = `${headline} (${latest.receipt.kind} receipt ${submission} binds ${checkpoint})${suffix}`;
   return {
-    result: { ok: true, text },
-    followUp,
-    closeDue: null,
+    result: { ok: true, text: `${headline} (${latest.receipt.kind} receipt ${submission} binds ${checkpoint})` },
   };
 }
 
-/**
- * Mirror the converged state into the ticket workspace and prompt its
- * Commander. Returns null on full success; otherwise a follow-up naming
- * what the next poll retries. A missing workspace is a note, never a
- * failure: Linear already converged without it. An unreachable Herdr or
- * a missing Commander keeps a follow-up, so the retry heals it.
- */
-async function mirrorAndWake(
-  deps: ProtocolDeps,
-  full: FullIssue,
-  tokens: Record<string, string | null>,
-  wakeText: string,
-): Promise<OwnerMoveFollowUp | null> {
-  if (deps.linearOnly) return null;
-  let snapshot;
-  try {
-    snapshot = await deps.workspaces.snapshot();
-  } catch (error) {
-    await guardRecord(
-      deps,
-      full.identifier,
-      `mirror deferred: herdr unreachable (${(error as Error).message}); the next poll retries`,
-    );
-    return { workspaceId: null, tokens, wakeText };
-  }
-  const workspace = snapshot.workspaces.find((w) => w.tokens["ticket"] === full.identifier);
-  if (!workspace) {
-    await guardRecord(deps, full.identifier, `no workspace for ${full.identifier}; Linear converged without it`);
-    return null;
-  }
-  try {
-    await deps.workspaces.reportMetadata(workspace.workspaceId, tokens);
-  } catch (error) {
-    const note = `workspace mirror failed (${(error as Error).message}); the next poll retries`;
-    await guardRecord(deps, full.identifier, note);
-    return { workspaceId: workspace.workspaceId, tokens, wakeText };
-  }
-  const commander = snapshot.agents.find((a) => a.name === commanderName(full.identifier));
-  if (!commander) {
-    // No resident commander exists (STA-225): the mirror above converged
-    // Linear state into the workspace, and the external Global Commander
-    // observes it through `status`/`reconcile`. Nothing retries.
-    await guardRecord(
-      deps,
-      full.identifier,
-      `workspace mirror caught up after ${tokens["status"]}+${tokens["progress"]}; no commander to wake`,
-    );
-    return null;
-  }
-  try {
-    await deps.workspaces.prompt(commander.name, wakeText);
-  } catch (error) {
-    const note = `commander wake-up failed (${(error as Error).message}); the next poll retries`;
-    await guardRecord(deps, full.identifier, note);
-    return { workspaceId: workspace.workspaceId, tokens, wakeText };
-  }
-  return null;
-}
-
-/**
- * Land a Done the owner moved: clear the leftover Progress, then
- * best-effort close the workspace and recycle the checkout. The landing
- * stands whatever happens below — a failed close returns as close-due
- * for a later poll, and cleanup only keeps with a reason, never throws.
- */
+/** Clear leftover Progress on Done; guarded cleanup remains an explicit worker command. */
 async function landDone(
   deps: ProtocolDeps,
   full: FullIssue,
-  latest: FoundReceipt,
   headline = "done: Deliver+Complete → Done",
 ): Promise<OwnerMoveOutcome> {
-  const { checkpoint, submission } = latest.receipt;
-  // Done cleanup verifies the landed commit, not the approved checkpoint: a
-  // rebased delivery rewrote the branch, so the approved SHA may no longer
-  // read back from the target branch while the landed SHA must.
-  const landed = latest.receipt.kind === "deliver" ? latest.receipt.landed! : checkpoint;
   await setProgress(deps, full, null);
   const verified = await readback(deps, full.id);
   const restate = deriveState(deps.resolved, verified);
   if (restate.status !== "done" || restate.progress !== null) {
-    throw new ProtocolError(`Linear did not converge on done; the next poll retries`);
+    throw new ProtocolError(`Linear did not converge on done; retry the command`);
   }
-  if (deps.linearOnly) {
-    return { result: { ok: true, text: `${headline}; run worker stop ${full.identifier} for guarded Done cleanup` }, followUp: null, closeDue: null };
-  }
-  let closeDue: { workspaceId: string | null; checkpoint: string } | null = null;
-  let closeNote = "no workspace to close";
-  let snapshot;
-  try {
-    snapshot = await deps.workspaces.snapshot();
-  } catch (error) {
-    snapshot = null;
-    // Herdr is unreachable, not gone: the close retries on a later poll.
-    closeDue = { workspaceId: null, checkpoint: landed };
-    closeNote = `workspace close deferred (herdr unreachable: ${(error as Error).message}); the next poll retries`;
-  }
-  if (closeDue === null) {
-    const workspace = snapshot?.workspaces.find((w) => w.tokens["ticket"] === full.identifier) ?? null;
-    if (!workspace) {
-      closeNote = "no workspace to close";
-    } else {
-      try {
-        await deps.workspaces.close(workspace.workspaceId);
-        closeNote = "workspace closed";
-      } catch (error) {
-        closeDue = { workspaceId: workspace.workspaceId, checkpoint: landed };
-        closeNote = `workspace close failed (${(error as Error).message}); the next poll retries`;
-      }
-    }
-  }
-  // else: snapshot failed above; closeNote and closeDue are already set.
-  // The Done landing stands whatever happens below: cleanup only recycles
-  // the checkout and never rolls the ticket back.
-  let cleanupNote = "checkout cleanup skipped";
-  try {
-    const cleanup = await cleanupTicketCheckout(deps.git, deps.repoRoot, full.identifier, {
-      checkpoint: landed,
-      targetBranch: deps.resolved.config.targetBranch,
-    });
-    await guardRecord(deps, full.identifier, cleanup.detail);
-    cleanupNote = cleanup.ok ? "checkout cleaned" : "checkout kept";
-  } catch (error) {
-    await guardRecord(deps, full.identifier, `${full.identifier}: cleanup skipped: ${(error as Error).message}`);
-  }
-  const text =
-    `${headline} (delivery receipt ${submission} binds approved ${checkpoint} landed ${landed}); ` +
-    `${closeNote}; ${cleanupNote}`;
-  return { result: { ok: true, text }, followUp: null, closeDue };
-}
-
-/** Activity lines must never fail a validated transition. */
-async function guardRecord(deps: ProtocolDeps, ticket: string, message: string): Promise<void> {
-  try {
-    await deps.decisions.record(ticket, message);
-  } catch {
-    // The Linear transition stands; the line is lost.
-  }
+  return { result: { ok: true, text: `${headline}; run worker stop ${full.identifier} for guarded Done cleanup` } };
 }

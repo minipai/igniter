@@ -5,7 +5,7 @@
 
 import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { WorkspaceSinkError } from "./claims.ts";
+import { WorkspaceError } from "./claims.ts";
 
 /** Base branch every ticket branch starts from. */
 export const WORKTREE_BASE = "main";
@@ -54,7 +54,7 @@ async function gitRun(git: GitRunner, args: string[], cwd: string, identifier: s
   try {
     return (await git.run(args, cwd)).stdout;
   } catch (error) {
-    throw new WorkspaceSinkError(`git ${args.join(" ")} failed for ${identifier}: ${(error as Error).message}`);
+    throw new WorkspaceError(`git ${args.join(" ")} failed for ${identifier}: ${(error as Error).message}`);
   }
 }
 
@@ -74,7 +74,7 @@ async function branchExists(git: GitRunner, repoRoot: string, branch: string): P
 /**
  * Prepare the ticket's worktree, creating it when missing. An already
  * listed path is reused as is, so a resumed or re-run ticket keeps its
- * checkpoint commits. Throws WorkspaceSinkError with git's stderr.
+ * checkpoint commits. Throws WorkspaceError with git's stderr.
  */
 export async function ensureTicketWorktree(
   git: GitRunner,
@@ -87,7 +87,7 @@ export async function ensureTicketWorktree(
   try {
     await mkdir(dirname(worktree.path), { recursive: true });
   } catch (error) {
-    throw new WorkspaceSinkError(`cannot create ${dirname(worktree.path)} for ${identifier}: ${(error as Error).message}`);
+    throw new WorkspaceError(`cannot create ${dirname(worktree.path)} for ${identifier}: ${(error as Error).message}`);
   }
   if (await branchExists(git, repoRoot, worktree.branch)) {
     await gitRun(git, ["worktree", "add", worktree.path, worktree.branch], repoRoot, identifier);

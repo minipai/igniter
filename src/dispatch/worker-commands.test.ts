@@ -23,8 +23,7 @@ async function setup(state = "st-todo", labels: string[] = []) {
   const worktree = ticketWorktree(repoRoot, issue.identifier);
   git.worktreeList = `worktree ${worktree.path}\nbranch refs/heads/${worktree.branch}\n`;
   const ctx: CommandContext = {
-    client, resolved, workspaces, git, repoRoot, host: "test", decisions: { record: async () => {} },
-    sink: async () => { throw new Error("worker commands must not claim"); }, lastPollAt: () => null,
+    client, resolved, workspaces, git, repoRoot, decisions: { record: async () => {} },
     promptDelivery: { maxAttempts: 2, pollAttempts: 1, pollIntervalMs: 0, sleep: async () => {} },
   };
   client.calls = [];

@@ -1,7 +1,6 @@
-// Singleton Global Commander flow (STA-225, corrected) against a fake
-// Linear endpoint and fake Herdr: `start` boots the one project-level
-// Commander, `start STA-X` assigns to that same singleton, and the
-// Commander drives stage workers itself through ticket-targeted `worker start`.
+// Foreground Global Commander and explicit ticket commands against in-process
+// fake Linear and Herdr. The Commander drives stage workers through
+// ticket-targeted `worker start`.
 // No real credentials, project, or daemon.
 
 import { describe, expect, test } from "bun:test";
@@ -17,7 +16,6 @@ import { latestValidReceipt } from "./protocol";
 import { addIssue, standardWorld, startFakeLinear } from "./fake-linear";
 import { FakeGit } from "./fake-git";
 import { FakeWorkspaces } from "./fake-workspaces";
-import { createWorkspaceSink } from "./commands";
 import { scratchFor } from "./worker-scope";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
@@ -60,21 +58,17 @@ async function harness(maxRunning = 3): Promise<Harness> {
   const git = new FakeGit();
   git.head = HEAD;
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-global-")), "repo");
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
     promptDelivery: FAST,
   };
   return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
@@ -91,27 +85,7 @@ function buildPayload(head = HEAD) {
   };
 }
 
-describe("singleton lifecycle", () => {
-  test("start boots one Commander with the absolute global.md patrol order", async () => {
-    const h = await harness();
-    try {
-      const out = await runCommand(["start"], h.ctx);
-      expect(out.ok).toBe(true);
-      expect(out.text).toContain("commander started in ws-1");
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      expect(h.workspaces.agents.some((a) => a.name.startsWith("commander-"))).toBe(false);
-      const assets = commanderAssetPaths();
-      const inbox = h.workspaces.promptsFor("commander");
-      expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain(assets.global);
-      expect(inbox[0]).not.toContain("Do not read any other prompt");
-      expect(inbox[0]).toContain("igniter");
-      expect(h.workspaces.tokensFor("igniter-commander")).toMatchObject({ role: "global-commander", project: "igniter" });
-    } finally {
-      h.stop();
-    }
-  });
-
+describe("foreground lifecycle", () => {
   test("CLI start prepares the configured foreground Commander without touching Herdr layout", async () => {
     const h = await harness();
     try {
@@ -142,60 +116,34 @@ describe("singleton lifecycle", () => {
     }
   });
 
-  test("start STA-X reuses the same singleton across tickets, never commander-STA-X", async () => {
+  test("start requires foreground caller intent before any side effects", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      addIssue(h.world, { identifier: "STA-2", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(true);
-      expect((await runCommand(["start", "STA-2"], h.ctx)).ok).toBe(true);
-      expect(h.workspaces.workspaces.filter((w) => !w.closed)).toHaveLength(1);
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      expect(h.workspaces.tokensFor("igniter-commander")).toMatchObject({ assignment: "STA-2" });
-    } finally {
-      h.stop();
-    }
+      h.client.fetchIssue = async () => { throw new Error("must not read Linear"); };
+      for (const argv of [["start"], ["start", "STA-1"], ["start", "STA-1", "--publish-review"]]) {
+        for (const options of [{}, { directStart: false }]) {
+          const out = await runCommand(argv, h.ctx, options);
+          expect(out).toEqual({ ok: false, text: "background Commander start was removed; use CLI `igniter start [<ticket>]`" });
+        }
+      }
+      expect(h.workspaces.calls).toEqual([]);
+      expect(h.lines).toEqual([]);
+    } finally { h.stop(); }
   });
 
-  test("global.md prompt delivery is confirmed; a stall fails without side effects", async () => {
+  test("ticket foreground launches carry their assignment and never create Herdr agents", async () => {
     const h = await harness();
     try {
-      h.workspaces.promptMode = "input-buffer";
-      const out = await runCommand(["start"], h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain("role=commander");
-      expect(out.text).toContain("agent=commander");
-      expect(out.text).toContain("stalled");
-      // The agent exists but holds no order; the retry converges.
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      h.workspaces.promptMode = "consumed";
-      const retry = await runCommand(["start"], h.ctx);
-      expect(retry.ok).toBe(true);
-      expect(h.workspaces.agents).toHaveLength(1);
-    } finally {
-      h.stop();
-    }
-  });
-
-  test("a lost Commander agent or workspace is rebuilt on takeover", async () => {
-    const h = await harness();
-    try {
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      h.workspaces.agents = [];
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      expect(h.workspaces.agents.map((a) => a.name)).toEqual(["commander"]);
-      h.workspaces.workspaces = [];
-      h.workspaces.agents = [];
-      const rebuilt = await runCommand(["start", "STA-1"], h.ctx);
-      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      void rebuilt;
-      const assigned = await runCommand(["start", "STA-1"], h.ctx);
-      expect(assigned.ok).toBe(true);
-      expect(assigned.text).toContain("assigned STA-1");
-    } finally {
-      h.stop();
-    }
+      for (const identifier of ["STA-1", "STA-2", "STA-1"]) {
+        if (!h.world.issues.some((issue) => issue.identifier === identifier)) {
+          addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+        }
+        const out = await runCommand(["start", identifier], h.ctx, { directStart: true });
+        expect(out.ok).toBe(true);
+        expect((out.data as { command: string[] }).command.at(-1)).toContain(`Assigned ticket: ${identifier}`);
+      }
+      expect(h.workspaces.calls).toEqual([]);
+    } finally { h.stop(); }
   });
 });
 
@@ -204,7 +152,7 @@ describe("ticket-targeted worker start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand(["start", "STA-1"], h.ctx)).ok).toBe(true);
+      expect((await runCommand(["start", "STA-1"], h.ctx, { directStart: true })).ok).toBe(true);
       // Assignment alone moves no Linear state and starts no worker.
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeUndefined();
@@ -276,6 +224,24 @@ describe("ticket-targeted worker start", () => {
     }
   });
 
+  test.each([undefined, "CONTRIBUTING.md"])("stage work orders retain configured delivery instructions: %j", async (delivery) => {
+    const h = await harness();
+    try {
+      h.ctx.resolved.config.delivery = delivery;
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
+      const order = h.workspaces.promptsFor("builder-sta-1")[0]!;
+      expect(order).toContain("AGENTS.md");
+      if (delivery) {
+        expect(order).toContain("read `CONTRIBUTING.md` (relative to the repo root) as the delivery document");
+        expect(order).toContain("Do not search for another one");
+      } else {
+        expect(order).toContain("No delivery document is configured");
+        expect(order).toContain("do not invent project settings");
+      }
+    } finally { h.stop(); }
+  });
+
   test("worker start sends a project stage prompt loaded from .igniter/config.yaml", async () => {
     const h = await harness();
     try {
@@ -306,7 +272,7 @@ describe("ticket-targeted worker start", () => {
   });
 });
 
-describe("automatic result collection and submission", () => {
+describe("explicit result collection and submission", () => {
   test("the Commander reads result.md and submits it ticket-targeted", async () => {
     const h = await harness();
     try {
@@ -339,7 +305,7 @@ describe("automatic result collection and submission", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" }, { commander: false });
+      h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
       const status = await runCommand(["status", "STA-1", "--json"], h.ctx);
       expect(status.ok).toBe(true);
       expect((await runCommand(["block", "STA-1", "--reason", "vendor"], h.ctx)).ok).toBe(true);
@@ -368,9 +334,7 @@ describe("idempotent recovery", () => {
       const inboxBefore = h.workspaces.promptsFor("builder-sta-1").length;
       expect((await runCommand(["worker", "start", "STA-1"], h.ctx)).ok).toBe(true);
       expect(h.workspaces.promptsFor("builder-sta-1")).toHaveLength(inboxBefore);
-      // Same singleton assignment twice never duplicates either.
-      expect((await runCommand(["start"], h.ctx)).ok).toBe(true);
-      expect(h.workspaces.agents.filter((a) => a.name === "commander")).toHaveLength(1);
+
     } finally {
       h.stop();
     }

@@ -85,6 +85,13 @@ There is no resident commander-ticket agent and no resident pane.
 Worker commands may read ticket context but never write Linear. Linear
 commands never hide worker lifecycle or prompt effects.
 
+All ticket mutations require an explicit ticket. The removed `state --json`
+entry is replaced by `status <ticket> --json`; bare begin, submit, block, and
+unblock never infer a ticket from Herdr workspace metadata. Commander startup
+is CLI `igniter start [<ticket>]` in the calling terminal only. No Watcher
+claims or adopts tickets, wakes a Commander, or retries background effects;
+use explicit reconcile and retry the same command when recovery is needed.
+
 ## Run one stage
 
 1. `igniter status <ticket> --json`. Confirm the legal stage and read criteria,

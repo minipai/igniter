@@ -162,6 +162,22 @@ confirms the initial work order was delivered, then records the stage start
 with `igniter begin ENG-123`. Begin only validates and records Linear state;
 it never starts a worker or sends a prompt.
 
+The command API only prepares a foreground launch when the CLI supplies its
+explicit launch intent. It never creates a resident Herdr Commander workspace
+or agent. Queue polling, automatic claim/adoption, per-ticket Commander wakeups,
+and deferred mirror/wake/close retries have been removed; use explicit commands
+and retry the same operation after correcting a failure.
+
+Existing scripts should migrate these removed entry points:
+
+| Removed entry | Replacement |
+| --- | --- |
+| `igniter state --json` | `igniter status <ticket> --json` |
+| Bare `begin`, `submit`, `block`, `unblock` with Herdr workspace context | The same command with an explicit `<ticket>`; keep `--input -` or `--reason TEXT` |
+| HTTP or in-process background Commander start | CLI `igniter start [<ticket>]` in the calling terminal |
+| `status --json` fields `lastPollAt` and per-ticket `commander` | Commands refresh state on demand; read the current stage `worker` field |
+| Automatic owner-move recovery | `igniter reconcile <ticket>`, then explicit worker commands as needed |
+
 Workers report to the Commander. The Commander validates their checkpoint,
 checks, and evidence before `igniter submit ENG-123 --input -`. The first Build
 waits at Build + Complete for your Diffwalk review. Your explicit approval
@@ -228,9 +244,9 @@ The named scenario groups cover:
 | --- | --- |
 | Status and begin | Human and JSON status, explicit worker start and Todo stage recording, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
 | Lifecycle and owner gates | Build, Review PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
-| Worker start and concurrency | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate claim prevention, concurrent submit dedupe, and ticket isolation. |
+| Worker start and concurrency | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate begin prevention, concurrent submit dedupe, and ticket isolation. |
 | Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, CLI timeout with background completion, and explicit worker cleanup recovery. |
-| Control commands | Existing `state`, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, workspace context, and `start` with a fake foreground Commander. |
+| Control commands | Explicit ticket status, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, missing-ticket refusals, and `start` with a fake foreground Commander. |
 | Refusal and Git safety | Malformed payloads, wrong stage, stale/HEAD/rebased checkpoints, owner-gate refusal, dirty/untracked/unmerged checkout retention, scratch symlink escape, and packed failure diagnostics. |
 
 All condition polling has a deadline. On failure, the harness reports recent CLI

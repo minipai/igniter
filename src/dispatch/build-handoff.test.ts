@@ -15,11 +15,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createWorkspaceSink,
   runCommand,
   type CommandContext,
 } from "./commands";
-import { validateStartup, Watcher, type ResolvedDispatch } from "./claims";
+import { validateStartup, type ResolvedDispatch } from "./claims";
 import { parseDispatchConfig } from "./config";
 import { LinearClient } from "./linear";
 import { latestValidReceipt, parseReceiptBlock } from "./protocol";
@@ -61,21 +60,17 @@ async function harness(maxRunning = 3): Promise<Harness> {
   const git = new FakeGit();
   git.head = HEAD;
   const repoRoot = join(mkdtempSync(join(tmpdir(), "igniter-handoff-")), "repo");
-  const sink = createWorkspaceSink({ workspaces, config: resolved.config, repoRoot, runGit: git });
   const ctx: CommandContext = {
     client,
     resolved,
-    host: "h",
     decisions: {
       record: async (ticket, message) => {
         lines.push(`${ticket} ${message}`);
       },
     },
     workspaces,
-    sink,
     repoRoot,
     git,
-    lastPollAt: () => null,
   };
   return { ctx, lines, workspaces, git, client, resolved, world, stop: () => fake.stop() };
 }
@@ -86,18 +81,12 @@ function issueOf(h: Harness, identifier: string) {
   return issue;
 }
 
-function wsIdOf(h: Harness, identifier: string): string {
-  const workspace = h.workspaces.workspaces.find((w) => w.label === identifier && !w.closed);
-  if (!workspace) throw new Error(`no workspace for ${identifier}`);
-  return workspace.workspaceId;
-}
-
-async function wsCmd(h: Harness, identifier: string, argv: string[], input?: string) {
+async function ticketCommand(h: Harness, identifier: string, argv: string[], input?: string) {
   if (argv[0] === "begin") {
     const started = await runCommand(["worker", "start", identifier], h.ctx);
     if (!started.ok) return started;
   }
-  return runCommand(argv, h.ctx, { workspaceId: wsIdOf(h, identifier), input });
+  return runCommand([argv[0]!, identifier, ...argv.slice(1)], h.ctx, { input });
 }
 
 function buildPayload(head = HEAD) {
@@ -146,8 +135,8 @@ function seedLineage(h: Harness, identifier: string, checkpoint = HEAD): void {
   h.git.ancestors.add(`${checkpoint} main`);
 }
 
-/** Claim a ticket: Todo+Pending becomes Build+In progress. */
-async function claim(h: Harness, identifier: string): Promise<void> {
+/** Start a worker, then record Todo+Pending becoming Build+In progress. */
+async function startBuild(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
   expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
@@ -155,7 +144,7 @@ async function claim(h: Harness, identifier: string): Promise<void> {
 
 /** First Build submit: rests at Build+Complete with one build receipt. */
 async function initialSubmit(h: Harness, identifier: string, head = HEAD): Promise<void> {
-  const out = await wsCmd(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload(head)));
+  const out = await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload(head)));
   expect(out.ok).toBe(true);
   expect(out.text).toContain("→ Build+Complete");
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
@@ -190,7 +179,7 @@ describe("initial Build handoff", () => {
   test("the first submit publishes its receipt and waits at Build+Complete with no Acceptance agent", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       expect(receiptBodies(h, "STA-1")).toHaveLength(1);
       expect(latestValidReceipt(issueOf(h, "STA-1").comments)).toMatchObject({
@@ -198,9 +187,9 @@ describe("initial Build handoff", () => {
       });
       // No Acceptance worker exists and none can start: begin needs Pending.
       expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(false);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(false);
       expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
-      const state = (await wsCmd(h, "STA-1", ["state", "--json"])).data as Record<string, unknown>;
+      const state = (await ticketCommand(h, "STA-1", ["status", "--json"])).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "build", progress: "complete", next: ["approve"] });
     } finally {
       h.stop();
@@ -210,7 +199,7 @@ describe("initial Build handoff", () => {
   test("repeated reconciles without the owner move keep Build+Complete still and silent", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       // The submit verified the worktree HEAD, so the branch carries the
       // receipt checkpoint; the handoff gate reads the same lineage.
@@ -226,21 +215,6 @@ describe("initial Build handoff", () => {
       expect(issueOf(h, "STA-1").comments.length).toBe(commentsBefore);
       expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
       expect(h.lines.some((l) => /approved|Acceptance|wake/.test(l))).toBe(false);
-      // The watcher poll is quiet for the same reason: no line, no move.
-      const watcher = new Watcher({
-        client: h.client,
-        resolved: h.resolved,
-        host: "h",
-        decisions: h.ctx.decisions,
-        workspaces: h.workspaces,
-        sink: h.ctx.sink,
-        git: h.git,
-        repoRoot: h.ctx.repoRoot,
-      });
-      const at = h.lines.length;
-      await watcher.pollOnce();
-      expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
-      expect(h.lines.slice(at).filter((l) => l.startsWith("STA-1"))).toEqual([]);
     } finally {
       h.stop();
     }
@@ -249,7 +223,7 @@ describe("initial Build handoff", () => {
   test("the owner handoff converges on explicit reconcile and the Commander can begin Review", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
       expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("status");
@@ -268,7 +242,7 @@ describe("initial Build handoff", () => {
   test("the handoff converges after a restart with no workspace metadata, from Linear alone", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       seedLineage(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
@@ -282,7 +256,6 @@ describe("initial Build handoff", () => {
         ...h.ctx,
         workspaces,
         git,
-        sink: createWorkspaceSink({ workspaces, config: h.resolved.config, repoRoot: h.ctx.repoRoot, runGit: git }),
         decisions: {
           record: async (ticket, message) => {
             lines.push(`${ticket} ${message}`);
@@ -304,7 +277,7 @@ describe("initial Build handoff", () => {
   test("the handoff converges with no workspace at all", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       seedLineage(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
@@ -323,10 +296,10 @@ describe("initial Build handoff", () => {
   test("a block/unblock round trip without any review still classifies as initial", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
-      expect((await wsCmd(h, "STA-1", ["block", "--reason", "waiting"])).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["unblock"])).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
+      await startBuild(h, "STA-1");
+      expect((await ticketCommand(h, "STA-1", ["block", "--reason", "waiting"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["unblock"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
       await initialSubmit(h, "STA-1");
     } finally {
       h.stop();
@@ -338,18 +311,18 @@ describe("correction Builds return without the owner", () => {
   test("a Review FAIL correction submit lands straight in Review+Pending", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
 
       // The Builder corrects at a new checkpoint: no owner step follows.
       h.git.head = HEAD2;
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
-      const corrected = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
+      const corrected = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
       expect(corrected.ok).toBe(true);
       expect(corrected.text).toContain("→ Review+Pending");
       expect(corrected.text).toContain("correction after review-fail");
@@ -367,11 +340,11 @@ describe("correction Builds return without the owner", () => {
   test("an owner send-back correction submit lands straight in Review+Pending", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
 
       // The owner sends Review+Complete back to Build; reconcile converges it.
@@ -385,8 +358,8 @@ describe("correction Builds return without the owner", () => {
       // The original Builder corrects at a new checkpoint: no second approval.
       h.git.head = HEAD2;
       seedLineage(h, "STA-1", HEAD2);
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
-      const corrected = await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
+      const corrected = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(buildPayload(HEAD2)));
       expect(corrected.ok).toBe(true);
       expect(corrected.text).toContain("→ Review+Pending");
       expect(corrected.text).toContain("correction after review-pass");
@@ -402,10 +375,10 @@ describe("submission retries keep their classification", () => {
   test("an initial retry creates no second receipt and stays initial", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       const payload = JSON.stringify(buildPayload());
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
-      const repeated = await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload);
+      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
+      const repeated = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
       expect(repeated.ok).toBe(true);
       expect(repeated.text).toContain("already submitted build");
       expect(repeated.text).toContain("build+complete");
@@ -420,16 +393,16 @@ describe("submission retries keep their classification", () => {
   test("a correction retry creates no second receipt and stays a correction", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
       h.git.head = HEAD2;
-      expect((await wsCmd(h, "STA-1", ["begin"])).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", ["begin"])).ok).toBe(true);
       const payload = JSON.stringify(buildPayload(HEAD2));
-      expect((await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
-      const repeated = await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload);
+      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload)).ok).toBe(true);
+      const repeated = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
       expect(repeated.ok).toBe(true);
       expect(repeated.text).toContain("already submitted build");
       expect(receiptBodies(h, "STA-1")).toHaveLength(3);
@@ -443,7 +416,7 @@ describe("submission retries keep their classification", () => {
   test("a retry after the publish landed but the move stalled heals without reclassifying", async () => {
     const h = await harness();
     try {
-      await claim(h, "STA-1");
+      await startBuild(h, "STA-1");
       const payload = JSON.stringify(buildPayload());
       // The receipt lands, then the move's read-back is lost: the submit fails.
       const realAdd = h.client.addComment.bind(h.client);
@@ -456,7 +429,7 @@ describe("submission retries keep their classification", () => {
       }) as typeof h.client.addComment;
       // The lost result never surfaces: the post-write read-back adopts the
       // landed receipt inside the same submit, still as an initial Build.
-      const out = await wsCmd(h, "STA-1", ["submit", "--input", "-"], payload);
+      const out = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], payload);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("→ Build+Complete");
       expect(receiptBodies(h, "STA-1")).toHaveLength(1);

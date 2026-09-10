@@ -40,7 +40,7 @@ import {
   ticketWorktree,
   type GitRunner,
 } from "./worktrees.ts";
-import { WorkspaceSinkError, type DecisionLog, type ResolvedDispatch } from "./claims.ts";
+import { WorkspaceError, type DecisionLog, type ResolvedDispatch } from "./claims.ts";
 import { stampPublicationTokens, type PublicationConsentStore } from "./review-publication.ts";
 
 export type { StageWorkerStage };
@@ -288,7 +288,7 @@ export async function ensureStageWorker(
     return { worker, created: false };
   }
   if (existing && !workerEnded(existing.agentStatus)) {
-    throw new WorkspaceSinkError(`${worker} is running in workspace ${existing.workspaceId}, not ${workspaceId}`);
+    throw new WorkspaceError(`${worker} is running in workspace ${existing.workspaceId}, not ${workspaceId}`);
   }
   if (existing) {
     if (!deps.workspaces.stopAgent) throw new Error("worker stop is not configured");
@@ -304,7 +304,7 @@ export async function ensureStageWorker(
     paneId = (await deps.workspaces.snapshot()).panes.find((p) => p.workspaceId === workspaceId && !before.has(p.paneId))?.paneId;
     if (paneId) await deps.workspaces.reportMetadata(workspaceId, { [paneToken]: paneId });
   }
-  if (!paneId) throw new WorkspaceSinkError(`workspace ${workspaceId} has no pane available for ${worker}`);
+  if (!paneId) throw new WorkspaceError(`workspace ${workspaceId} has no pane available for ${worker}`);
   await deps.workspaces.startAgent({ paneId, kind, name: worker, ...(args.length > 0 ? { args } : {}) });
   return { worker, created: true };
 }

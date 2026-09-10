@@ -91,11 +91,9 @@ async function serveCommand(): Promise<void> {
 
 /**
  * Dispatch commands run inside the serve process: forward argv over HTTP.
- * Ticket-targeted commands (`begin <ticket>`, `submit <ticket> --input -`,
- * `block`, `unblock`) run from the project workspace and carry no Herdr
- * workspace id; only the legacy `state` and bare `begin` workspace commands
- * forward it. `start` requests a foreground launch, and `submit` forwards its
- * stdin payload.
+ * Ticket commands always carry an explicit ticket and never forward Herdr
+ * workspace metadata. `start` requests a foreground launch; `submit`
+ * forwards its stdin payload.
  */
 async function forwardCommand(argv: string[], options: CommandCallOptions = {}): Promise<void> {
   const root = argv[0] === "start" ? await startProjectRoot() : repoRoot();
@@ -165,7 +163,6 @@ async function readStdin(): Promise<string> {
 }
 
 const DISPATCH_COMMANDS = ["status", "start", "begin", "reconcile", "approve", "fail", "worker", "submit", "block", "unblock"];
-const WORKSPACE_COMMANDS = ["state"];
 
 async function versionCommand(): Promise<void> {
   const pkg = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as {
@@ -181,29 +178,29 @@ try {
   } else if (command === "serve") {
     await serveCommand();
   } else if (command !== undefined && DISPATCH_COMMANDS.includes(command)) {
-    // Dispatch commands never run locally: they go through the one HTTP
-    // door to the serve process. `submit` carries its JSON on stdin. The
-    // legacy bare `begin` still forwards the workspace id when one is set.
+    // Validate missing ticket forms before loading config or reading stdin.
+    const args = process.argv.slice(3);
+    const required = { begin: "<ticket>", submit: "<ticket> --input -", block: "<ticket> --reason TEXT", unblock: "<ticket>" };
+    const flag = command === "submit" ? "--input" : command === "block" ? "--reason" : undefined;
+    const ticketArgs: string[] = [];
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i]!;
+      if (flag && arg === flag) i += 1;
+      else if (!flag || !arg.startsWith(`${flag}=`)) ticketArgs.push(arg);
+    }
+    if (command in required && (!ticketArgs[0] || ticketArgs[0].startsWith("-"))) {
+      throw new Error(`usage: igniter ${command} ${required[command as keyof typeof required]}`);
+    }
     const options: CommandCallOptions = {};
     if (command === "submit") {
       options.input = await readStdin();
     }
     if (command === "start") options.directStart = true;
-    if (command === "begin" && process.argv.length <= 3 && process.env["HERDR_WORKSPACE_ID"]) {
-      options.workspaceId = process.env["HERDR_WORKSPACE_ID"];
-    }
     await forwardCommand(process.argv.slice(2), options);
-  } else if (command !== undefined && WORKSPACE_COMMANDS.includes(command)) {
-    // Legacy workspace commands are thin clients: the Herdr workspace id
-    // (never a ticket, never a key) rides along.
-    if (process.env["HERDR_ENV"] !== "1" || !process.env["HERDR_WORKSPACE_ID"]) {
-      console.error(`igniter ${command} runs inside a Herdr workspace only (HERDR_ENV=1, HERDR_WORKSPACE_ID set)`);
-      process.exit(1);
-    }
-    const options: CommandCallOptions = { workspaceId: process.env["HERDR_WORKSPACE_ID"] };
-    await forwardCommand(process.argv.slice(2), options);
+  } else if (command === "state") {
+    throw new Error("`igniter state` was removed; use `igniter status <ticket> --json`");
   } else {
-    console.error("usage: igniter <serve|status|start|begin|reconcile|approve|fail|worker|submit|block|unblock|state> [--port N]");
+    console.error("usage: igniter <serve|status|start|begin|reconcile|approve|fail|worker|submit|block|unblock> [--port N]");
     console.error("  serve [--port N]");
     console.error("  status [--json|<ticket> --json]");
     console.error("  start [<ticket> [--publish-review]]");
@@ -219,7 +216,6 @@ try {
     console.error("  worker answer <ticket> [--role build|review|deliver] y|n");
     console.error("  submit <ticket> --input -");
     console.error("  block <ticket> --reason TEXT | unblock <ticket>");
-    console.error("  state --json");
     console.error("  --version, -v");
     process.exit(1);
   }

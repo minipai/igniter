@@ -106,17 +106,14 @@ export function foregroundCommandFor(profile: CommanderAgentConfig, workOrder: s
 
 // ---------------------------------------------------------------------------
 // Run record: the resolved stage-agent profiles frozen into workspace
-// metadata at claim time, so retries and recovery reuse the run's own
+// metadata at worker start, so retries and recovery reuse the run's own
 // profiles instead of re-reading a possibly edited configuration.
 //
-// Herdr caps one metadata report at 16 tokens, and the claim already
-// writes six of its own (ticket, builder, slot, three scratch paths), so
-// the freeze compacts to three JSON tokens — one per stage worker, the
-// builder fallback nested inside the builder blob. A claim writes nine
-// tokens in one report, never near the cap.
+// Herdr caps one metadata report at 16 tokens. Stage profiles use three
+// JSON tokens, with the builder fallback nested inside the builder blob.
 // ---------------------------------------------------------------------------
 
-/** Workspace metadata keys carrying the claim-time stage-agent profiles. */
+/** Workspace metadata keys carrying the worker-start stage-agent profiles. */
 export const PROFILE_TOKENS = [
   "profile_builder",
   "profile_reviewer",
@@ -134,7 +131,7 @@ function freezeProfile(profile: CommanderAgentConfig): string {
   return JSON.stringify(profile);
 }
 
-/** The claim-time snapshot of every stage-agent profile for the run: three tokens. */
+/** The worker-start snapshot of every stage-agent profile for the run: three tokens. */
 export function recordStageProfiles(config: DispatchConfig): Record<string, string> {
   const agents = config.commander.agents;
   return {
@@ -158,7 +155,7 @@ export function keptStageProfiles(tokens: Record<string, string>): Record<string
 
 /**
  * Every profile effort dispatch cannot translate, named concretely. The
- * claim and adopt gates refuse on these before any workspace opens, so a
+ * worker start refuses on these before any workspace opens, so a
  * configured effort is either a real launch option or an explicit error —
  * for stage profiles too, not just the Commander.
  */
@@ -221,8 +218,8 @@ function thawProfile(raw: string | undefined, fallback: CommanderAgentConfig): C
 /**
  * The Commander work-order config for a resumed or recovered run: recorded
  * profile tokens win, the live configuration fills whatever the run never
- * recorded (older runs, adopted workspaces). The effective builder model
- * override (`builder` token, from `start --builder` or `restart`) still
+ * recorded (older runs). The effective builder model
+ * override (`builder` token, from `worker restart --builder`) still
  * wins for the Build stage only.
  */
 export function commanderConfigForRun(

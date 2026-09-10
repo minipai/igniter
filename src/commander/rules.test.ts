@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildCommanderWorkOrder } from "../dispatch/commander-start.ts";
+import { buildCommanderLaunchPrompt } from "../dispatch/commander-start.ts";
 
 const commonRules = await Bun.file(new URL("./rules.md", import.meta.url)).text();
 const commanderConfig = Bun.YAML.parse(
@@ -21,16 +21,15 @@ const stageRules = await Promise.all(
 const rules = [commonRules, ...stageRules].join("\n");
 
 describe("Commander delivery protocol", () => {
-  test.each([undefined, { identifier: "STA-1", title: "Build a feature" }])("startup work orders require worker delivery before begin: %j", (assignment) => {
-    const order = buildCommanderWorkOrder({
+  test.each([undefined, { identifier: "STA-1", title: "Build a feature" }])("foreground launch points to Global Commander instructions and explicit status: %j", (assignment) => {
+    const order = buildCommanderLaunchPrompt({
       project: "fixture", team: "STA", repoRoot: "/fixture", targetBranch: "main",
-      globalMd: "/fixture/global.md", commanderHarness: "codex", commanderModel: "test-model",
+      globalMd: "/fixture/global.md",
       assignment,
     });
-    expect(order).toContain("igniter worker start");
-    expect(order).toMatch(/confirm initial work-order delivery/);
-    expect(order).toContain("igniter approve <ticket> --receipt <id>");
-    expect(order).not.toMatch(/launch[^\n]*worker with `igniter begin/);
+    expect(order).toContain("/fixture/global.md");
+    expect(order).toContain(assignment ? "igniter status STA-1 --json" : "igniter status --json");
+
   });
 
   test("the startup document loads complete Commander rules", async () => {
