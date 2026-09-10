@@ -78,6 +78,30 @@ async function branchExists(git: GitRunner, root: string, branch: string): Promi
   }
 }
 
+async function isAncestor(git: GitRunner, root: string, ref: string, target: string): Promise<boolean> {
+  try {
+    await git.run(["merge-base", "--is-ancestor", ref, target], root);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Simulate GitHub's native rebase merge: a fresh commit on the target that
+ * carries the ticket tip's exact tree under a different SHA, with no shared
+ * ancestry. Returns the landed SHA.
+ */
+async function rebaseLand(repo: TicketRepo, target = "main"): Promise<string> {
+  const tree = (await repo.git.run(["rev-parse", "HEAD^{tree}"], repo.path)).stdout.trim();
+  const landed = (await repo.git.run(
+    ["commit-tree", tree, "-p", target, "-m", "ticket work (rebased)"],
+    repo.root,
+  )).stdout.trim();
+  await repo.git.run(["update-ref", `refs/heads/${target}`, landed], repo.root);
+  return landed;
+}
+
 async function mergeTicket(git: GitRunner, root: string, branch: string): Promise<void> {
   await git.run(["merge", "--no-ff", "-m", `merge ${branch}`, branch], root);
 }
@@ -100,6 +124,134 @@ describe("cleanupTicketCheckout", () => {
     expect(outcome.alreadyCleaned).toBe(false);
     expect(await worktreeListed(git, root, repo.path)).toBe(false);
     expect(await branchExists(git, root, repo.branch)).toBe(false);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
+  test("removes a clean worktree whose content landed under a rewritten SHA", async () => {
+    const { root, git } = await initRepo();
+    const repo = await openTicket(root, git, "STA-15");
+    const checkpoint = await ticketCommit(repo);
+    const landed = await rebaseLand(repo);
+
+    expect(landed).not.toBe(checkpoint);
+    expect(await isAncestor(git, root, checkpoint, "main")).toBe(false);
+    expect(await isAncestor(git, root, landed, "main")).toBe(true);
+
+    const outcome = await cleanupTicketCheckout(git, root, "STA-15", {
+      checkpoint: landed,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.worktreeRemoved).toBe(true);
+    expect(outcome.branchRemoved).toBe(true);
+    expect(outcome.alreadyCleaned).toBe(false);
+    expect(await worktreeListed(git, root, repo.path)).toBe(false);
+    expect(await branchExists(git, root, repo.branch)).toBe(false);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
+  test("removes a rebase-landed branch that still tracks a stale upstream", async () => {
+    const { root, git } = await initRepo();
+    const remote = realpathSync(mkdtempSync(join(tmpdir(), "igniter-cleanup-remote-")));
+    await git.run(["init", "--bare", remote], tmpdir());
+    await git.run(["remote", "add", "origin", remote], root);
+    const repo = await openTicket(root, git, "STA-18");
+    await ticketCommit(repo);
+    // A pushed PR branch tracks an upstream that still points at the
+    // pre-rebase tip, exactly as GitHub's native rebase merge leaves it.
+    await git.run(["push", "--set-upstream", "origin", repo.branch], repo.path);
+    const landed = await rebaseLand(repo);
+
+    const outcome = await cleanupTicketCheckout(git, root, "STA-18", {
+      checkpoint: landed,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.worktreeRemoved).toBe(true);
+    expect(outcome.branchRemoved).toBe(true);
+    expect(await branchExists(git, root, repo.branch)).toBe(false);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
+  test("keeps the branch when its ref moves between the equivalence proof and deletion", async () => {
+    const { root, git } = await initRepo();
+    const repo = await openTicket(root, git, "STA-19");
+    const checkpoint = await ticketCommit(repo);
+    // A side branch carries the content the race moves the ticket branch to,
+    // so the bound delete has a concrete inequivalent tip to miss.
+    await git.run(["branch", "raced", checkpoint], root);
+    await git.run(["checkout", "raced"], repo.path);
+    writeFileSync(join(repo.path, "raced.txt"), "raced work\n");
+    await git.run(["add", "raced.txt"], repo.path);
+    await git.run(["commit", "-m", "raced work"], repo.path);
+    const racedTip = (await git.run(["rev-parse", "HEAD"], repo.path)).stdout.trim();
+    await git.run(["checkout", repo.branch], repo.path);
+    const landed = await rebaseLand(repo);
+
+    // Move the ticket branch after branchLanding proved the old tip, but
+    // before the bound update-ref runs: the delete must fail closed.
+    const raw = bunGitRunner();
+    const racing: GitRunner = {
+      run: async (args, cwd) => {
+        if (args[0] === "update-ref" && args[1] === "-d") {
+          await raw.run(["update-ref", `refs/heads/${repo.branch}`, racedTip], root);
+        }
+        return git.run(args, cwd);
+      },
+    };
+
+    const outcome = await cleanupTicketCheckout(racing, root, "STA-19", {
+      checkpoint: landed,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.detail).toContain("cannot delete branch");
+    expect(await branchExists(git, root, repo.branch)).toBe(true);
+    expect((await git.run(["rev-parse", repo.branch], root)).stdout.trim()).toBe(racedTip);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
+  test("finishes a leftover rebase-landed branch whose worktree is already gone", async () => {
+    const { root, git } = await initRepo();
+    const repo = await openTicket(root, git, "STA-16");
+    await ticketCommit(repo);
+    const landed = await rebaseLand(repo);
+    await git.run(["worktree", "remove", repo.path], root);
+
+    const outcome = await cleanupTicketCheckout(git, root, "STA-16", {
+      checkpoint: landed,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.worktreeRemoved).toBe(false);
+    expect(outcome.branchRemoved).toBe(true);
+    expect(await branchExists(git, root, repo.branch)).toBe(false);
+    expect(git.cleanOfForce()).toBe(true);
+  });
+
+  test("keeps a clean worktree whose branch content differs from the landed commit", async () => {
+    const { root, git } = await initRepo();
+    const repo = await openTicket(root, git, "STA-17");
+    await ticketCommit(repo);
+    const landed = await rebaseLand(repo);
+    // A later commit on the branch changes the tip tree away from landed.
+    writeFileSync(join(repo.path, "extra.txt"), "post-landing work\n");
+    await git.run(["add", "extra.txt"], repo.path);
+    await git.run(["commit", "-m", "post-landing work"], repo.path);
+
+    const outcome = await cleanupTicketCheckout(git, root, "STA-17", {
+      checkpoint: landed,
+      targetBranch: "main",
+    });
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.detail).toContain("holds commits not reachable from main");
+    expect(await worktreeListed(git, root, repo.path)).toBe(true);
+    expect(await branchExists(git, root, repo.branch)).toBe(true);
     expect(git.cleanOfForce()).toBe(true);
   });
 
