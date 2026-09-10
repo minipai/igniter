@@ -45,12 +45,14 @@ test("the published package runs outside the checkout with its bundled assets", 
     run(["tar", "-xzf", tarball, "-C", temp]);
     const installed = join(temp, "package");
     const pkg = await Bun.file(join(installed, "package.json")).json();
-    const typebox = realpathSync(join(root, "node_modules/typebox"));
-    const dependency = await Bun.file(join(typebox, "package.json")).json();
-    expect(pkg.dependencies.typebox).toBe(dependency.version);
     mkdirSync(join(installed, "node_modules"));
-    // Copy the already installed dependency so this smoke test needs no registry.
-    cpSync(typebox, join(installed, "node_modules/typebox"), { recursive: true });
+    // Copy installed dependencies so this smoke test needs no registry.
+    for (const name of ["cac"]) {
+      const source = realpathSync(join(root, "node_modules", name));
+      const dependency = await Bun.file(join(source, "package.json")).json();
+      expect(pkg.dependencies[name]).toBe(dependency.version);
+      cpSync(source, join(installed, "node_modules", name), { recursive: true });
+    }
     const bun = [process.execPath, "--no-env-file", "--no-install"];
     expect(run([...bun, join(installed, pkg.bin.igniter), "--version"]).trim()).toBe(pkg.version);
     const assetsUrl = pathToFileURL(join(installed, "src/commander/assets.ts")).href;

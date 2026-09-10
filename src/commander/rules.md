@@ -24,11 +24,10 @@ Repository-specific engineering rules come from the target repository.
 
 - **Global Commander:** owns every run as Igniter's singleton: queue patrol,
   worker starts through `worker start`, stage recording through `begin`, report validation, receipts through
-  ticket-targeted submit, evidence publication, owner gates, and recovery.
+  ticket-targeted submit, owner gates, and recovery.
   The only process allowed to move its Igniter and Linear state.
-- **Build agent:** implements, checks, self-accepts, commits the feature, and
-  records its local Diffwalk capture/check artifact. It never publishes:
-  review publication happens on the host after the owner's one-time consent.
+- **Build agent:** implements, checks, self-accepts, and commits the feature
+  according to the selected repository workflow.
 - **Acceptance agent:** tests the committed feature through its public UI, CLI,
   or API without inspecting source code or diffs. It never modifies product
   code: every finding returns to the original Build agent for the fix,
@@ -112,8 +111,7 @@ call Linear directly or through MCP, or publish receipts.
   checkpoint, latest receipt, legal next commands, and current submit
   schema, with no ticket workspace context.
 - `igniter start [<ticket>]` starts the configured Commander directly in the
-  calling terminal and, with a ticket, assigns it immediately. The CLI starts
-  `igniter serve` detached first when dispatch is absent; it never opens a
+  calling terminal and, with a ticket, assigns it immediately. It never opens a
   Herdr workspace, tab, or pane for the Commander.
 - `igniter begin <ticket>` only validates and records the current stage start:
   Todo becomes Build and Pending becomes In progress. It never prepares a
@@ -121,7 +119,7 @@ call Linear directly or through MCP, or publish receipts.
 - `igniter submit <ticket> --input -` publishes the current worker's
   validated report using the schema returned by `status`:
   - The first Build lands in Build + Complete and waits there for the
-    owner's Diffwalk review.
+    owner's approval.
   - A correction Build (after a Review FAIL or after the owner sends Review
     + Complete back to Build) lands straight back in Review + Pending with
     no further owner step.
@@ -252,12 +250,9 @@ Ask the owner before approving home configs, credentials, system locations,
 remote hosts, broader filesystem access, external writes, destructive actions,
 or any network access. Never start OpenCode with `--auto`.
 
-Stage workers never need those approvals to finish: they stay inside the
-ticket worktree and their own scratch, run only local checks, and never
-touch localhost, credentials, or publication. The Commander likewise needs
-no per-dialog approval for Herdr reads, localhost CLI submissions, or
-same-ticket Diffwalk updates — the ticket's `worker start` work orders and the one
-`start <ticket> --publish-review` consent already cover this lifecycle.
+Stage workers stay inside the ticket worktree and their own scratch and run
+only the checks and artifact steps required by the repository workflow. Ask
+the owner before any step that crosses those boundaries.
 
 ## Worker reports
 
@@ -265,9 +260,8 @@ A Herdr lifecycle state is not a result. Accept a worker report only when it
 covers the required fields and ends with its completion marker.
 
 - **Build — `BUILD_HANDOFF_COMPLETE`:** checkpoint, required checks,
-  per-criterion self-acceptance, one-pass code-review result, reproduction
-  steps, local Diffwalk artifact identity (capture id plus check result),
-  and unresolved concerns.
+  per-criterion self-acceptance, reproduction
+  steps, evidence required by the repository workflow, and unresolved concerns.
 - **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
   with expected, actual, evidence, and environment details.
 - **Deliver — `DELIVERY_COMPLETE`:** checkpoint, landed target-branch commit,
@@ -284,17 +278,9 @@ On Todo + Pending or Build + Pending, run status, worker start, confirm initial
 work-order delivery, then begin. On a returned Build + Pending, use the original
 Build role and the same sequence before continuing its correction.
 
-Before Review, require a committed checkpoint and a checked local Diffwalk
-walkthrough with its artifact identity. Compare its diff with the configured
-Risk areas. Block on a listed risk and wait for the owner.
-
-Publication to the fixed review destination happens on the host, not in the
-worker: the Commander submits the validated Build report with its Diffwalk
-artifact through `igniter submit <ticket> --input -`, and the command service
-publishes the checked capture and records the review URL in the Build receipt.
-That publication needs the owner's one-time consent for this ticket lifecycle
-(`igniter start <ticket> --publish-review`); without it the submit refuses
-with the next step instead of publishing silently.
+Before Review, require a committed checkpoint and every check or artifact
+named by the repository workflow. Compare its diff with the configured Risk
+areas. Block on a listed risk and wait for the owner.
 
 Build evidence is self-acceptance, never approval. After the first Build
 submit the ticket rests at Build + Complete: do not create the Acceptance

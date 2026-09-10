@@ -3,7 +3,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  createCommandLock,
   createDispatchLog,
   hasAcceptanceCriteria,
   readQueue,
@@ -170,20 +169,6 @@ describe("candidate helpers", () => {
     expect(sorted.map((i) => i.identifier)).toEqual(["STA-2", "STA-1", "STA-3"]);
   });
 
-  test("the command lock serializes concurrent commands", async () => {
-    const lock = createCommandLock();
-    const order: string[] = [];
-    await Promise.all([
-      lock(async () => {
-        await Bun.sleep(10);
-        order.push("first");
-      }),
-      lock(async () => {
-        order.push("second");
-      }),
-    ]);
-    expect(order).toEqual(["first", "second"]);
-  });
 });
 
 describe("readQueue", () => {

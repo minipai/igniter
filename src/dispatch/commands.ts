@@ -1,25 +1,21 @@
-// Dispatch commands: the one door into a running igniter.
+// Dispatch commands: the typed boundary behind the Igniter CLI.
 //
-// Both the web page and the CLI go through `POST /api/command` with
-// `{ argv, directStart?, input? }`, and land here. Each command takes argv,
-// does its permitted Linear or worker work through the injected context, records its
+// Each command does its permitted Linear or worker work through the injected
+// context, records its
 // activity lines through the DecisionLog, and returns `{ ok, text, data? }`
-// — text for an agent, data for the web page.
+// — text for the terminal, structured data for callers that need it.
 //
 // Linear and worker commands share this door with explicit boundaries:
 // - `status`, `begin`, `submit`, `approve`, `block`, `unblock`, `fail`, and
 //   `reconcile` operate ticket protocol state without worker lifecycle effects.
 // - `worker start|send|restart|stop|answer` may read ticket context but never
 //   write Linear. `start` remains Global Commander lifecycle and assignment.
-// The Global Commander invokes them from the project workspace; only `serve`
-// holds the Linear key.
+// The Global Commander invokes them from the project workspace.
 //
 // igniter never judges: commands only carry out what Linear and the caller
 // say. Judgments belong to the Global Commander outside Igniter.
 
 import {
-  createCommandLock,
-  type CommandCallOptions,
   type CommandResult,
   type DecisionLog,
   type ResolvedDispatch,
@@ -61,13 +57,7 @@ import {
   type PromptDeliveryPolicy,
 } from "./prompt-delivery.ts";
 import { bunGitRunner, type GitRunner } from "./worktrees.ts";
-import {
-  createBuildPublicationGate,
-  grantPublicationConsent,
-  stampPublicationTokens,
-  type PublicationConsentStore,
-  type ReviewPublisher,
-} from "./review-publication.ts";
+import type { CommandRequest } from "./command-request.ts";
 
 export type { CommandResult };
 
@@ -79,128 +69,51 @@ export interface CommandContext {
   resolved: ResolvedDispatch;
   decisions: DecisionLog;
   workspaces: CommandWorkspaces;
-  /** Repo root: the cwd `igniter serve` runs in, used as the workspace cwd. */
+  /** Repo root used as the workspace cwd. */
   repoRoot: string;
   git?: GitRunner;
   now?: () => number;
   /** Prompt-delivery confirmation budget; tests inject a no-op clock. */
   promptDelivery?: PromptDeliveryPolicy;
-  /**
-   * Host-side review publication state: the owner consent ledger plus the
-   * publisher that uploads to the fixed destination. Present only in the
-   * command service; stage workers never receive credentials, the ledger,
-   * or host network access.
-   */
-  publication?: {
-    consents: PublicationConsentStore;
-    publisher: ReviewPublisher;
-  };
-}
-
-const TOP_USAGE =
-  "usage: igniter <status|start|begin|submit|approve|block|unblock|fail|reconcile|worker <start|send|restart|stop|answer>>";
-
-function usage(command: string): string {
-  switch (command) {
-    case "status":
-      return "usage: igniter status [--json|<ticket> --json]";
-    case "start":
-      return "usage: igniter start [<ticket> [--publish-review]]";
-    case "reconcile":
-      return "usage: igniter reconcile <ticket>";
-    case "approve":
-      return "usage: igniter approve <ticket> --receipt <id>";
-    case "fail":
-      return "usage: igniter fail <ticket> --reason TEXT";
-    case "begin":
-      return "usage: igniter begin <ticket>";
-    case "submit":
-      return "usage: igniter submit <ticket> --input -";
-    case "block":
-      return "usage: igniter block <ticket> --reason TEXT";
-    case "unblock":
-      return "usage: igniter unblock <ticket>";
-    default:
-      return TOP_USAGE;
-  }
 }
 
 function fail(text: string): CommandResult {
   return { ok: false, text };
 }
 
-/** Split `--flag value` and `--flag=value` forms out of args; the rest stays. */
-function takeFlag(args: string[], name: string): { value?: string; rest: string[] } {
-  const rest: string[] = [];
-  let value: string | undefined;
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i] as string;
-    if (arg === `--${name}`) {
-      value = args[i + 1];
-      i += 1;
-    } else if (arg.startsWith(`--${name}=`)) {
-      value = arg.slice(name.length + 3);
-    } else {
-      rest.push(arg);
-    }
-  }
-  return { value, rest };
-}
-
-const DISPATCH_COMMANDS = new Set(["status", "start", "begin", "reconcile", "fail", "submit", "approve", "worker", "block", "unblock"]);
-
-// All callers, including in-process clients, share the same mutation lock.
-// The service owns one Linear client; locks never depend on a transient ctx.
-const commandLocks = new WeakMap<LinearClientLike, ReturnType<typeof createCommandLock>>();
-
 export function runCommand(
-  argv: string[],
+  command: CommandRequest,
   ctx: CommandContext,
-  options: CommandCallOptions = {},
 ): Promise<CommandResult> {
-  let lock = commandLocks.get(ctx.client);
-  if (!lock) {
-    lock = createCommandLock();
-    commandLocks.set(ctx.client, lock);
-  }
-  return lock(() => dispatchCommand(argv, ctx, options));
+  return dispatchCommand(command, ctx);
 }
 
 function dispatchCommand(
-  argv: string[],
+  command: CommandRequest,
   ctx: CommandContext,
-  options: CommandCallOptions = {},
 ): Promise<CommandResult> {
-  const [name, ...args] = argv;
-  if (name === undefined) return Promise.resolve(fail(TOP_USAGE));
-  if (DISPATCH_COMMANDS.has(name)) {
-    switch (name) {
-      case "status":
-        return statusCommand(args, ctx);
-      case "start":
-        return startCommand(args, ctx, options.directStart === true);
-      case "begin":
-        return beginCommand(args, ctx);
-      case "reconcile":
-        return reconcileCommand(args, ctx);
-      case "fail":
-        return failCommand(args, ctx);
-      case "worker":
-        return import("./worker-commands.ts").then(({ workerCommand }) => workerCommand(args, ctx));
-      case "approve":
-        return approveCommand(args, ctx);
-      case "submit":
-        return submitCommand(args, ctx, options.input);
-      case "block":
-        return blockCommand(args, ctx);
-      case "unblock":
-        return unblockCommand(args, ctx);
-    }
+  switch (command.command) {
+    case "status":
+      return statusCommand(command.ticket, command.json === true, ctx);
+    case "start":
+      return startCommand(command.ticket, ctx);
+    case "begin":
+      return beginCommand(command.ticket, ctx);
+    case "reconcile":
+      return reconcileCommand(command.ticket, ctx);
+    case "approve":
+      return approveCommand(command.ticket, command.receipt, ctx);
+    case "fail":
+      return failCommand(command.ticket, command.reason, ctx);
+    case "submit":
+      return submitCommand(command.ticket, command.payload, ctx);
+    case "block":
+      return blockCommand(command.ticket, command.reason, ctx);
+    case "unblock":
+      return unblockCommand(command.ticket, ctx);
+    default:
+      return import("./worker-commands.ts").then(({ workerCommand }) => workerCommand(command, ctx));
   }
-  if (name === "state") {
-    return Promise.resolve(fail("`igniter state` was removed; use `igniter status <ticket> --json`"));
-  }
-  return Promise.resolve(fail(`unknown command "${name}"; ${TOP_USAGE}`));
 }
 
 function depsOf(ctx: CommandContext): ProtocolDeps {
@@ -211,15 +124,6 @@ function depsOf(ctx: CommandContext): ProtocolDeps {
     decisions: ctx.decisions,
     git: ctx.git ?? bunGitRunner(),
     repoRoot: ctx.repoRoot,
-    ...(ctx.publication
-      ? {
-        publication: createBuildPublicationGate({
-          consents: ctx.publication.consents,
-          publisher: ctx.publication.publisher,
-          repoRoot: ctx.repoRoot,
-        }),
-      }
-      : {}),
   };
 }
 
@@ -352,12 +256,10 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
   return { data, snapshot, herdrNote };
 }
 
-async function statusCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const jsonFlag = args.includes("--json");
-  const rest = args.filter((a) => a !== "--json");
-  if (rest.length === 0) {
+async function statusCommand(ticket: string | undefined, json: boolean, ctx: CommandContext): Promise<CommandResult> {
+  if (!ticket) {
     const { data, snapshot, herdrNote } = await collectStatus(ctx);
-    if (jsonFlag) {
+    if (json) {
       const payload = {
         slots: data.slots,
         queue: data.tickets.map((t) => ({
@@ -399,10 +301,8 @@ async function statusCommand(args: string[], ctx: CommandContext): Promise<Comma
     }
     return { ok: true, text: lines.join("\n"), data };
   }
-  if (rest.length === 1 && jsonFlag && rest[0] && !rest[0].startsWith("--")) {
-    return ticketStatusCommand(rest[0] as string, ctx);
-  }
-  return fail(usage("status"));
+  if (json) return ticketStatusCommand(ticket, ctx);
+  return fail("ticket status requires --json");
 }
 
 /**
@@ -472,9 +372,7 @@ function progressName(ctx: CommandContext, progress: string): string {
 // reconcile
 // ---------------------------------------------------------------------------
 
-async function reconcileCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  if (args.length !== 1 || !args[0] || args[0].startsWith("--")) return fail(usage("reconcile"));
-  const identifier = args[0];
+async function reconcileCommand(identifier: string, ctx: CommandContext): Promise<CommandResult> {
   const full = (await ctx.client.fetchIssue(identifier)) as FullIssue | null;
   if (!full) {
     await ctx.decisions.record(identifier, `reconcile failed: ticket "${identifier}" was not found in Linear`);
@@ -515,27 +413,13 @@ export function answerKeysFor(kind: string | undefined, key: string): string[] {
 
 /** Prepare the configured Global Commander for the calling terminal. */
 async function startCommand(
-  args: string[],
+  ticket: string | undefined,
   ctx: CommandContext,
-  directStart: boolean,
 ): Promise<CommandResult> {
-  if (!directStart) return fail("background Commander start was removed; use CLI `igniter start [<ticket>]`");
   const { client, resolved, decisions } = ctx;
-  // `--publish-review` is an explicit owner act on the CLI, never a
-  // repository setting: it grants this ticket's current lifecycle a
-  // one-time review publication to the fixed destination.
-  const publishReview = args.includes("--publish-review");
-  const rest = args.filter((a) => a !== "--publish-review");
-  if (rest.length > 1 || (rest.length === 1 && (!rest[0] || rest[0].startsWith("-")))) {
-    return fail(usage("start"));
-  }
-  if (publishReview && rest.length === 0) {
-    return fail("`--publish-review` needs a ticket: `igniter start <ticket> --publish-review`");
-  }
-  const raw = rest.length === 1 ? (rest[0] as string) : undefined;
   let assignment: FullIssue | undefined;
-  if (raw) {
-    const identifier = raw.toUpperCase();
+  if (ticket) {
+    const identifier = ticket.toUpperCase();
     const full = (await client.fetchIssue(identifier)) as FullIssue | null;
     if (!full) {
       await decisions.record(identifier, `start failed: ticket "${identifier}" was not found in Linear`);
@@ -551,34 +435,6 @@ async function startCommand(
     }
     assignment = full;
   }
-  if (publishReview && assignment) {
-    if (!ctx.publication) {
-      await decisions.record(assignment.identifier, `start failed: publication consent store is not configured in this dispatch`);
-      return fail(`start failed: publication consent store is not configured in this dispatch`);
-    }
-    const consent = grantPublicationConsent(ctx.publication.consents, {
-      ticket: assignment.identifier,
-      repository: ctx.repoRoot,
-      ...(ctx.now ? { now: ctx.now } : {}),
-    });
-    // Stamp a live workspace at once; `worker start` stamps the workspace it
-    // ensures, so a grant before any workspace still lands on submit.
-    try {
-      const snapshot = await ctx.workspaces.snapshot();
-      const open = snapshot.workspaces.find((w) => w.tokens["ticket"] === assignment.identifier);
-      if (open) await ctx.workspaces.reportMetadata(open.workspaceId, stampPublicationTokens(consent));
-    } catch {
-      // Stamping is best-effort here: `worker start` stamps before submit.
-    }
-    await decisions.record(
-      assignment.identifier,
-      `recorded review publication consent for ${assignment.identifier} → ${consent.destination} (lifecycle ${consent.lifecycle})`,
-    );
-  }
-  const consentNote =
-    publishReview && assignment
-      ? `; review publication consented for ${assignment.identifier} → review.diffwalk.dev (this lifecycle only)`
-      : "";
   const { prepareCommanderForeground } = await import("./commander-start.ts");
   let launch;
   try {
@@ -591,7 +447,7 @@ async function startCommand(
   await decisions.record("commander", `prepared foreground ${launch.command[0]} Commander (${what})`);
   return {
     ok: true,
-    text: `starting Commander with ${launch.command[0]} in the current terminal; ${what}${consentNote}`,
+    text: `starting Commander with ${launch.command[0]} in the current terminal; ${what}`,
     data: launch,
   };
 }
@@ -601,9 +457,7 @@ async function startCommand(
  * start, derived from Linear state. It never prepares worktrees, launches
  * workers, or sends prompts; the Commander confirms `worker start` first.
  */
-async function beginCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const ticket = args[0];
-  if (args.length !== 1 || !ticket || ticket.startsWith("-")) return fail(usage("begin"));
+async function beginCommand(ticket: string, ctx: CommandContext): Promise<CommandResult> {
   return beginTicket(ctx, ticket.toUpperCase());
 }
 
@@ -642,25 +496,17 @@ async function ticketIssue(ctx: CommandContext, identifier: string): Promise<Ful
   return full;
 }
 
-async function approveCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const receipt = takeFlag(args, "receipt");
-  if (receipt.rest.length !== 1 || !receipt.rest[0] || receipt.rest[0].startsWith("-") || !receipt.value?.trim()) {
-    return fail(`${usage("approve")}; bind the receipt.id from status so a stale retry cannot approve another stage`);
-  }
+async function approveCommand(ticket: string, receipt: string, ctx: CommandContext): Promise<CommandResult> {
   try {
     const { approveTicket } = await import("./approval.ts");
-    return await approveTicket(depsOf(ctx), await ticketIssue(ctx, receipt.rest[0]), receipt.value);
-  } catch (error) { return refuse(ctx, receipt.rest[0], error); }
+    return await approveTicket(depsOf(ctx), await ticketIssue(ctx, ticket), receipt);
+  } catch (error) { return refuse(ctx, ticket, error); }
 }
 
-async function failCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
+async function failCommand(identifier: string, rawReason: string, ctx: CommandContext): Promise<CommandResult> {
   const { client, resolved, decisions } = ctx;
-  const reasonFlag = takeFlag(args, "reason");
-  const rest = reasonFlag.rest;
-  if (rest.length !== 1 || !rest[0] || rest[0].startsWith("--")) return fail(usage("fail"));
-  const reason = reasonFlag.value?.trim();
-  if (!reason) return fail(usage("fail"));
-  const identifier = rest[0] as string;
+  const reason = rawReason.trim();
+  if (!reason) return fail("failure reason cannot be blank");
   const full = await client.fetchIssue(identifier);
   if (!full) {
     await decisions.record(identifier, `fail failed: ticket "${identifier}" was not found in Linear`);
@@ -676,27 +522,14 @@ async function failCommand(args: string[], ctx: CommandContext): Promise<Command
 }
 
 async function submitCommand(
-  args: string[],
+  ticket: string,
+  payload: unknown,
   ctx: CommandContext,
-  input: string | undefined,
 ): Promise<CommandResult> {
-  const inputFlag = takeFlag(args, "input");
-  if (inputFlag.value !== "-") return fail(usage("submit"));
-  const ticketArg = inputFlag.rest[0];
-  if (inputFlag.rest.length !== 1 || !ticketArg || ticketArg.startsWith("-")) return fail(usage("submit"));
-  if (input === undefined) {
-    return fail(`submit needs JSON on stdin; use \`igniter submit <ticket> --input -\``);
-  }
-  let payload: unknown;
   try {
-    payload = JSON.parse(input);
-  } catch {
-    return fail(`submit input is not JSON; use \`igniter submit <ticket> --input -\``);
-  }
-  try {
-    return { ok: true, text: await submitForTicket(ctx, ticketArg, payload) };
+    return { ok: true, text: await submitForTicket(ctx, ticket, payload) };
   } catch (error) {
-    return refuse(ctx, ticketArg, error);
+    return refuse(ctx, ticket, error);
   }
 }
 
@@ -716,11 +549,9 @@ async function submitForTicket(ctx: CommandContext, identifier: string, payload:
   return submitMutation(depsOf(ctx), full, state, payload);
 }
 
-async function blockCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const reasonFlag = takeFlag(args, "reason");
-  const reason = reasonFlag.value?.trim();
-  const ticket = reasonFlag.rest[0];
-  if (!reason || reasonFlag.rest.length !== 1 || !ticket || ticket.startsWith("-")) return fail(usage("block"));
+async function blockCommand(ticket: string, rawReason: string, ctx: CommandContext): Promise<CommandResult> {
+  const reason = rawReason.trim();
+  if (!reason) return fail("block reason cannot be blank");
   try {
     return { ok: true, text: await blockForTicket(ctx, ticket, reason) };
   } catch (error) {
@@ -740,9 +571,7 @@ async function blockForTicket(ctx: CommandContext, identifier: string, reason: s
   return `blocked ${full.identifier}: ${reason}`;
 }
 
-async function unblockCommand(args: string[], ctx: CommandContext): Promise<CommandResult> {
-  const ticket = args[0];
-  if (args.length !== 1 || !ticket || ticket.startsWith("-")) return fail(usage("unblock"));
+async function unblockCommand(ticket: string, ctx: CommandContext): Promise<CommandResult> {
   try {
     return { ok: true, text: await unblockForTicket(ctx, ticket) };
   } catch (error) {

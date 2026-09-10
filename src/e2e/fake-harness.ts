@@ -1,11 +1,8 @@
-// Shared harness for black-box CLI end-to-end tests (test-only fixture).
+// Shared harness for CLI end-to-end tests (test-only fixture).
 //
-// Shape per test: a real temp git repo, the real dispatch HTTP service in
-// this process (real routing, real protocol, real git runner), the stateful
-// memory Linear client, and fake Herdr workspaces. The real CLI runs as a
-// subprocess with `cwd` set to the temp repo and a whitelisted environment
-// (fake key, no real credentials), finding the service through the temp
-// repo's `.igniter/config.yaml`.
+// Shape per test: a real CLI subprocess and temp git repo, the production
+// command protocol, and stateful Linear/Herdr fakes reached across a test-only
+// process boundary.
 //
 // Rules enforced here, not per test:
 // - only temp dirs/ports/processes; everything is tracked and removed;
@@ -14,14 +11,11 @@
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { parseDispatchConfig } from "../dispatch/config.ts";
 import { MemoryLinearClient, standardMemoryWorld, type MemoryWorld } from "../dispatch/fake-memory-linear.ts";
 import { FakeWorkspaces } from "../dispatch/fake-workspaces.ts";
-import { startDispatchServe, type DispatchServeHandle } from "../server/dispatch-serve.ts";
 import type { PromptDeliveryPolicy } from "../dispatch/prompt-delivery.ts";
-import type { DispatchConfig } from "../dispatch/config.ts";
 
-export const CLI_PATH = new URL("../cli.ts", import.meta.url).pathname;
+export const CLI_PATH = new URL("./cli-entry.ts", import.meta.url).pathname;
 
 export const CRITERIA = "## 驗收條件\n- [ ] works\n";
 
@@ -82,12 +76,6 @@ export interface E2EOptions {
   config?: Record<string, unknown>;
 }
 
-export interface SpawnedCli {
-  proc: ReturnType<typeof Bun.spawn>;
-  done: Promise<CliResult>;
-  kill: () => void;
-}
-
 export class E2E {
   readonly repoDir: string;
   readonly world: MemoryWorld;
@@ -95,50 +83,39 @@ export class E2E {
   readonly workspaces = new FakeWorkspaces();
   readonly decisions: string[] = [];
   readonly transcripts: CliResult[] = [];
-  handle!: DispatchServeHandle;
-  port = 0;
   readonly stubBin: string;
-  readonly config: DispatchConfig;
+  readonly promptDelivery: PromptDeliveryPolicy;
+  private rpc!: ReturnType<typeof Bun.serve>;
   private closed = false;
 
-  private constructor(repoDir: string, world: MemoryWorld, stubBin: string, config: DispatchConfig) {
+  private constructor(
+    repoDir: string,
+    world: MemoryWorld,
+    stubBin: string,
+    promptDelivery: PromptDeliveryPolicy,
+  ) {
     this.repoDir = repoDir;
     this.world = world;
     this.client = new MemoryLinearClient(world);
     this.stubBin = stubBin;
-    this.config = config;
+    this.promptDelivery = promptDelivery;
   }
 
   static async boot(options: E2EOptions = {}): Promise<E2E> {
     const { dir } = initTempRepo(options.repoPrefix);
     const stubBin = mkdtempSync(join(tmpdir(), "igniter-e2e-bin-"));
     const maxRunning = options.maxRunning ?? 3;
-    const config = parseDispatchConfig({
+    const config = {
       project: "igniter",
       team: "Starcoder",
       max_running: maxRunning,
       ...options.config,
-    });
-    const e2e = new E2E(dir, standardMemoryWorld(), stubBin, config);
-    e2e.handle = await startDispatchServe({
-      repoRoot: dir,
-      config,
-      client: e2e.client,
-      workspaces: e2e.workspaces,
-      port: 0,
-      print: (line: string) => {
-        e2e.decisions.push(line);
-      },
-      promptDelivery: options.promptDelivery ?? FAST_DELIVERY,
-    });
-    const port = e2e.handle.server.port;
-    if (port === undefined) throw new Error("dispatch service has no port");
-    e2e.port = port;
+    };
+    const world = standardMemoryWorld();
+    const e2e = new E2E(dir, world, stubBin, options.promptDelivery ?? FAST_DELIVERY);
+    e2e.startRpc();
     mkdirSync(join(dir, ".igniter"), { recursive: true });
-    writeFileSync(
-      join(dir, ".igniter", "config.yaml"),
-      `project: igniter\nteam: Starcoder\nlisten: "127.0.0.1:${port}"\nmax_running: ${maxRunning}\n`,
-    );
+    writeFileSync(join(dir, ".igniter", "config.yaml"), `${JSON.stringify(config, null, 2)}\n`);
     return e2e;
   }
 
@@ -160,14 +137,17 @@ export class E2E {
       NO_COLOR: "1",
       LINEAR_API_KEY: "e2e-fake-key",
       HERDR_ENV: "0",
+      IGNITER_E2E_RPC: `http://127.0.0.1:${this.rpc.port}`,
+      IGNITER_E2E_PROMPT_DELIVERY: JSON.stringify(this.promptDelivery),
       ...extra,
     };
   }
 
-  spawnCli(
+  /** Run the real CLI in a child process and record its complete transcript. */
+  async cli(
     argv: string[],
     options: { stdin?: string; env?: Record<string, string>; timeoutMs?: number; cwd?: string } = {},
-  ): SpawnedCli {
+  ): Promise<CliResult> {
     const proc = Bun.spawn([process.execPath, CLI_PATH, ...argv], {
       cwd: options.cwd ?? this.repoDir,
       stdout: "pipe",
@@ -175,42 +155,50 @@ export class E2E {
       stdin: "pipe",
       env: this.childEnv(options.env),
     });
-    if (options.stdin !== undefined) {
-      proc.stdin.write(options.stdin);
-    }
-    void proc.stdin.end();
-    const timeoutMs = options.timeoutMs ?? 90_000;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    if (options.stdin !== undefined) proc.stdin.write(options.stdin);
+    await proc.stdin.end();
     let timedOut = false;
-    const done: Promise<CliResult> = (async () => {
-      const settled = new Promise<"exited" | "timeout">((resolve) => {
-        killTimer = setTimeout(() => resolve("timeout"), timeoutMs);
-        void proc.exited.then(() => resolve("exited"));
-      });
-      const outcome = await settled;
-      if (outcome === "timeout") {
-        timedOut = true;
-        proc.kill();
-      }
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      if (killTimer) clearTimeout(killTimer);
-      const result: CliResult = { argv, stdout, stderr, code, timedOut };
-      this.transcripts.push(result);
-      return result;
-    })();
-    return { proc, done, kill: () => proc.kill() };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      proc.kill();
+    }, options.timeoutMs ?? 90_000);
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    clearTimeout(timeout);
+    const result = { argv, stdout, stderr, code, timedOut };
+    this.transcripts.push(result);
+    return result;
   }
 
-  /** Run the real CLI to completion and record the transcript. */
-  async cli(
-    argv: string[],
-    options: { stdin?: string; env?: Record<string, string>; timeoutMs?: number; cwd?: string } = {},
-  ): Promise<CliResult> {
-    return this.spawnCli(argv, options).done;
+  private startRpc(): void {
+    this.rpc = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: async (request) => {
+        try {
+          const body = await request.json() as {
+            target: "linear" | "workspaces";
+            method: string;
+            args: unknown[];
+          };
+          const target = body.target === "linear" ? this.client : this.workspaces;
+          const method = (target as unknown as Record<string, unknown>)[body.method];
+          if (typeof method !== "function") throw new Error(`unknown ${body.target} method ${body.method}`);
+          const value = await Reflect.apply(method, target, body.args);
+          return Response.json({ ok: true, value: value instanceof Set ? { __set: [...value] } : value });
+        } catch (error) {
+          const status = (error as { status?: unknown }).status;
+          return Response.json({
+            ok: false,
+            error: (error as Error).message,
+            ...(typeof status === "number" ? { status } : {}),
+          });
+        }
+      },
+    });
   }
 
   /** Commander orchestration: confirm the worker order, then record stage start. */
@@ -258,12 +246,9 @@ export class E2E {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    try {
-      await this.handle.stop();
-    } finally {
-      rmSync(this.repoDir, { recursive: true, force: true });
-      rmSync(this.stubBin, { recursive: true, force: true });
-    }
+    this.rpc.stop();
+    rmSync(this.repoDir, { recursive: true, force: true });
+    rmSync(this.stubBin, { recursive: true, force: true });
   }
 }
 

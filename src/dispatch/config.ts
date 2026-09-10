@@ -69,8 +69,6 @@ export interface DispatchConfig {
   team?: string;
   maxRunning: number;
   linearOrg: string;
-  listenHost: string;
-  listenPort: number;
   states: DispatchStates;
   progress: DispatchProgress;
   /**
@@ -91,8 +89,6 @@ export const DEFAULT_MAX_RUNNING = 3;
 export const DEFAULT_LINEAR_ORG = "starcoder";
 /** Branch deliveries land on when `target_branch` is absent. */
 export const DEFAULT_TARGET_BRANCH = "main";
-export const DEFAULT_LISTEN_HOST = "127.0.0.1";
-export const DEFAULT_LISTEN_PORT = 4180;
 export const DEFAULT_STATES: DispatchStates = {
   backlog: "Backlog",
   todo: "Todo",
@@ -131,29 +127,6 @@ function requiredText(raw: Record<string, unknown>, key: string): string {
   const value = optionalText(raw, key);
   if (value === undefined) fail(`"${key}" is required in .igniter/config.yaml`);
   return value as string;
-}
-
-function parseListen(raw: unknown): { host: string; port: number } {
-  if (raw === undefined || raw === null) {
-    return { host: DEFAULT_LISTEN_HOST, port: DEFAULT_LISTEN_PORT };
-  }
-  if (typeof raw !== "string" || raw.trim() === "") {
-    fail(`"listen" must look like "host:port" (default "${DEFAULT_LISTEN_HOST}:${DEFAULT_LISTEN_PORT}")`);
-  }
-  const text = raw.trim();
-  const colon = text.lastIndexOf(":");
-  if (colon <= 0 || colon === text.length - 1) {
-    fail(`"listen" must look like "host:port" (got "${text}")`);
-  }
-  const host = text.slice(0, colon).trim();
-  const port = Number(text.slice(colon + 1).trim());
-  if (host === "" || !Number.isInteger(port) || port <= 0 || port > 65535) {
-    fail(`"listen" must look like "host:port" (got "${text}")`);
-  }
-  if (host === "0.0.0.0") {
-    fail(`"listen" must not bind 0.0.0.0; use 127.0.0.1 or a Tailscale IP`);
-  }
-  return { host, port };
 }
 
 function parseMaxRunning(raw: unknown): number {
@@ -362,16 +335,8 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (raw["models"] !== undefined) {
     fail(`"models" was replaced by "agents"; move each model under its agent profile`);
   }
-  // Review publication consent is an explicit owner act on the CLI, never a
-  // repository setting: a repository-controlled file must not grant it.
-  for (const key of ["publish_review", "publish-review", "publishReview", "publication", "publications"]) {
-    if (raw[key] !== undefined) {
-      fail(`"${key}" is not a repository setting: review publication consent comes only from \`igniter start <ticket> --publish-review\`, never from repository config`);
-    }
-  }
   const project = requiredText(raw, "project");
   const maxRunning = parseMaxRunning(raw["max_running"]);
-  const { host, port } = parseListen(raw["listen"]);
   const states = parseStates(raw["states"]);
   const progress = parseProgress(raw["progress"]);
   return {
@@ -379,8 +344,6 @@ export function parseDispatchConfig(raw: unknown): DispatchConfig {
     team: optionalText(raw, "team"),
     maxRunning,
     linearOrg: optionalText(raw, "linear_org") ?? DEFAULT_LINEAR_ORG,
-    listenHost: host,
-    listenPort: port,
     states,
     progress,
     targetBranch: optionalText(raw, "target_branch") ?? DEFAULT_TARGET_BRANCH,
@@ -446,7 +409,7 @@ export async function loadDispatchConfig(repoRoot: string): Promise<DispatchConf
  * Walk from startDir upward to the nearest directory holding
  * `.igniter/config.yaml`. Returns that project root. Throws a clear error
  * naming the search start when no ancestor (up to the filesystem root)
- * holds a config. `igniter start` uses this so a subdirectory launch serves
+ * holds a config. `igniter start` uses this so a subdirectory launch selects
  * the enclosing project.
  */
 export async function findProjectRoot(startDir: string): Promise<string> {

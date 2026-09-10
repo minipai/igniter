@@ -51,7 +51,7 @@ Unless the project settings skip recording:
 - visually inspect representative frames and every screenshot; and
 - retry unusable captures instead of reporting them as evidence.
 
-Keep validated evidence available for publication. If recording is
+Keep validated evidence available for the handoff. If recording is
 unavailable, provide validated alternative evidence and explain why.
 
 For CLI or API behavior, report a command transcript per criterion: the exact

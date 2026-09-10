@@ -41,7 +41,6 @@ import {
   type GitRunner,
 } from "./worktrees.ts";
 import { WorkspaceError, type DecisionLog, type ResolvedDispatch } from "./claims.ts";
-import { stampPublicationTokens, type PublicationConsentStore } from "./review-publication.ts";
 
 export type { StageWorkerStage };
 
@@ -114,7 +113,7 @@ const STAGE_MARKER: Record<CommanderStage, string> = {
  * The stage worker's first and only prompt. It names the absolute configured
  * prompt, the feature request and criteria, the repository instructions, the
  * checkpoint, and the result path. It forbids Igniter CLI use, Linear calls,
- * receipt publication, and ticket-state operations: the worker reports only
+ * receipt submission, and ticket-state operations: the worker reports only
  * to the Global Commander, which submits through ticket-targeted commands.
  */
 export function buildStageWorkOrder(input: StageWorkOrderInput): string {
@@ -152,8 +151,6 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `Boundaries (hard): report only to the Global Commander. ` +
     `Do not run any \`igniter\` command, do not call Linear directly or through MCP, ` +
     `do not publish Linear receipts or comments, and do not operate ticket state. ` +
-    `Do not run \`diffwalk publish\` and do not contact the host dispatch server, localhost, or any credential: ` +
-    `publication happens on the host after the owner's one-time consent, never from this worker. ` +
     `Your only output is the result file at \`${input.resultPath}\` plus your final report.\n` +
     `\n` +
     `Write the stage result as structured Markdown covering exactly what the stage prompt asks for, ` +
@@ -175,12 +172,6 @@ export interface StageStartDeps {
   config?: DispatchConfig;
   promptDelivery?: PromptDeliveryPolicy;
   assets?: CommanderAssetPaths;
-  /**
-   * Owner publication consents. `worker start` stamps the current consent's
-   * lifecycle into the ticket workspace so the build submit can verify
-   * it; without a grant nothing is stamped and the worker stays local.
-   */
-  publication?: { consents: PublicationConsentStore };
 }
 
 export interface StageStartResult {
@@ -235,7 +226,6 @@ export async function ensureStageWorkspace(
     scratch_deliverer: scratchFor(deps.repoRoot, identifier, "deliverer"),
     ...recordStageProfiles(config),
     ...keptStageProfiles(existing?.tokens ?? {}),
-    ...stampFor(deps, identifier),
   };
   if (existing && (existing.tokens["ticket"] === identifier || !existing.tokens["ticket"])) {
     await deps.workspaces.reportMetadata(existing.workspaceId, tokens);
@@ -255,12 +245,6 @@ export async function ensureStageWorkspace(
   // config edit never drifts a retry or recovery.
   await deps.workspaces.reportMetadata(created.workspaceId, { ...tokens, worker_root_pane: created.rootPaneId });
   return { workspaceId: created.workspaceId, workspace: null, worktreePath: worktree.path, branch: worktree.branch };
-}
-
-/** Lifecycle stamp for the current publication consent, if the owner granted one. */
-function stampFor(deps: StageStartDeps, identifier: string): Record<string, string> {
-  const consent = deps.publication?.consents.consentFor(identifier, deps.repoRoot);
-  return consent ? stampPublicationTokens(consent) : {};
 }
 
 /**
@@ -309,7 +293,7 @@ export async function ensureStageWorker(
   return { worker, created: true };
 }
 
-/** Start or reuse one worker without writing Linear. The command service serializes tickets. */
+/** Start or reuse one worker without writing Linear. */
 export async function startStageTicket(
   deps: StageStartDeps,
   full: FullIssue,

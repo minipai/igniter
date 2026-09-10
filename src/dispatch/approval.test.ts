@@ -38,7 +38,7 @@ async function fixture(stage = "build", receipt = "build") {
 }
 
 const fault = (afterWrite = false) => ({ status: 502, message: "injected lost response", afterWrite });
-const approve = (ctx: CommandContext, receipt = "build") => runCommand(["approve", "STA-244", "--receipt", receipt], ctx);
+const approve = (ctx: CommandContext, receipt = "build") => runCommand({ command: "approve", ticket: "STA-244", receipt: receipt }, ctx);
 
 describe("receipt-bound approval through the public command entry", () => {
   test.each([
@@ -57,9 +57,9 @@ describe("receipt-bound approval through the public command entry", () => {
     expect(h.git.commands.every((command) => command.args[0] === "merge-base")).toBe(true);
   });
 
-  test("duplicate and concurrent approvals share one durable record and do not start workers", async () => {
+  test("a repeated approval reuses one durable record and does not start workers", async () => {
     const h = await fixture();
-    const results = await Promise.all([approve(h.ctx), approve({ ...h.ctx }), approve(h.ctx)]);
+    const results = [await approve(h.ctx), await approve({ ...h.ctx }), await approve(h.ctx)];
     expect(results.every((result) => result.ok)).toBe(true);
     expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:approval"))).toHaveLength(1);
     expect(h.client.calls.filter((call) => call.method === "setIssueState")).toHaveLength(1);
@@ -79,7 +79,7 @@ describe("receipt-bound approval through the public command entry", () => {
     const h = await fixture();
     h.client.failNext(method, fault());
     expect((await approve(h.ctx)).ok).toBe(false);
-    // A service restart has only Linear's intent, never an in-memory retry flag.
+    // A later CLI call has only Linear's intent, never an in-memory retry flag.
     expect((await approve({ ...h.ctx, client: new MemoryLinearClient(h.client.world) })).ok).toBe(true);
     expect(h.issue.stateId).toBe("st-review");
     expect(h.issue.labelIds).toEqual(["label-pending"]);
@@ -135,7 +135,7 @@ describe("receipt-bound approval through the public command entry", () => {
   test("a later started stage with missing completion receipt cannot replay the previous approval", async () => {
     const h = await fixture();
     expect((await approve(h.ctx)).ok).toBe(true);
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     // An owner moved Progress without submitting the new Review receipt.
     h.issue.labelIds = ["label-complete"];
     h.client.calls = [];
@@ -152,10 +152,8 @@ describe("receipt-bound approval through the public command entry", () => {
     expect(h.client.calls.every((call) => call.method === "fetchIssue")).toBe(true);
   });
 
-  test("rejects unbound approval, --to, wrong stage, stale checkpoint, invalid PASS and missing receipt", async () => {
+  test("rejects wrong stage, stale checkpoint, invalid PASS and missing receipt", async () => {
     const h = await fixture();
-    expect((await runCommand(["approve", "STA-244"], h.ctx)).ok).toBe(false);
-    expect((await runCommand(["approve", "STA-244", "--to", "review"], h.ctx)).ok).toBe(false);
     h.issue.stateId = "st-review";
     expect((await approve(h.ctx)).ok).toBe(false);
     h.issue.stateId = "st-build";
@@ -187,14 +185,14 @@ describe("Linear and Worker command boundary", () => {
     h.issue.stateId = "st-todo";
     h.issue.labelIds = [];
     h.issue.comments = [];
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.issue.stateId).toBe("st-build");
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     expect(h.workspaces.calls).toEqual([]);
     expect(h.workspaces.snapshotCalls).toBe(0);
     expect(h.git.commands).toEqual([]);
     h.client.calls = [];
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.client.calls.every((call) => call.method === "fetchIssue")).toBe(true);
   });
 
@@ -203,26 +201,19 @@ describe("Linear and Worker command boundary", () => {
     h.issue.stateId = "st-todo";
     h.issue.labelIds = ["label-pending"];
     h.client.failNext("setIssueState", fault(afterWrite));
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(afterWrite);
-    expect((await runCommand(["begin", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(afterWrite);
+    expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.workspaces.calls).toEqual([]);
   });
 
   test("fail and reconcile never close, wake, or create a worker", async () => {
     const h = await fixture();
-    expect((await runCommand(["reconcile", "STA-244"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "reconcile", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.issue.stateId).toBe("st-build");
-    expect((await runCommand(["fail", "STA-244", "--reason", "blocked upstream"], h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "fail", ticket: "STA-244", reason: "blocked upstream" }, h.ctx)).ok).toBe(true);
     expect(h.issue.stateId).toBe("st-backlog");
     expect(h.workspaces.calls).toEqual([]);
     expect(h.workspaces.snapshotCalls).toBe(0);
   });
 
-  test("removed top-level worker and pause commands refuse", async () => {
-    const h = await fixture();
-    for (const verb of ["pause", "resume", "restart", "answer"]) {
-      expect((await runCommand([verb, "STA-244"], h.ctx)).ok).toBe(false);
-    }
-    expect(h.client.calls).toEqual([]);
-  });
 });

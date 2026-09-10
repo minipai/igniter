@@ -189,28 +189,6 @@ describe("e2e safe submit retries", () => {
     });
   });
 
-  test("a CLI timeout observes the real background result and resends safely", async () => {
-    await withE2E(async (e2e) => {
-      const head = await beginAndCommit(e2e, "STA-25");
-      const payload = JSON.stringify(buildPayload(head));
-      const gate = e2e.client.gateNext("setIssueState");
-      const call = e2e.spawnCli(["submit", "STA-25", "--input", "-"], { stdin: payload, timeoutMs: 350 });
-      await gate.entered;
-      const timedOut = await call.done;
-      expect(timedOut.timedOut).toBe(true);
-      expect(timedOut.code).not.toBe(0);
-      gate.release();
-
-      await e2e.waitFor("background build submit", () => {
-        const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-25");
-        return issue?.stateId === "st-build" && issue.labelIds.includes("label-complete") ? true : null;
-      });
-      expect(receiptCount(e2e, "STA-25")).toBe(1);
-      const repeated = expectOk(await e2e.cli(["submit", "STA-25", "--input", "-"], { stdin: payload }));
-      expect(repeated.stdout).toContain("already submitted build");
-      expect(receiptCount(e2e, "STA-25")).toBe(1);
-    });
-  });
 });
 
 describe("e2e separate Linear reconciliation and worker cleanup", () => {

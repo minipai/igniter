@@ -1,8 +1,7 @@
 // Stateful in-memory Linear client for black-box CLI end-to-end tests.
 //
-// The real CLI subprocess talks to the real dispatch HTTP service, and the
-// service talks to this client instead of the network: no fake Linear
-// HTTP/GraphQL server, no endpoint override, no credentials. Owner moves
+// Real CLI subprocesses reach this client through the E2E fixture's test-only
+// process boundary. There is no real Linear endpoint or credential. Owner moves
 // (Todo→Build→…→Done in the Linear UI) are simulated by direct world
 // mutation through the `owner*` helpers only; submits never merge git.
 //

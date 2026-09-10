@@ -223,37 +223,8 @@ export interface QueueEntry {
   reason: QueueReason;
 }
 
-/** Serialize dispatch commands sharing the same Linear client. */
-export function createCommandLock(): <T>(fn: () => Promise<T>) => Promise<T> {
-  let tail: Promise<void> = Promise.resolve();
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    const previous = tail;
-    let release!: () => void;
-    tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
-  };
-}
-
 export interface CommandResult {
   ok: boolean;
   text: string;
   data?: unknown;
-}
-
-export interface CommandCallOptions {
-  /** Caller will launch the returned Global Commander in the foreground. */
-  directStart?: boolean;
-  /** Raw stdin payload for `submit --input -`. */
-  input?: string;
-}
-
-export interface DispatchApi {
-  command(argv: string[], options?: CommandCallOptions): Promise<CommandResult>;
 }

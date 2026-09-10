@@ -67,12 +67,21 @@ function issueOf(h: Harness, identifier: string) {
   return issue;
 }
 
-async function ticketCommand(h: Harness, identifier: string, argv: string[], input?: string) {
-  if (argv[0] === "begin") {
-    const started = await runCommand(["worker", "start", identifier], h.ctx);
+async function ticketCommand(
+  h: Harness,
+  identifier: string,
+  action: "begin" | "submit" | "status" | "block" | "unblock",
+  value?: string,
+) {
+  if (action === "begin") {
+    const started = await runCommand({ command: "worker.start", ticket: identifier }, h.ctx);
     if (!started.ok) return started;
   }
-  return runCommand([argv[0]!, identifier, ...argv.slice(1)], h.ctx, { input });
+  if (action === "submit") return runCommand({ command: "submit", ticket: identifier, payload: JSON.parse(value!) }, h.ctx);
+  if (action === "status") return runCommand({ command: "status", ticket: identifier, json: true }, h.ctx);
+  if (action === "block") return runCommand({ command: "block", ticket: identifier, reason: value! }, h.ctx);
+  if (action === "unblock") return runCommand({ command: "unblock", ticket: identifier }, h.ctx);
+  return runCommand({ command: "begin", ticket: identifier }, h.ctx);
 }
 
 function transcript(command: string, exitCode: number, stdout: string, stderr = "") {
@@ -96,14 +105,14 @@ function buildPayload() {
 /** Reach Review+In progress, ready for a review submit: first Build, owner handoff, begin. */
 async function toReview(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-  expect((await runCommand(["worker", "start", identifier], h.ctx)).ok).toBe(true);
-  expect((await runCommand(["begin", identifier], h.ctx)).ok).toBe(true);
-  expect((await ticketCommand(h, identifier, ["submit", "--input", "-"], JSON.stringify(buildPayload()))).ok).toBe(true);
+  expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
+  expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
   h.git.ancestors.add(`${HEAD} feature/${identifier.toLowerCase()}`);
   await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
-  expect((await runCommand(["reconcile", identifier], h.ctx)).ok).toBe(true);
-  expect((await ticketCommand(h, identifier, ["begin"])).ok).toBe(true);
+  expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
 }
 
 describe("inline command evidence", () => {
@@ -123,7 +132,7 @@ describe("inline command evidence", () => {
         environment: "test lab, 5s timeout",
         reproduction: "run mycli run",
       };
-      const out = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(payload));
+      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload));
       expect(out.ok).toBe(true);
       const issue = issueOf(h, "STA-1");
       expect(issue.stateId).toBe(REVIEW);
@@ -156,7 +165,7 @@ describe("inline command evidence", () => {
         environment: "test lab",
         reproduction: "run mycli run",
       };
-      const out = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(failing));
+      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(failing));
       expect(out.ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("Agent acceptance: FAIL");
@@ -175,7 +184,7 @@ describe("inline command evidence", () => {
         environment: "test lab",
         reproduction: "run mycli retry",
       };
-      const pass = await ticketCommand(h, "STA-2", ["submit", "--input", "-"], JSON.stringify(passing));
+      const pass = await ticketCommand(h, "STA-2", "submit", JSON.stringify(passing));
       expect(pass.ok).toBe(true);
       expect(issueOf(h, "STA-2").labelIds).toEqual([COMPLETE]);
     } finally {
@@ -199,7 +208,7 @@ describe("inline command evidence", () => {
         environment: "test lab",
         reproduction: "run mycli run",
       };
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(payload))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload))).ok).toBe(true);
       const issue = issueOf(h, "STA-1");
       expect(issue.attachments.map((a) => a.url)).toEqual(["https://example.test/shines"]);
       const receipt = issue.comments.at(-1)!.body;
@@ -275,7 +284,7 @@ describe("inline command evidence", () => {
           state: issueOf(h, "STA-1").stateId,
           labels: issueOf(h, "STA-1").labelIds,
         });
-        const out = await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(payload));
+        const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload));
         expect(out.ok).toBe(false);
         expect(out.text).toContain(c.message);
         expect(JSON.stringify({
@@ -307,7 +316,7 @@ describe("inline command evidence", () => {
         environment: "test lab",
         reproduction: "run mycli run --check",
       };
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], JSON.stringify(payload))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload))).ok).toBe(true);
       const read = await h.client.fetchIssue(issueOf(h, "STA-1").id);
       const receipt = read!.comments.at(-1)!.body;
       for (const needle of [
@@ -342,12 +351,12 @@ describe("inline command evidence", () => {
         reproduction: "run mycli run",
       };
       const body = JSON.stringify(payload);
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], body)).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", body)).ok).toBe(true);
       const count = issueOf(h, "STA-1").comments.length;
       // Retry the identical submission from Review+In progress: it converges.
       issueOf(h, "STA-1").stateId = REVIEW;
       issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
-      expect((await ticketCommand(h, "STA-1", ["submit", "--input", "-"], body)).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", body)).ok).toBe(true);
       expect(issueOf(h, "STA-1").comments.length).toBe(count);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
     } finally {

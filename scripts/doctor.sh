@@ -3,15 +3,13 @@
 # green/red list. Read-only: changes nothing. Exit 0 when all green,
 # 1 when anything is red.
 #
-# Environment overrides mirror install.sh/factory-up.sh:
-#   FACTORY_SESSION, FACTORY_DIR, FACTORY_DEFAULT_PORT
+# Environment overrides mirror install.sh:
+#   FACTORY_SESSION, FACTORY_DIR
 set -uo pipefail
 
 FACTORY_SESSION="${FACTORY_SESSION:-factory}"
 FACTORY_DIR="${FACTORY_DIR:-$HOME/igniter}"
-DEFAULT_PORT="${FACTORY_DEFAULT_PORT:-3457}"
 ENV_FILE="$HOME/.config/igniter/env"
-REPOS_FILE="$HOME/.config/igniter/repos"
 
 RED=0
 GREEN='\033[32m'
@@ -93,16 +91,8 @@ check_env_file() {
   fi
 }
 
-check_repos_file() {
-  if [ -f "$REPOS_FILE" ]; then
-    ok "$REPOS_FILE exists"
-  else
-    bad "$REPOS_FILE missing"
-  fi
-}
-
 # ni_resolve reports 0 when a non-interactive shell finds the named tool.
-# Factory consumers (ssh commands, serve panes, agent runners) never see an
+# Factory consumers (ssh commands and agent runners) never see an
 # interactive shell, so resolving here must not depend on one either: Linux
 # sources exactly the rc files install.sh writes (bash reads ~/.bashrc even
 # non-interactively over ssh, before its guard), while zsh always reads
@@ -260,74 +250,6 @@ check_swap_linux() {
   fi
 }
 
-# serve_pane finds a pane id in the session whose cwd is the repo.
-serve_pane() {
-  local want="$1"
-  herdr --session "$FACTORY_SESSION" pane list 2>/dev/null | node -e "
-const fs = require('fs');
-const norm = (s) => { try { return fs.realpathSync(s); } catch { return s; }; };
-const want = norm(process.argv[1]);
-let raw = '';
-process.stdin.on('data', (c) => { raw += c; });
-process.stdin.on('end', () => {
-  let ids = [];
-  try {
-    const panes = JSON.parse(raw).result.panes || [];
-    ids = panes.filter((p) => norm(p.cwd) === want).map((p) => p.pane_id);
-  } catch { ids = []; }
-  process.stdout.write(ids.join('\n'));
-});
-" "$want" | head -1
-}
-
-repo_port() {
-  local repo="$1" listen=""
-  listen="$(grep -E '^[[:space:]]*listen[[:space:]]*:' "$repo/.igniter/config.yaml" 2>/dev/null | head -1 | sed -E 's/^[^:]*:[[:space:]]*//; s/["'\'']//g; s/[[:space:]]*$//' || true)"
-  if [ -z "$listen" ]; then
-    printf '%s' "$DEFAULT_PORT"
-    return 0
-  fi
-  printf '%s' "${listen##*:}"
-}
-
-check_repos() {
-  if [ ! -f "$REPOS_FILE" ]; then
-    return 0
-  fi
-  if ! have herdr || ! have node || ! have curl; then
-    bad "cannot check serve panes (need herdr, node, curl)"
-    return 0
-  fi
-  if ! herdr --session "$FACTORY_SESSION" pane list >/dev/null 2>&1; then
-    bad "factory Herdr session '$FACTORY_SESSION' unreachable"
-    return 0
-  fi
-  ok "factory Herdr session '$FACTORY_SESSION' reachable"
-  local repo name port pane
-  while IFS= read -r repo || [ -n "$repo" ]; do
-    case "$repo" in
-      ''|\#*) continue ;;
-    esac
-    name="$(basename "$repo")"
-    if [ ! -d "$repo" ]; then
-      bad "repo dir missing: $repo"
-      continue
-    fi
-    port="$(repo_port "$repo")"
-    pane="$(serve_pane "$repo" || true)"
-    if [ -z "$pane" ]; then
-      bad "$name: no serve pane in session '$FACTORY_SESSION' (run scripts/factory-up.sh)"
-      continue
-    fi
-    ok "$name: pane $pane present"
-    if curl -sf -o /dev/null "http://localhost:${port}/api/health" 2>/dev/null; then
-      ok "$name: http://localhost:${port}/api/health responds"
-    else
-      bad "$name: nothing on http://localhost:${port}/api/health"
-    fi
-  done <"$REPOS_FILE"
-}
-
 main() {
   local os
   os="$(uname -s)"
@@ -347,7 +269,6 @@ main() {
   check_present tailscale
   check_igniter
   check_env_file
-  check_repos_file
   check_shell_path
   check_opencode_login
   check_claude_login
@@ -365,7 +286,6 @@ main() {
       bad "unsupported OS $os"
       ;;
   esac
-  check_repos
   if [ "$RED" -ne 0 ]; then
     say "doctor: FAIL"
     exit 1
