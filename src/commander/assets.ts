@@ -9,7 +9,7 @@
 
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import type { CommanderStage } from "../dispatch/config.ts";
+import type { CommanderStage } from "../workflow/config/config.ts";
 
 export interface CommanderAssetPaths {
   /** Directory holding the bundled assets (the `src/commander/` install dir). */

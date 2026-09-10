@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
-import type { CommandRequest } from "./dispatch/command-request.ts";
+import type { CommandRequest } from "./workflow/command/command-request.ts";
 import { runCli, type CliRuntime } from "./cli.ts";
 
 const cli = new URL("./cli.ts", import.meta.url).pathname;
