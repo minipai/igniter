@@ -17,11 +17,11 @@
 // says how far that stage has come.
 
 import { createHash } from "node:crypto";
-import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "../linear/linear.ts";
-import type { ResolvedDispatch, DecisionLog, CommandResult } from "../config/claims.ts";
-import type { CommandWorkspaces } from "../workspace/workspaces.ts";
-import { ticketWorktree, type GitRunner } from "../worktree/worktrees.ts";
-import { LinearError } from "../linear/linear.ts";
+import type { LinearClientLike, LinearComment, LinearIssue, LinearLabel } from "../../service/linear/linear.ts";
+import type { ResolvedDispatch, DecisionLog, CommandResult } from "../../config/claims.ts";
+import type { CommandWorkspaces } from "../../service/workspace/workspaces.ts";
+import { ticketWorktree, type GitRunner } from "../../service/worktree/worktrees.ts";
+import { LinearError } from "../../service/linear/linear.ts";
 
 export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done";
 export type ProtocolProgress = "pending" | "in_progress" | "complete" | "blocked";

@@ -12,12 +12,12 @@ import {
 } from "./commands";
 import { validateStartup, type ResolvedDispatch } from "../config/claims";
 import { parseDispatchConfig } from "../config/config";
-import { recordStageProfiles } from "../stage/agents";
-import { LinearClient } from "../linear/linear";
-import { addIssue, standardWorld, startFakeLinear } from "../linear/fake-linear";
+import { recordStageProfiles } from "./stage/agents";
+import { LinearClient } from "../service/linear/linear";
+import { addIssue, standardWorld, startFakeLinear } from "../service/linear/fake-linear";
 import { FakeGit } from "../testing/fake-git";
 import { FakeWorkspaces } from "../testing/fake-workspaces";
-import { scratchFor } from "../worktree/worker-scope";
+import { scratchFor } from "../service/worktree/worker-scope";
 
 const BUILD = "st-build";
 const REVIEW = "st-review";

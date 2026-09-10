@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { memoryAddIssue, ownerSetProgress, ownerSetState } from "../../workflow/linear/fake-memory-linear.ts";
-import { parseReceiptBlock } from "../../workflow/ticket/protocol.ts";
+import { memoryAddIssue, ownerSetProgress, ownerSetState } from "../../workflow/service/linear/fake-memory-linear.ts";
+import { parseReceiptBlock } from "../../workflow/command/ticket/protocol.ts";
 import {
   E2E,
   CRITERIA,

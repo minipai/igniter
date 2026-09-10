@@ -4,8 +4,8 @@
 // touch git. A second ticket covers Review FAIL back to Build Pending,
 // including a stale ended builder row that is replaced for the new work order.
 import { describe, expect, test } from "bun:test";
-import { memoryAddIssue, memoryAddLabel } from "../../workflow/linear/fake-memory-linear.ts";
-import { latestValidReceipt, parseReceiptBlock } from "../../workflow/ticket/protocol.ts";
+import { memoryAddIssue, memoryAddLabel } from "../../workflow/service/linear/fake-memory-linear.ts";
+import { latestValidReceipt, parseReceiptBlock } from "../../workflow/command/ticket/protocol.ts";
 import {
   E2E,
   CRITERIA,

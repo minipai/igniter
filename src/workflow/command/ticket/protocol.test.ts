@@ -10,10 +10,10 @@ import { join } from "node:path";
 import {
   runCommand,
   type CommandContext,
-} from "../command/commands";
-import { validateStartup, type ResolvedDispatch } from "../config/claims";
-import { parseDispatchConfig } from "../config/config";
-import { LinearClient } from "../linear/linear";
+} from "../commands";
+import { validateStartup, type ResolvedDispatch } from "../../config/claims";
+import { parseDispatchConfig } from "../../config/config";
+import { LinearClient } from "../../service/linear/linear";
 import {
   normalizeBareTodo,
   parseAcceptanceCriteria,
@@ -24,10 +24,10 @@ import {
   type ParsedReceipt,
   type ReceiptKind,
 } from "./protocol";
-import { addIssue, standardWorld, startFakeLinear } from "../linear/fake-linear";
-import { FakeGit } from "../testing/fake-git";
-import { FakeWorkspaces } from "../testing/fake-workspaces";
-import { ticketWorktree } from "../worktree/worktrees";
+import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";
+import { FakeGit } from "../../testing/fake-git";
+import { FakeWorkspaces } from "../../testing/fake-workspaces";
+import { ticketWorktree } from "../../service/worktree/worktrees";
 
 const BACKLOG = "st-backlog";
 const TODO = "st-todo";

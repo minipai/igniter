@@ -21,13 +21,13 @@ import {
   type PromptDeliveryIdentity,
   type PromptDeliveryPolicy,
 } from "./prompt-delivery";
-import { validateStartup, type ResolvedDispatch } from "../config/claims";
-import { runCommand, type CommandContext } from "../command/commands";
-import { parseDispatchConfig } from "../config/config";
-import { LinearClient } from "../linear/linear";
-import { addIssue, standardWorld, startFakeLinear } from "../linear/fake-linear";
-import { FakeGit } from "../testing/fake-git";
-import { FakeWorkspaces } from "../testing/fake-workspaces";
+import { validateStartup, type ResolvedDispatch } from "../../config/claims";
+import { runCommand, type CommandContext } from "../commands";
+import { parseDispatchConfig } from "../../config/config";
+import { LinearClient } from "../../service/linear/linear";
+import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";
+import { FakeGit } from "../../testing/fake-git";
+import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const TODO = "st-todo";
 const BUILD = "st-build";

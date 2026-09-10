@@ -1,4 +1,4 @@
-import type { CommandResult } from "../config/claims.ts";
+import type { CommandResult } from "../../config/claims.ts";
 import {
   checkpointInLineage,
   deriveState,

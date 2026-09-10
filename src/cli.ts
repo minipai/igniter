@@ -6,11 +6,11 @@ import { createDispatchLog, validateStartup, type CommandResult } from "./workfl
 import type { CommandRequest, WorkerAnswer, WorkerProfile, WorkerRole } from "./workflow/command/command-request.ts";
 import { runCommand } from "./workflow/command/commands.ts";
 import { findProjectRoot, loadDispatchConfig } from "./workflow/config/config.ts";
-import { LinearClient, requireLinearApiKey } from "./workflow/linear/linear.ts";
-import type { LinearClientLike } from "./workflow/linear/linear.ts";
-import { bunGitRunner } from "./workflow/worktree/worktrees.ts";
-import { createHerdrWorkspaces, type CommandWorkspaces } from "./workflow/workspace/workspaces.ts";
-import type { PromptDeliveryPolicy } from "./workflow/delivery/prompt-delivery.ts";
+import { LinearClient, requireLinearApiKey } from "./workflow/service/linear/linear.ts";
+import type { LinearClientLike } from "./workflow/service/linear/linear.ts";
+import { bunGitRunner } from "./workflow/service/worktree/worktrees.ts";
+import { createHerdrWorkspaces, type CommandWorkspaces } from "./workflow/service/workspace/workspaces.ts";
+import type { PromptDeliveryPolicy } from "./workflow/command/delivery/prompt-delivery.ts";
 
 export interface CliRuntime {
   run(command: CommandRequest): Promise<CommandResult>;

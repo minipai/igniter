@@ -12,8 +12,8 @@ import {
   type ResolvedDispatch,
 } from "./claims";
 import { parseDispatchConfig } from "./config";
-import { LinearClient, requireLinearApiKey, type LinearIssue } from "../linear/linear";
-import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from "../linear/fake-linear";
+import { LinearClient, requireLinearApiKey, type LinearIssue } from "../service/linear/linear";
+import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from "../service/linear/fake-linear";
 const BACKLOG = "st-backlog";
 const TODO = "st-todo";
 const BUILD = "st-build";

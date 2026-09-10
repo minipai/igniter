@@ -2,11 +2,11 @@
 
 import { isAbsolute, join } from "node:path";
 import { lstat, rename } from "node:fs/promises";
-import type { CommanderConfig, CommanderStage, DispatchConfig } from "../config/config.ts";
-import { STAGE_AGENTS } from "../config/config.ts";
-import { commanderAssetPaths, type CommanderAssetPaths } from "../../commander/assets.ts";
+import type { CommanderConfig, CommanderStage, DispatchConfig } from "../../config/config.ts";
+import { STAGE_AGENTS } from "../../config/config.ts";
+import { commanderAssetPaths, type CommanderAssetPaths } from "../../../commander/assets.ts";
 import { launchFor } from "./agents.ts";
-import type { LinearClientLike } from "../linear/linear.ts";
+import type { LinearClientLike } from "../../service/linear/linear.ts";
 import {
   latestReceiptOf,
   latestValidReceipt,
@@ -25,7 +25,7 @@ import {
   scratchFor,
   scratchRootFor,
   type WorkerName,
-} from "../worktree/worker-scope.ts";
+} from "../../service/worktree/worker-scope.ts";
 import {
   stageWorkerName,
   workspaceForTicket,
@@ -33,14 +33,14 @@ import {
   type SnapshotWorkspace,
   type StageWorkerStage,
   type WorkspaceSnapshot,
-} from "../workspace/workspaces.ts";
+} from "../../service/workspace/workspaces.ts";
 import {
   bunGitRunner,
   ensureTicketWorktree,
   ticketWorktree,
   type GitRunner,
-} from "../worktree/worktrees.ts";
-import { WorkspaceError, type DecisionLog, type ResolvedDispatch } from "../config/claims.ts";
+} from "../../service/worktree/worktrees.ts";
+import { WorkspaceError, type DecisionLog, type ResolvedDispatch } from "../../config/claims.ts";
 
 export type { StageWorkerStage };
 

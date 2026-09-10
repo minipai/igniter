@@ -11,7 +11,7 @@ import {
   tokensByTicket,
   type WorkspaceSnapshot,
 } from "./workspaces";
-import { FakeWorkspaces, MAX_METADATA_TOKENS } from "../testing/fake-workspaces";
+import { FakeWorkspaces, MAX_METADATA_TOKENS } from "../../testing/fake-workspaces";
 
 describe("metadata report width", () => {
   test("the fake rejects an over-wide report like the real Herdr", async () => {

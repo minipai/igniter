@@ -17,14 +17,14 @@ import { join } from "node:path";
 import {
   runCommand,
   type CommandContext,
-} from "../command/commands";
-import { validateStartup, type ResolvedDispatch } from "../config/claims";
-import { parseDispatchConfig } from "../config/config";
-import { LinearClient } from "../linear/linear";
+} from "../commands";
+import { validateStartup, type ResolvedDispatch } from "../../config/claims";
+import { parseDispatchConfig } from "../../config/config";
+import { LinearClient } from "../../service/linear/linear";
 import { latestValidReceipt, parseReceiptBlock } from "../ticket/protocol";
-import { addIssue, standardWorld, startFakeLinear } from "../linear/fake-linear";
-import { FakeGit } from "../testing/fake-git";
-import { FakeWorkspaces } from "../testing/fake-workspaces";
+import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";
+import { FakeGit } from "../../testing/fake-git";
+import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const BUILD = "st-build";
 const REVIEW = "st-review";
@@ -433,7 +433,7 @@ describe("submission retries keep their classification", () => {
       h.client.addComment = (async (issueId: string, body: string) => {
         calls += 1;
         const id = await realAdd(issueId, body);
-        if (calls === 1) throw new (await import("../linear/linear")).LinearError(500, "lost result");
+        if (calls === 1) throw new (await import("../../service/linear/linear")).LinearError(500, "lost result");
         return id;
       }) as typeof h.client.addComment;
       // The lost result never surfaces: the post-write read-back adopts the
@@ -465,11 +465,11 @@ describe("protocol vocabulary", () => {
   });
 
   test("Acceptance stays black-box, correction-scoped, and never modifies product code", async () => {
-    const review = await Bun.file(new URL("../../commander/stages/review.md", import.meta.url)).text();
+    const review = await Bun.file(new URL("../../../commander/stages/review.md", import.meta.url)).text();
     expect(review).toContain("Never modify product code");
     expect(review).toContain("returns to the original\nBuilder");
     expect(review).toContain("recheck the failed criteria plus a short smoke test");
-    const rules = await Bun.file(new URL("../../commander/rules.md", import.meta.url)).text();
+    const rules = await Bun.file(new URL("../../../commander/rules.md", import.meta.url)).text();
     expect(rules).toContain("The Acceptance agent never modifies product code");
     expect(rules).toContain("never fix inside acceptance, never\nopen a second Builder");
   });

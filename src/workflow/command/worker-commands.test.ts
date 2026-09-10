@@ -6,11 +6,11 @@ import { workerCommand } from "./worker-commands.ts";
 import { type CommandContext } from "./commands.ts";
 import { validateStartup } from "../config/claims.ts";
 import { parseDispatchConfig } from "../config/config.ts";
-import { MemoryLinearClient, memoryAddIssue, standardMemoryWorld } from "../linear/fake-memory-linear.ts";
+import { MemoryLinearClient, memoryAddIssue, standardMemoryWorld } from "../service/linear/fake-memory-linear.ts";
 import { FakeWorkspaces } from "../testing/fake-workspaces.ts";
 import { FakeGit } from "../testing/fake-git.ts";
-import { ticketWorktree } from "../worktree/worktrees.ts";
-import { receiptBlock } from "../ticket/protocol.ts";
+import { ticketWorktree } from "../service/worktree/worktrees.ts";
+import { receiptBlock } from "./ticket/protocol.ts";
 import type { WorkerRequest } from "./command-request.ts";
 
 async function setup(state = "st-todo", labels: string[] = []) {

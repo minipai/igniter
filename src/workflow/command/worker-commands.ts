@@ -1,11 +1,11 @@
 import type { CommandContext, CommandResult } from "./commands.ts";
 import type { CommanderAgentConfig, CommanderStage } from "../config/config.ts";
 import { STAGE_AGENTS } from "../config/config.ts";
-import { commanderConfigForRun, launchFor } from "../stage/agents.ts";
-import { bareTodoState, deriveState, latestValidReceipt, statusOf, type FullIssue } from "../ticket/protocol.ts";
-import { startStageTicket, stageForStatus, workerAgentName } from "../stage/stage-start.ts";
-import { workspaceForTicket } from "../workspace/workspaces.ts";
-import { bunGitRunner, cleanupTicketCheckout } from "../worktree/worktrees.ts";
+import { commanderConfigForRun, launchFor } from "./stage/agents.ts";
+import { bareTodoState, deriveState, latestValidReceipt, statusOf, type FullIssue } from "./ticket/protocol.ts";
+import { startStageTicket, stageForStatus, workerAgentName } from "./stage/stage-start.ts";
+import { workspaceForTicket } from "../service/workspace/workspaces.ts";
+import { bunGitRunner, cleanupTicketCheckout } from "../service/worktree/worktrees.ts";
 import type { WorkerRequest } from "./command-request.ts";
 
 /** Run one worker lifecycle operation without changing Linear. */

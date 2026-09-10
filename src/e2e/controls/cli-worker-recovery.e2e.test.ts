@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { memoryAddIssue } from "../../workflow/linear/fake-memory-linear.ts";
+import { memoryAddIssue } from "../../workflow/service/linear/fake-memory-linear.ts";
 import { E2E, CRITERIA, expectFail, expectOk } from "../support/fake-harness.ts";
 
 async function withE2E(options: Parameters<typeof E2E.boot>[0], fn: (e2e: E2E) => Promise<void>): Promise<void> {

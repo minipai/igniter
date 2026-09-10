@@ -11,7 +11,7 @@ import {
   launchProblems,
   recordStageProfiles,
 } from "./agents";
-import { parseDispatchConfig, STAGE_AGENTS } from "../config/config";
+import { parseDispatchConfig, STAGE_AGENTS } from "../../config/config";
 
 describe("stage mapping", () => {
   test("Build runs on builder, Acceptance on reviewer, Deliver on deliverer", () => {

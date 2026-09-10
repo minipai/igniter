@@ -22,7 +22,7 @@
 // Any other harness fails too: without a known model flag the profile's
 // model could not reach the launch, and dispatch never drops it silently.
 
-import type { CommanderAgentConfig, CommanderConfig, DispatchConfig } from "../config/config.ts";
+import type { CommanderAgentConfig, CommanderConfig, DispatchConfig } from "../../config/config.ts";
 
 export type { CommanderAgentConfig };
 
