@@ -174,7 +174,7 @@ describe("e2e CLI recovery controls", () => {
       const issue = (await e2e.client.fetchIssue("STA-23"))!;
       expect(issue.state.name).toBe("Backlog");
       expect(progressNames(issue.labels)).toEqual(["agent-failed"]);
-      expect(issue.comments.at(-1)?.body).toContain("<!-- igniter:failed -->");
+      expect(issue.comments.at(-1)?.body).toContain("kind: failed");
       expect(issue.comments.at(-1)?.body).toContain("worker could not recover");
       expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-23")?.closed).not.toBe(true);
       expectOk(await e2e.cli(["worker", "stop", "STA-23", "--role", "build"]));

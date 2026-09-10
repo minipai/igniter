@@ -192,6 +192,18 @@ with the same receipt ID cannot approve a later stage. Ordinary sync or
 continuation never grants approval. A correction Build returns automatically
 to Review + Pending under the existing handoff rules.
 
+Every machine-readable Linear lifecycle record — receipts, stage-start
+(`begin`), owner approval, blocked, failed, and the incomplete-state
+diagnosis — is a single visible, versioned `igniter_receipt` or
+`igniter_event` YAML fenced block after a short human-readable summary line.
+Dispatch never writes a hidden `<!-- igniter:... -->` HTML marker or inline
+JSON comment anymore; a strict parser rejects an unknown version, an unknown
+or duplicate field, a missing required field, or more than one block per
+comment, and a rejection never authorizes a state transition. Comments from
+before this contract still carry the old hidden markers; dispatch reads
+those read-only so an in-progress ticket never loses its begin, approval, or
+recovery boundary, but never writes that format again.
+
 After each approved transition, the Commander starts the next worker, confirms
 delivery, and records begin. `worker start` owns worktree/scratch setup, stable
 per-role identities, tabs, effective model, and confirmed initial work-order

@@ -407,7 +407,7 @@ describe("fail", () => {
       expect(failedLabel).toBeDefined();
       expect(issue.labelIds).toEqual([failedLabel!.id]);
       const comment = issue.comments[issue.comments.length - 1]!;
-      expect(comment.body).toContain("<!-- igniter:failed -->");
+      expect(comment.body).toContain("kind: failed");
       expect(comment.body).toContain("builder wedged");
       expect(h.workspaces.workspaces[0]!.closed).toBe(false);
       expect(h.lines).toContain("STA-1 failed: builder wedged");
@@ -443,6 +443,34 @@ describe("fail", () => {
       expect(out.ok).toBe(true);
       expect(h.world.issues[0]!.labelIds).toEqual(["label-7"]);
       expect(h.world.labels.filter((l) => l.name === "agent-failed")).toHaveLength(1);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a later failure episode with the same reason records a fresh event", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      expect((await runCommand({ command: "fail", ticket: "STA-1", reason: "builder wedged" }, h.ctx)).ok).toBe(true);
+      h.world.issues[0]!.stateId = BUILD;
+      h.world.issues[0]!.labelIds = [IN_PROGRESS];
+      expect((await runCommand({ command: "fail", ticket: "STA-1", reason: "builder wedged" }, h.ctx)).ok).toBe(true);
+      const issue = h.world.issues[0]!;
+      expect(issue.comments.filter((c) => c.body.includes("kind: failed"))).toHaveLength(2);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a different fail reason after an existing failure posts a second comment", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      expect((await runCommand({ command: "fail", ticket: "STA-1", reason: "builder wedged" }, h.ctx)).ok).toBe(true);
+      expect((await runCommand({ command: "fail", ticket: "STA-1", reason: "a different reason" }, h.ctx)).ok).toBe(true);
+      const issue = h.world.issues[0]!;
+      expect(issue.comments.filter((c) => c.body.includes("kind: failed"))).toHaveLength(2);
     } finally {
       h.stop();
     }

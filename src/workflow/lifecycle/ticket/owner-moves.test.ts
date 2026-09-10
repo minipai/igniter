@@ -680,7 +680,7 @@ describe("owner-move guards", () => {
       expect(outcome.result?.ok).toBe(false);
       expect(outcome.result?.text).toContain("parked as Deliver+Blocked");
       expect(issueOf(h, "STA-1").labelIds).toEqual(["label-blocked"]);
-      const parked = issueOf(h, "STA-1").comments.filter((c) => c.body.includes("igniter:incomplete-state"));
+      const parked = issueOf(h, "STA-1").comments.filter((c) => c.body.includes("kind: incomplete-state"));
       expect(parked).toHaveLength(1);
     } finally {
       h.stop();

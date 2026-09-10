@@ -90,16 +90,65 @@ describe("Linear mutations without Worker dependencies", () => {
     noWorkers(h.workspaces);
   });
 
+  test("a lost block-comment response converges without a duplicate blocked comment", async () => {
+    const h = await fixture();
+    h.client.failNext("addComment", { ...failure, afterWrite: true });
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(true);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: blocked"))).toHaveLength(1);
+    expect(h.issue.labelIds).toEqual(["label-blocked"]);
+    noWorkers(h.workspaces);
+  });
+
+  test("an old identical block event cannot mask a failed comment write", async () => {
+    const h = await fixture();
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "unblock", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
+    h.client.failNext("addComment", failure);
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(false);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: blocked"))).toHaveLength(1);
+    expect(h.issue.labelIds).toEqual(["label-pending"]);
+    noWorkers(h.workspaces);
+  });
+
+  test("a later block episode with the same reason posts a second comment", async () => {
+    const h = await fixture();
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "unblock", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
+    expect((await runCommand({ command: "block", ticket: "STA-244", reason: "waiting for input" }, h.ctx)).ok).toBe(true);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: blocked"))).toHaveLength(2);
+    noWorkers(h.workspaces);
+  });
+
+  test("a lost failed-comment response converges without a duplicate failed comment", async () => {
+    const h = await fixture();
+    h.client.failNext("addComment", { ...failure, afterWrite: true });
+    expect((await runCommand({ command: "fail", ticket: "STA-244", reason: "builder wedged" }, h.ctx)).ok).toBe(true);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: failed"))).toHaveLength(1);
+    expect(h.issue.stateId).toBe("st-backlog");
+    noWorkers(h.workspaces);
+  });
+
+  test("an old identical failed event cannot mask a failed comment write", async () => {
+    const h = await fixture();
+    expect((await runCommand({ command: "fail", ticket: "STA-244", reason: "builder wedged" }, h.ctx)).ok).toBe(true);
+    h.issue.stateId = "st-build";
+    h.issue.labelIds = ["label-in-progress"];
+    h.client.failNext("addComment", failure);
+    expect((await runCommand({ command: "fail", ticket: "STA-244", reason: "builder wedged" }, h.ctx)).ok).toBe(false);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: failed"))).toHaveLength(1);
+    noWorkers(h.workspaces);
+  });
+
   test("begin records one receipt-bound stage boundary before a failing state write and resumes from Linear", async () => {
     const h = await fixture("todo");
     h.issue.labelIds = ["label-pending"];
     h.client.failNext("setIssueState", failure);
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
-    expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: begin"))).toHaveLength(1);
     expect(h.issue.labelIds).toEqual(["label-pending"]);
     const restarted = { ...h.ctx, client: new MemoryLinearClient(h.client.world) };
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, restarted)).ok).toBe(true);
-    expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: begin"))).toHaveLength(1);
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     noWorkers(h.workspaces);
   });
@@ -110,7 +159,7 @@ describe("Linear mutations without Worker dependencies", () => {
     h.client.failNext("addComment", { ...failure, afterWrite: true });
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
-    expect(h.issue.comments.filter((comment) => comment.body.includes("igniter:begin"))).toHaveLength(1);
+    expect(h.issue.comments.filter((comment) => comment.body.includes("kind: begin"))).toHaveLength(1);
     noWorkers(h.workspaces);
   });
 
@@ -120,7 +169,7 @@ describe("Linear mutations without Worker dependencies", () => {
     expect((await submit(h.ctx, build())).ok).toBe(false);
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
-    expect(h.issue.comments.some((comment) => comment.body.includes("igniter:begin"))).toBe(false);
+    expect(h.issue.comments.some((comment) => comment.body.includes("kind: begin"))).toBe(false);
     expect((await submit(h.ctx, build())).ok).toBe(true);
     expect(h.issue.labelIds).toEqual(["label-complete"]);
     noWorkers(h.workspaces);

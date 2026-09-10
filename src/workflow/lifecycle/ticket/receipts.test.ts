@@ -10,10 +10,10 @@ import {
   latestValidReceipt,
   parseReceiptBlock,
   receiptBlock,
-  ReceiptParseError,
   reviewReceiptBody,
   type ReceiptKind,
 } from "./protocol";
+import { RecordParseError } from "./record";
 
 const CHECKPOINT = "90bbd4d5b6479619fd689d1eb78af11742f3bbf3";
 const SUBMISSION = "7c8b1be2d3fe8437";
@@ -129,7 +129,7 @@ describe("receipt parser", () => {
 
   test("unknown versions are refused", () => {
     const body = receiptBlock("build", CHECKPOINT, SUBMISSION).replace("version: 1", "version: 2");
-    expect(() => parseReceiptBlock(`x\n\n${body}\n`)).toThrow(ReceiptParseError);
+    expect(() => parseReceiptBlock(`x\n\n${body}\n`)).toThrow(RecordParseError);
     expect(() => parseReceiptBlock(`x\n\n${body}\n`)).toThrow("unknown receipt version");
   });
 
@@ -141,7 +141,7 @@ describe("receipt parser", () => {
   test("missing, extra, and duplicate fields are refused", () => {
     const block = receiptBlock("build", CHECKPOINT, SUBMISSION);
     const withoutSubmission = block.split("\n").filter((l) => !l.startsWith("  submission:")).join("\n");
-    expect(() => parseReceiptBlock(withoutSubmission)).toThrow('misses "submission"');
+    expect(() => parseReceiptBlock(withoutSubmission)).toThrow('misses required field "submission"');
     const withExtra = block.replace("  submission:", "  note: hi\n  submission:");
     expect(() => parseReceiptBlock(withExtra)).toThrow('unknown receipt field "note"');
     const doubled = `${block}\n${block}`;

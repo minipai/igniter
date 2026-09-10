@@ -12,8 +12,44 @@ import {
   stageStartedAfterReceipt,
   type FullIssue,
   type ProtocolDeps,
-  type ProtocolStatus,
 } from "../ticket/protocol.ts";
+import { approvalEventBody, parseApprovalEvent, type ApprovalSource, type ApprovalTarget } from "../ticket/event.ts";
+
+interface ApprovalIdentity {
+  ticket: string;
+  receipt: string;
+  submission: string;
+  checkpoint: string;
+  source: ApprovalSource;
+  target: ApprovalTarget;
+}
+
+/**
+ * The newest comment whose approval event matches the full receipt-bound
+ * identity: ticket, receipt id, submission, checkpoint, source, and target
+ * together — not submission alone. The pre-migration code compared the
+ * entire rendered comment body byte-for-byte; this is the same strength
+ * (every one of these fields determined the old body) expressed as a
+ * structural match instead of a string comparison.
+ */
+function findApprovalEvent(comments: { body: string }[], identity: ApprovalIdentity) {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    let parsed: ReturnType<typeof parseApprovalEvent>;
+    try {
+      parsed = parseApprovalEvent(comments[i]?.body ?? "");
+    } catch {
+      continue; // A malformed comment cannot authorize a retry.
+    }
+    if (
+      parsed && parsed.ticket === identity.ticket && parsed.receipt === identity.receipt &&
+      parsed.submission === identity.submission && parsed.checkpoint === identity.checkpoint &&
+      parsed.source === identity.source && parsed.target === identity.target
+    ) {
+      return parsed;
+    }
+  }
+  return null;
+}
 
 function approvalState(deps: ProtocolDeps, full: FullIssue) {
   const progress = full.labels.map((label) => progressOf(deps.resolved, label.id)).filter(Boolean);
@@ -36,17 +72,18 @@ export async function approveTicket(
     throw new ProtocolError("stale approval: read status and use its current receipt.id; no stage was approved");
   }
   const { kind, checkpoint, submission } = latest.receipt;
-  const source = kind === "build" ? "build" : kind === "review-pass" ? "review" : kind === "deliver" ? "deliver" : null;
+  const source: ApprovalSource | null = kind === "build" ? "build" : kind === "review-pass" ? "review" : kind === "deliver" ? "deliver" : null;
   if (!source) throw new ProtocolError("approve requires a Build, Review PASS, or Deliver receipt");
-  const target: ProtocolStatus = source === "build" ? "review" : source === "review" ? "deliver" : "done";
+  const target: ApprovalTarget = source === "build" ? "review" : source === "review" ? "deliver" : "done";
   const state = approvalState(deps, full);
   // The durable intent is written before either status or Progress. It is
   // also the audit record: a retry uses exactly this receipt and transition.
   // A bare ticket argument cannot distinguish a late retry from approval of
   // the next completed stage, so the public command requires --receipt.
-  const body = `<!-- igniter:approval ${JSON.stringify({ v: 1, ticket: full.identifier, receipt: receiptId, submission, checkpoint, source, target })} -->\n` +
-    `Approved ${source}+complete → ${target}${target === "done" ? "" : "+pending"}; receipt ${receiptId}, checkpoint ${checkpoint}.`;
-  const recorded = full.comments.some((comment) => comment.body === body);
+  const body = `Approved ${source}+complete → ${target}${target === "done" ? "" : "+pending"}; receipt ${receiptId}, checkpoint ${checkpoint}.\n\n` +
+    approvalEventBody(full.identifier, receiptId, submission, checkpoint, source, target);
+  const identity: ApprovalIdentity = { ticket: full.identifier, receipt: receiptId, submission, checkpoint, source, target };
+  const recorded = findApprovalEvent(full.comments, identity) !== null;
   if (recorded && state.status === target && state.progress !== "complete") {
     return { ok: true, text: `already approved ${full.identifier}: receipt ${receiptId}; current ${state.status}+${state.progress ?? "none"}` };
   }
@@ -83,13 +120,13 @@ export async function approveTicket(
     } catch (error) {
       if (!isTransientLinearError(error)) throw error;
       const read = await deps.client.fetchIssue(full.id);
-      if (!read?.comments.some((comment) => comment.body === body)) throw error;
+      if (!read || findApprovalEvent(read.comments, identity) === null) throw error;
     }
   }
   // Re-read after the intent: a failed write or a concurrent external move
   // must not cause an old snapshot to rewind a different stage or receipt.
   const fresh = await deps.client.fetchIssue(full.id) as FullIssue | null;
-  if (!fresh || !fresh.comments.some((comment) => comment.body === body)) throw new ProtocolError("approval record readback failed; retry the same receipt");
+  if (!fresh || findApprovalEvent(fresh.comments, identity) === null) throw new ProtocolError("approval record readback failed; retry the same receipt");
   const current = approvalState(deps, fresh);
   if (latestValidReceipt(fresh.comments)?.id !== receiptId ||
       !((current.status === source || current.status === target) && current.progress === "complete")) {

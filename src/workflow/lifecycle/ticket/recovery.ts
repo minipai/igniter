@@ -16,8 +16,9 @@ import {
   type CommandWorkspaces,
   type WorkspaceSnapshot,
 } from "../../service/workspace/workspaces.ts";
+import { failedEventBody, hasFailedEvent } from "./event.ts";
+import { isTransientLinearError } from "./protocol.ts";
 
-export const FAILED_MARKER = "<!-- igniter:failed -->";
 export const FAILED_LABEL = "agent-failed";
 
 /** Reason used when a failure arrives with no reason. */
@@ -34,11 +35,10 @@ export function formatDuration(ms: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h${String(minutes).padStart(2, "0")}m`;
 }
 
-export function buildFailedComment(reason: string, paneTail: string): string {
+export function buildFailedComment(ticket: string, reason: string, paneTail: string): string {
   const tail = paneTail.trimEnd();
-  return tail
-    ? `${FAILED_MARKER}\n${reason}\n\n\`\`\`\n${tail}\n\`\`\`\n`
-    : `${FAILED_MARKER}\n${reason}\n`;
+  const prose = tail ? `${reason}\n\n\`\`\`\n${tail}\n\`\`\`` : reason;
+  return `${prose}\n\n${failedEventBody(ticket, reason)}\n`;
 }
 
 export interface FailureDeps {
@@ -56,10 +56,15 @@ export interface FailureIssue {
 
 /**
  * The failure actions for `igniter fail`: ensure the `agent-failed` label,
- * move the issue to Backlog with Progress cleared, and comment the reason. Every
- * write is idempotent (label add-if-missing, unconditional state write),
- * so a retry after a half-written failure converges instead of
- * duplicating; the bare marker dedupes the comment per ticket.
+ * move the issue to Backlog with Progress cleared, and comment the reason.
+ * Label add-if-missing and the state write are naturally idempotent. Every
+ * call posts a fresh comment — the same reason recurring on a later,
+ * separate failure is a new event, not a duplicate of an earlier one — but
+ * a lost write result reads back before deciding whether to retry it:
+ * `hasFailedEvent` is checked only against comments not already present
+ * before this write, never against the ticket's whole history, so an old
+ * failure with an identical reason can never suppress today's comment or
+ * be mistaken for today's landed write.
  */
 export async function failTicket(
   deps: FailureDeps,
@@ -81,7 +86,17 @@ export async function failTicket(
     const keep = existingIds.filter((id) => !progressIds.has(id));
     if (!keep.includes(failedLabel.id)) keep.push(failedLabel.id);
     await client.setIssueLabels(issue.id, keep);
-    await client.addComment(issue.id, buildFailedComment(reason, paneTail));
+    const before = await client.fetchIssue(issue.id);
+    const beforeIds = new Set((before?.comments ?? []).map((c) => c.id).filter((id): id is string => !!id));
+    const body = buildFailedComment(issue.identifier, reason, paneTail);
+    try {
+      await client.addComment(issue.id, body);
+    } catch (error) {
+      if (!isTransientLinearError(error)) throw error;
+      const read = await client.fetchIssue(issue.id);
+      const landed = (read?.comments ?? []).filter((c) => !c.id || !beforeIds.has(c.id));
+      if (!hasFailedEvent(landed, issue.identifier, reason)) throw error;
+    }
   } catch (error) {
     await decisions.record(issue.identifier, `fail failed: ${(error as Error).message}`);
     return { ok: false, text: `fail failed: ${(error as Error).message}` };

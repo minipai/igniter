@@ -164,6 +164,15 @@ changes the SHA is not a new feature commit: the approval stays valid and the
 Deliver submit records the approved checkpoint together with the landed
 commit.
 
+Every machine-readable lifecycle record Igniter writes to a Linear comment —
+a receipt, a stage-start (`begin`), an owner approval, a blocked comment, a
+failed comment, or an incomplete-state diagnosis — is one visible, versioned
+`igniter_receipt` or `igniter_event` YAML fenced block after a short
+human-readable line, never a hidden `<!-- igniter:... -->` HTML marker or
+inline JSON. History predating this contract still carries the old hidden
+markers; dispatch still reads those read-only for begin, approval, and
+recovery boundaries, but never writes that format again.
+
 ## Feature branch
 
 `igniter worker start <ticket>` creates the ticket worktree and `feature/<ticket>` branch before the
