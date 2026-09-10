@@ -5,7 +5,7 @@
 // approved checkpoint together with the new landed commit. No real
 // credentials, only temp dirs.
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { memoryAddIssue } from "../../workflow/service/linear/fake-memory-linear.ts";
 import { latestValidReceipt, parseReceiptBlock } from "../../workflow/lifecycle/ticket/protocol.ts";
@@ -192,6 +192,45 @@ describe("e2e deliver lands a rebased approval", () => {
       expect(missing.code).not.toBe(0);
       expect(`${missing.stdout}\n${missing.stderr}`).toContain('needs a "landed" commit');
       expect(receiptCount(e2e, "STA-42")).toBe(receiptsBefore);
+    });
+  });
+
+  test("a native rebase merge lands a rewritten SHA and Done cleanup removes the local checkout", async () => {
+    await withE2E(async (e2e) => {
+      const approved = await approve(e2e, "STA-43", "forty-three.txt");
+      expectOk(await e2e.startStage("STA-43"));
+
+      // GitHub's native rebase merge rewrites the commit on main: the tree is
+      // identical to the ticket tip, but the SHA and the ancestry differ.
+      writeFileSync(join(e2e.repoDir, "forty-three.txt"), "STA-43 change\n");
+      git(["add", "forty-three.txt"], e2e.repoDir);
+      git(["commit", "-m", "STA-43 change (rebase merge)"], e2e.repoDir);
+      const landed = mainHead(e2e.repoDir);
+      const approvedTree = git(["rev-parse", `${approved}^{tree}`], e2e.repoDir).stdout.trim();
+      const landedTree = git(["rev-parse", `${landed}^{tree}`], e2e.repoDir).stdout.trim();
+      expect(landedTree).toBe(approvedTree);
+      expect(landed).not.toBe(approved);
+      expect(() => git(["merge-base", "--is-ancestor", approved, "main"], e2e.repoDir)).toThrow();
+
+      const delivered = expectOk(
+        await e2e.cli(["submit", "STA-43", "--input", "-"], {
+          stdin: JSON.stringify(deliverPayload(approved, landed)),
+        }),
+      );
+      expect(delivered.stdout).toContain(
+        `submitted deliver approved ${approved} landed ${landed} → Deliver+Complete`,
+      );
+
+      // Owner confirms the landing; worker stop cleans the content-equivalent
+      // checkout even though the local branch tip is not an ancestor of main.
+      const status = JSON.parse(expectOk(await e2e.cli(["status", "STA-43", "--json"])).stdout) as { receipt: { id: string } };
+      const done = expectOk(await e2e.cli(["approve", "STA-43", "--receipt", status.receipt.id]));
+      expect(done.stdout).toContain("deliver+complete → done");
+
+      expectOk(await e2e.cli(["worker", "stop", "STA-43"]));
+      expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).not.toContain("worktrees/sta-43");
+      expect(() => git(["rev-parse", "--verify", "refs/heads/feature/sta-43"], e2e.repoDir)).toThrow();
+      expect(readFileSync(join(e2e.repoDir, "forty-three.txt"), "utf8")).toContain("STA-43 change");
     });
   });
 });

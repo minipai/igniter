@@ -21,9 +21,9 @@ least once every 60 seconds without waiting for the owner to ask. After
 each wait, inspect its lifecycle, visible output, and result path. If it is
 blocked, read the current permission dialog before responding. Approve
 only actions already inside the ticket worktree, that worker's scratch,
-or the repository's required local checks; ask the owner about credentials,
-external publication, real-service mutation, or any wider scope. Never let
-a permission dialog sit until the owner notices it for you.
+or the repository's required local checks and runbook; ask the owner about
+credentials, external publication, external-service mutation, or any wider
+scope. Never let a permission dialog sit until the owner notices it for you.
 
 Igniter derives the stage from Linear protocol state. A ticket workspace
 holds only the worktree, metadata, scratch, and the current stage worker.

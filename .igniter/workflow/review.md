@@ -7,7 +7,7 @@ This is black-box acceptance, not code review.
 
 Use only:
 
-- the feature request and observable acceptance criteria;
+- the requirement and observable acceptance criteria;
 - the public UI, CLI, or API entry point;
 - the acceptance runbook and non-secret test data;
 - the exact checkpoint identity;
@@ -17,6 +17,11 @@ Use only:
 Do not accept a Build plan, diff, file list, implementation explanation,
 Builder conclusion, or source-level hint. Do not inspect source files, git
 history, or git diff.
+
+Starting and stopping the tested product's own local service, when the runbook
+calls for it, is part of acceptance and not the Igniter control plane: it needs
+no separate permission. Never operate Igniter or Linear state, and never
+publish outside the product under test.
 
 ## Acceptance
 

@@ -108,7 +108,7 @@ export async function ensureTicketWorktree(
 // ---------------------------------------------------------------------------
 
 export interface CleanupOptions {
-  /** Delivered checkpoint the receipt binds; must read back from the target branch. */
+  /** Landed commit the receipt binds; must read back from the target branch. */
   checkpoint: string;
   /** Branch the delivery landed on (dispatch `target_branch`). */
   targetBranch: string;
@@ -171,18 +171,79 @@ async function probeBranch(git: GitRunner, repoRoot: string, branch: string): Pr
 }
 
 /**
+ * How the local ticket branch relates to the target branch. `ancestor` is
+ * the ordinary merge. `equivalent` is GitHub's native rebase merge: the
+ * target holds the branch tip's exact tree under a rewritten SHA, so the
+ * content is fully landed even though the commit is not; it carries the
+ * exact tip OID the proof covers, so the later delete can bind to it.
+ * `unlanded` means the tip carries content the target cannot trace.
+ * `unknown` is any git failure, which never authorizes a delete.
+ *
+ * The tree comparison is deliberately conservative: if the target advanced
+ * with other changes after the branch was cut, the rebased tree no longer
+ * matches the local tip and cleanup keeps the checkout. That is a
+ * false-negative, never a false-positive, so it can never drop content.
+ */
+type BranchLanding =
+  | { kind: "ancestor" }
+  | { kind: "equivalent"; tip: string }
+  | { kind: "unlanded" }
+  | { kind: "unknown" };
+
+async function branchLanding(
+  git: GitRunner,
+  repoRoot: string,
+  branch: string,
+  landed: string,
+  targetBranch: string,
+): Promise<BranchLanding> {
+  try {
+    await git.run(["merge-base", "--is-ancestor", branch, targetBranch], repoRoot);
+    return { kind: "ancestor" };
+  } catch {
+    // Not an ancestor: a native rebase merge rewrites the SHA but keeps the
+    // tree, so fall through to the content comparison below.
+  }
+  try {
+    await git.run(["merge-base", "--is-ancestor", landed, targetBranch], repoRoot);
+  } catch {
+    // The landed commit itself is not on the target: nothing landed.
+    return { kind: "unlanded" };
+  }
+  try {
+    // Resolve the tip once and read its tree from that exact OID: the value
+    // bound to the delete is the one this proof covers, so a ref that moves
+    // after the proof cannot slip a different tree past the guard.
+    const tip = (await git.run(["rev-parse", branch], repoRoot)).stdout.trim();
+    if (tip === "") return { kind: "unknown" };
+    const branchTree = (await git.run(["rev-parse", `${tip}^{tree}`], repoRoot)).stdout.trim();
+    const landedTree = (await git.run(["rev-parse", `${landed}^{tree}`], repoRoot)).stdout.trim();
+    return branchTree !== "" && branchTree === landedTree
+      ? { kind: "equivalent", tip }
+      : { kind: "unlanded" };
+  } catch {
+    return { kind: "unknown" };
+  }
+}
+
+/**
  * Remove the ticket's worktree and local feature branch after a Done
  * landing. Safe by construction:
  *
  * - only the derived ticket path is ever removed, and only when it sits
  *   on the derived ticket branch;
  * - a dirty worktree (tracked or untracked changes) is kept as is;
- * - the delivered checkpoint and the ticket branch tip must both read back
- *   from the target branch (`merge-base --is-ancestor`) before the worktree
- *   goes;
+ * - the delivered checkpoint must read back from the target branch
+ *   (`merge-base --is-ancestor`) before the worktree goes;
+ * - the ticket branch tip must either be an ancestor of the target or carry
+ *   the exact tree of the landed commit, which is how GitHub's native rebase
+ *   merge lands a branch under a rewritten SHA;
  * - the branch goes only after the worktree, with the tip checked again;
- * - removal uses plain `worktree remove` and `branch -d`: both refuse
- *   rather than drop content, and `--force`/`-D` never appear here.
+ * - removal uses plain `worktree remove` and `branch -d` for an ordinary
+ *   merge; a content-equivalent rebase landing deletes the ref only after
+ *   proving the tip's tree already sits on the target under the landed
+ *   commit, and binds the delete to that exact tip OID so a ref that moved
+ *   after the proof fails closed. `--force` and `-D` never appear here.
  *
  * Anything unexpected — a missing target branch, a worktree on the wrong
  * branch, a branch checked out elsewhere, any git failure — keeps
@@ -198,7 +259,7 @@ export async function cleanupTicketCheckout(
   options: CleanupOptions,
 ): Promise<CleanupOutcome> {
   const worktree = ticketWorktree(repoRoot, identifier);
-  const { checkpoint, targetBranch } = options;
+  const { checkpoint: landed, targetBranch } = options;
   const kept = (detail: string, extra?: Partial<CleanupOutcome>): CleanupOutcome => ({
     ok: false,
     worktreeRemoved: false,
@@ -256,7 +317,7 @@ export async function cleanupTicketCheckout(
         `${identifier}: cannot verify branch ${worktree.branch}; keeping branch`,
       );
     }
-    return removeTicketBranch(git, repoRoot, identifier, worktree.branch, targetBranch, {
+    return removeTicketBranch(git, repoRoot, identifier, worktree.branch, landed, targetBranch, {
       worktreeRemoved: false,
       late: true,
     });
@@ -282,20 +343,24 @@ export async function cleanupTicketCheckout(
   }
 
   try {
-    await git.run(["merge-base", "--is-ancestor", checkpoint, targetBranch], repoRoot);
+    await git.run(["merge-base", "--is-ancestor", landed, targetBranch], repoRoot);
   } catch (error) {
     return kept(
-      `${identifier}: checkpoint ${shortRef(checkpoint)} is not reachable from ${targetBranch} ` +
+      `${identifier}: landed commit ${shortRef(landed)} is not reachable from ${targetBranch} ` +
         `(${gitError(error)}); keeping worktree and branch`,
     );
   }
 
-  try {
-    await git.run(["merge-base", "--is-ancestor", worktree.branch, targetBranch], repoRoot);
-  } catch (error) {
+  const landing = await branchLanding(git, repoRoot, worktree.branch, landed, targetBranch);
+  if (landing.kind === "unlanded") {
     return kept(
-      `${identifier}: branch ${worktree.branch} holds commits not reachable from ${targetBranch} ` +
-        `(${gitError(error)}); keeping worktree and branch`,
+      `${identifier}: branch ${worktree.branch} holds commits not reachable from ${targetBranch}; ` +
+        `keeping worktree and branch`,
+    );
+  }
+  if (landing.kind === "unknown") {
+    return kept(
+      `${identifier}: cannot verify branch ${worktree.branch}; keeping worktree and branch`,
     );
   }
 
@@ -324,42 +389,60 @@ export async function cleanupTicketCheckout(
       { worktreeRemoved: true },
     );
   }
-  return removeTicketBranch(git, repoRoot, identifier, worktree.branch, targetBranch, {
+  return removeTicketBranch(git, repoRoot, identifier, worktree.branch, landed, targetBranch, {
     worktreeRemoved: true,
     late: false,
   });
 }
 
 /**
- * Delete the local ticket branch once its tip reads back from the target
- * branch. Plain `branch -d` is the second lock: it refuses when the
- * branch is not fully merged, so even a stale ancestor check cannot drop
- * commits. `late` marks a repeat run whose worktree was already gone.
+ * Delete the local ticket branch once its content reads back from the
+ * target branch. Plain `branch -d` is the second lock on the ordinary
+ * merge: it refuses when the branch is not fully merged, so even a stale
+ * landing check cannot drop commits. A content-equivalent rebase landing
+ * has no shared ancestry for that lock to see — and a pushed branch's stale
+ * upstream would refuse `-d` anyway — so the ref is deleted with the tip OID
+ * the equivalence proof covered as its expected old value: a ref that moved
+ * after the proof fails the delete closed instead of dropping new content.
+ * `late` marks a repeat run whose worktree was already gone.
  */
 async function removeTicketBranch(
   git: GitRunner,
   repoRoot: string,
   identifier: string,
   branch: string,
+  landed: string,
   targetBranch: string,
   state: { worktreeRemoved: boolean; late: boolean },
 ): Promise<CleanupOutcome> {
   const prefix = state.late ? `${identifier}: worktree already gone; ` : `${identifier}: removed worktree; `;
-  try {
-    await git.run(["merge-base", "--is-ancestor", branch, targetBranch], repoRoot);
-  } catch (error) {
+  const landing = await branchLanding(git, repoRoot, branch, landed, targetBranch);
+  if (landing.kind === "unlanded") {
     return {
       ok: false,
       worktreeRemoved: state.worktreeRemoved,
       branchRemoved: false,
       alreadyCleaned: false,
       detail:
-        `${prefix}branch ${branch} holds commits not reachable from ${targetBranch} ` +
-        `(${gitError(error)}); keeping branch`,
+        `${prefix}branch ${branch} holds commits not reachable from ${targetBranch}; keeping branch`,
     };
   }
+  if (landing.kind === "unknown") {
+    return {
+      ok: false,
+      worktreeRemoved: state.worktreeRemoved,
+      branchRemoved: false,
+      alreadyCleaned: false,
+      detail: `${prefix}cannot verify branch ${branch}; keeping branch`,
+    };
+  }
+  // An `equivalent` landing already proved the tip's exact tree sits on the
+  // target under the landed commit, so deleting that exact ref drops nothing.
+  const remove: string[] = landing.kind === "equivalent"
+    ? ["update-ref", "-d", `refs/heads/${branch}`, landing.tip]
+    : ["branch", "-d", branch];
   try {
-    await git.run(["branch", "-d", branch], repoRoot);
+    await git.run(remove, repoRoot);
   } catch (error) {
     return {
       ok: false,
