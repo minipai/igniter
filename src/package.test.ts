@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
-import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+
+test("the linked CLI entry point is executable", () => {
+  expect(statSync(join(import.meta.dir, "cli.ts")).mode & 0o111).toBe(0o111);
+});
 
 test("the published package runs outside the checkout with its bundled assets", async () => {
   const root = join(import.meta.dir, "..");
@@ -54,7 +58,7 @@ test("the published package runs outside the checkout with its bundled assets", 
       cpSync(source, join(installed, "node_modules", name), { recursive: true });
     }
     const bun = [process.execPath, "--no-env-file", "--no-install"];
-    expect(run([...bun, join(installed, pkg.bin.igniter), "--version"]).trim()).toBe(pkg.version);
+    expect(run([join(installed, pkg.bin.igniter), "--version"]).trim()).toBe(pkg.version);
     const assetsUrl = pathToFileURL(join(installed, "src/commander/assets.ts")).href;
     const paths = JSON.parse(run([
       ...bun, "--eval",
