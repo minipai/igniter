@@ -10,12 +10,12 @@
 // This module is a leaf: it takes its Linear client, workspaces, and log as
 // arguments, so commands.ts can use it without a cycle.
 
-import type { CommandResult, DecisionLog, ResolvedDispatch } from "../config/claims.ts";
-import type { LinearClientLike } from "../linear/linear.ts";
+import type { CommandResult, DecisionLog, ResolvedDispatch } from "../../config/claims.ts";
+import type { LinearClientLike } from "../../service/linear/linear.ts";
 import {
   type CommandWorkspaces,
   type WorkspaceSnapshot,
-} from "../workspace/workspaces.ts";
+} from "../../service/workspace/workspaces.ts";
 
 export const FAILED_MARKER = "<!-- igniter:failed -->";
 export const FAILED_LABEL = "agent-failed";

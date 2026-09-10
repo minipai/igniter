@@ -5,7 +5,7 @@
 
 import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { WorkspaceError } from "../config/claims.ts";
+import { WorkspaceError } from "../../config/claims.ts";
 
 /** Base branch every ticket branch starts from. */
 export const WORKTREE_BASE = "main";

@@ -11,19 +11,19 @@ import { join } from "node:path";
 import {
   runCommand,
   type CommandContext,
-} from "../command/commands";
-import { validateStartup, type ResolvedDispatch } from "../config/claims";
-import { parseDispatchConfig } from "../config/config";
-import { LinearClient, LinearError } from "../linear/linear";
+} from "../commands";
+import { validateStartup, type ResolvedDispatch } from "../../config/claims";
+import { parseDispatchConfig } from "../../config/config";
+import { LinearClient, LinearError } from "../../service/linear/linear";
 import {
   convergeIncompleteState,
   diagnoseIncompleteState,
   receiptBlock,
   type FullIssue,
 } from "./protocol";
-import { addIssue, standardWorld, startFakeLinear } from "../linear/fake-linear";
-import { FakeGit } from "../testing/fake-git";
-import { FakeWorkspaces } from "../testing/fake-workspaces";
+import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";
+import { FakeGit } from "../../testing/fake-git";
+import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const TODO = "st-todo";
 const BUILD = "st-build";

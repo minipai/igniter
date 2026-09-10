@@ -20,7 +20,7 @@
 // shows a lifecycle change, the delivery converges without resending.
 
 import { createHash } from "node:crypto";
-import type { CommandWorkspaces } from "../workspace/workspaces.ts";
+import type { CommandWorkspaces } from "../../service/workspace/workspaces.ts";
 
 /** Who the prompt is for: one of the three stage workers. */
 export type PromptRole = "builder" | "reviewer" | "deliverer";

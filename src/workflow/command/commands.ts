@@ -20,7 +20,7 @@ import {
   type DecisionLog,
   type ResolvedDispatch,
 } from "../config/claims.ts";
-import type { LinearClientLike } from "../linear/linear.ts";
+import type { LinearClientLike } from "../service/linear/linear.ts";
 import {
   bareTodoState,
   moveStatus,
@@ -40,23 +40,23 @@ import {
   type FullIssue,
   type ProtocolDeps,
   type WorkspaceMeta,
-} from "../ticket/protocol.ts";
+} from "./ticket/protocol.ts";
 import {
   failTicket,
   formatDuration,
   type FailureDeps,
-} from "../ticket/recovery.ts";
+} from "./ticket/recovery.ts";
 import {
   stageWorkerName,
   tokensByTicket,
   workspaceForTicket,
   type CommandWorkspaces,
   type WorkspaceSnapshot,
-} from "../workspace/workspaces.ts";
+} from "../service/workspace/workspaces.ts";
 import {
   type PromptDeliveryPolicy,
-} from "../delivery/prompt-delivery.ts";
-import { bunGitRunner, type GitRunner } from "../worktree/worktrees.ts";
+} from "./delivery/prompt-delivery.ts";
+import { bunGitRunner, type GitRunner } from "../service/worktree/worktrees.ts";
 import type { CommandRequest } from "./command-request.ts";
 
 export type { CommandResult };
@@ -435,7 +435,7 @@ async function startCommand(
     }
     assignment = full;
   }
-  const { prepareCommanderForeground } = await import("../stage/commander-start.ts");
+  const { prepareCommanderForeground } = await import("./stage/commander-start.ts");
   let launch;
   try {
     launch = prepareCommanderForeground({ resolved, repoRoot: ctx.repoRoot }, assignment);
@@ -481,7 +481,7 @@ async function beginTicket(ctx: CommandContext, identifier: string): Promise<Com
     }
     if (bare) full = await normalizeBareTodo(deps, full);
     const target = state.status === "todo" ? "build" : state.status;
-    const { recordStageStart } = await import("../ticket/protocol.ts");
+    const { recordStageStart } = await import("./ticket/protocol.ts");
     full = await recordStageStart(deps, full, target);
     await moveStatus(deps, full, target, "in_progress");
     await ctx.decisions.record(full.identifier, `begin: ${state.status}+pending → ${target}+in_progress`);
@@ -498,7 +498,7 @@ async function ticketIssue(ctx: CommandContext, identifier: string): Promise<Ful
 
 async function approveCommand(ticket: string, receipt: string, ctx: CommandContext): Promise<CommandResult> {
   try {
-    const { approveTicket } = await import("../delivery/approval.ts");
+    const { approveTicket } = await import("./delivery/approval.ts");
     return await approveTicket(depsOf(ctx), await ticketIssue(ctx, ticket), receipt);
   } catch (error) { return refuse(ctx, ticket, error); }
 }

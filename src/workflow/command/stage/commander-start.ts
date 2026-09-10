@@ -1,7 +1,7 @@
 // The CLI launches the Global Commander in its calling terminal.
-import { commanderAssetPaths, type CommanderAssetPaths } from "../../commander/assets.ts";
+import { commanderAssetPaths, type CommanderAssetPaths } from "../../../commander/assets.ts";
 import { foregroundCommandFor } from "./agents.ts";
-import type { ResolvedDispatch } from "../config/claims.ts";
+import type { ResolvedDispatch } from "../../config/claims.ts";
 import type { FullIssue } from "../ticket/protocol.ts";
 
 export interface CommanderStartDeps {

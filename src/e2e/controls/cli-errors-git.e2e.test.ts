@@ -9,8 +9,8 @@ import {
   ownerSetProgress,
   ownerSetState,
   type MemoryIssue,
-} from "../../workflow/linear/fake-memory-linear.ts";
-import { latestValidReceipt, parseReceiptBlock } from "../../workflow/ticket/protocol.ts";
+} from "../../workflow/service/linear/fake-memory-linear.ts";
+import { latestValidReceipt, parseReceiptBlock } from "../../workflow/command/ticket/protocol.ts";
 import {
   buildPayload,
   commandEvidencePayload,

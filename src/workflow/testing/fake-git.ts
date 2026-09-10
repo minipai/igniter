@@ -1,7 +1,7 @@
 // Scripted git for worktree tests: records commands, answers worktree
 // lists and branch lookups from scripted state, fails on demand.
 
-import type { GitRunner } from "../worktree/worktrees.ts";
+import type { GitRunner } from "../service/worktree/worktrees.ts";
 
 export interface GitCommand {
   args: string[];

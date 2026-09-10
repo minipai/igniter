@@ -10,7 +10,7 @@ import {
   type SnapshotPane,
   type SnapshotWorkspace,
   type WorkspaceSnapshot,
-} from "../workspace/workspaces.ts";
+} from "../service/workspace/workspaces.ts";
 
 export interface FakeAgent extends SnapshotAgent {
   kind: string;

@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { memoryAddIssue } from "../../workflow/linear/fake-memory-linear.ts";
+import { memoryAddIssue } from "../../workflow/service/linear/fake-memory-linear.ts";
 import {
   E2E,
   CRITERIA,

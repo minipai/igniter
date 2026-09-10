@@ -4,8 +4,8 @@
 // `commander|builder|reviewer-<ticket>` (lowercased) and workspace tokens
 // may carry the identifier too.
 
-import { createHerdrSocket } from "../../herdr/client/socket.ts";
-import { lookupSocketPath } from "../../herdr/client/socket-path.ts";
+import { createHerdrSocket } from "../../../herdr/client/socket.ts";
+import { lookupSocketPath } from "../../../herdr/client/socket-path.ts";
 
 export interface RunningWorkspaces {
   runningTickets(): Promise<Set<string>>;

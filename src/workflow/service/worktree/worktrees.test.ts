@@ -5,8 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkspaceError } from "../config/claims";
-import { FakeGit } from "../testing/fake-git";
+import { WorkspaceError } from "../../config/claims";
+import { FakeGit } from "../../testing/fake-git";
 import { ensureTicketWorktree, ticketWorktree, WORKTREE_BASE } from "./worktrees";
 
 describe("ticketWorktree", () => {

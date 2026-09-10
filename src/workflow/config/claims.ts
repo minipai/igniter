@@ -2,7 +2,7 @@
 
 import { appendFile } from "node:fs/promises";
 import type { DispatchConfig } from "./config.ts";
-import { type LinearClientLike, type LinearIssue } from "../linear/linear.ts";
+import { type LinearClientLike, type LinearIssue } from "../service/linear/linear.ts";
 import {
   countBuildSlots,
   isTransientLinearError,
@@ -10,7 +10,7 @@ import {
   progressOf,
   type ProtocolProgress,
   type ProtocolStatus,
-} from "../ticket/protocol.ts";
+} from "../command/ticket/protocol.ts";
 export type { ProtocolStatus, ProtocolProgress };
 
 export interface ResolvedDispatch {
