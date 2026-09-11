@@ -7,13 +7,17 @@ import {
   approvalEventBody,
   beginEventBody,
   blockedEventBody,
+  canceledEventBody,
+  cancelIdentity,
   failedEventBody,
   hasBlockedEvent,
+  hasCanceledEvent,
   hasFailedEvent,
   incompleteEventBody,
   parseApprovalEvent,
   parseBeginEvent,
   parseBlockedEvent,
+  parseCanceledEvent,
   parseFailedEvent,
   parseIncompleteEvent,
   textFingerprint,
@@ -219,6 +223,64 @@ describe("failed event", () => {
 
   test("does not recognize the legacy bare HTML marker", () => {
     expect(parseFailedEvent("<!-- igniter:failed -->\nsome reason\n")).toBeNull();
+  });
+});
+
+describe("canceled event", () => {
+  test("canceledEventBody round-trips through parseCanceledEvent", () => {
+    const identity = cancelIdentity(TICKET, "owner ended the scope", "build", "in_progress");
+    const body = canceledEventBody(TICKET, "owner ended the scope", "build", "in_progress", identity);
+    expect(parseCanceledEvent(body)).toEqual({
+      ticket: TICKET,
+      reason: textFingerprint("owner ended the scope"),
+      from: "build",
+      progress: "in_progress",
+      identity,
+    });
+  });
+
+  test("keeps the reason prose out of the YAML block, in the prose above it", () => {
+    const reason = "owner ended the scope";
+    const body = `Canceled: ${reason}\n\n${canceledEventBody(TICKET, reason, "review", "none", "id1")}`;
+    expect(body).toContain(reason);
+    expect(body.split("```yaml")[1]).not.toContain(reason);
+    expect(parseCanceledEvent(body)).toMatchObject({ from: "review", progress: "none", identity: "id1" });
+  });
+
+  test("records a progress set of several labels", () => {
+    const body = canceledEventBody(TICKET, "x", "build", "complete+in_progress", "id2");
+    expect(parseCanceledEvent(body)).toMatchObject({ progress: "complete+in_progress", from: "build" });
+  });
+
+  test("rejects a from status outside the cancellable set", () => {
+    const body = "```yaml\nigniter_event:\n  version: 1\n  kind: canceled\n  ticket: STA-1\n  reason: abc\n  from: done\n  progress: none\n  identity: id\n```";
+    expect(() => parseCanceledEvent(body)).toThrow(/from.*backlog, todo, build, review, deliver/);
+  });
+
+  test("rejects a body with an identity mismatch in the field set", () => {
+    const body = "```yaml\nigniter_event:\n  version: 1\n  kind: canceled\n  ticket: STA-1\n  reason: abc\n  from: build\n  progress: none\n```";
+    expect(() => parseCanceledEvent(body)).toThrow(/misses required field "identity"/);
+  });
+
+  test("returns null for a body with no event block or a different kind", () => {
+    expect(parseCanceledEvent("plain prose")).toBeNull();
+    expect(parseCanceledEvent(failedEventBody(TICKET, "x"))).toBeNull();
+  });
+
+  test("hasCanceledEvent matches same ticket and identity, not a different reason", () => {
+    const body = canceledEventBody(TICKET, "owner ended it", "build", "in_progress", "id3");
+    expect(hasCanceledEvent([{ body }], TICKET, "id3")).toBe(true);
+    expect(hasCanceledEvent([{ body }], "STA-OTHER", "id3")).toBe(false);
+    expect(hasCanceledEvent([{ body }], TICKET, "id4")).toBe(false);
+  });
+
+  test("cancelIdentity is stable and reason/status/progress-sensitive", () => {
+    const a = cancelIdentity(TICKET, "owner ended it", "build", "in_progress");
+    expect(cancelIdentity(TICKET, "owner ended it", "build", "in_progress")).toBe(a);
+    expect(cancelIdentity(TICKET, "a different reason", "build", "in_progress")).not.toBe(a);
+    expect(cancelIdentity(TICKET, "owner ended it", "review", "in_progress")).not.toBe(a);
+    expect(cancelIdentity(TICKET, "owner ended it", "build", "none")).not.toBe(a);
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
   });
 });
 

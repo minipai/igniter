@@ -2,6 +2,7 @@ import type { CommandResult } from "../config/claims.ts";
 import { fail, type CommandContext } from "../context.ts";
 import {
   bareTodoState,
+  canceledState,
   countBuildSlots,
   deriveState,
   describeState,
@@ -195,8 +196,11 @@ async function ticketStatus(identifier: string, ctx: CommandContext): Promise<Co
     state = deriveState(ctx.resolved, full);
   } catch (error) {
     const bare = bareTodoState(ctx.resolved, full);
+    const canceled = canceledState(ctx.resolved, full);
     if (bare) {
       state = bare;
+    } else if (canceled) {
+      state = canceled;
     } else {
       const merged = mergedDeliveryState(ctx.resolved, full);
       if (merged) return stateResult(full, meta, merged);

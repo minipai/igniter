@@ -63,6 +63,10 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
     await run({ command: "unblock", ticket });
   }
 
+  async function cancelCommand(ticket: string, options: { reason?: string }): Promise<void> {
+    await run({ command: "cancel", ticket, reason: required(options.reason, "reason") });
+  }
+
   async function workerStartCommand(ticket: string, options: { role?: string }): Promise<void> {
     await run({ command: "worker.start", ticket, role: workerRole(options.role) });
   }
@@ -101,6 +105,7 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
     submitCommand,
     blockCommand,
     unblockCommand,
+    cancelCommand,
     workerStartCommand,
     workerSendCommand,
     workerRestartCommand,

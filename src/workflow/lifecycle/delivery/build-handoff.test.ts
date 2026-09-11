@@ -450,11 +450,11 @@ describe("submission retries keep their classification", () => {
 });
 
 describe("protocol vocabulary", () => {
-  test("no new Linear status or Progress label was introduced", async () => {
+  test("the protocol vocabulary maps the seven statuses and four Progress labels", async () => {
     const h = await harness();
     try {
       expect(Object.keys(h.resolved.stateIds).sort()).toEqual(
-        ["backlog", "build", "deliver", "done", "review", "todo"],
+        ["backlog", "build", "canceled", "deliver", "done", "review", "todo"],
       );
       expect(Object.keys(h.resolved.progress.ids).sort()).toEqual(
         ["blocked", "complete", "in_progress", "pending"],

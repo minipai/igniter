@@ -93,13 +93,14 @@ describe("Commander delivery protocol", () => {
       "`igniter worker start <ticket>`",
       "`igniter block <ticket> --reason",
       "`igniter unblock <ticket>`",
+      "`igniter cancel <ticket> --reason",
       "`igniter reconcile <ticket>`",
     ]) {
       expect(commonRules).toContain(command);
     }
     expect(commonRules).toContain("Workers never run Igniter commands");
     for (const prompt of stageRules) {
-      expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock)/);
+      expect(prompt).not.toMatch(/igniter (?:state|begin|submit|block|unblock|cancel)/);
     }
   });
 

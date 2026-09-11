@@ -2,6 +2,7 @@ import type { CommandResult } from "./config/claims.ts";
 import { approveCommand } from "./command/approve.ts";
 import { beginCommand } from "./command/begin.ts";
 import { blockCommand } from "./command/block.ts";
+import { cancelCommand } from "./command/cancel.ts";
 import { failCommand } from "./command/fail.ts";
 import { reconcileCommand } from "./command/reconcile.ts";
 import { startCommand } from "./command/start.ts";
@@ -42,6 +43,8 @@ export function runCommand(command: CommandRequest, ctx: CommandContext): Promis
       return blockCommand(command.ticket, command.reason, ctx);
     case "unblock":
       return unblockCommand(command.ticket, ctx);
+    case "cancel":
+      return cancelCommand(command.ticket, command.reason, ctx);
     default:
       return workerCommand(command, ctx);
   }

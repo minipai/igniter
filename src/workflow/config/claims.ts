@@ -131,6 +131,7 @@ export async function validateStartup(client: LinearClientLike, config: Dispatch
     review: "started",
     deliver: "started",
     done: "completed",
+    canceled: "canceled",
   };
   const stateIds = {} as Record<ProtocolStatus, string>;
   for (const role of Object.keys(expectedType) as ProtocolStatus[]) {

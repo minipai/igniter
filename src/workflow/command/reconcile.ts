@@ -1,6 +1,6 @@
 import type { CommandResult } from "../config/claims.ts";
 import { commandDeps, fail, type CommandContext } from "../context.ts";
-import { deriveState, normalizeOwnerMove, type FullIssue } from "../lifecycle/ticket/protocol.ts";
+import { deriveState, normalizeOwnerMove, statusOf, type FullIssue } from "../lifecycle/ticket/protocol.ts";
 
 export async function reconcileCommand(identifier: string, ctx: CommandContext): Promise<CommandResult> {
   const full = (await ctx.client.fetchIssue(identifier)) as FullIssue | null;
@@ -14,6 +14,11 @@ export async function reconcileCommand(identifier: string, ctx: CommandContext):
   }
   const outcome = await normalizeOwnerMove(commandDeps(ctx), full);
   if (outcome.result) return outcome.result;
+  // Canceled is terminal and never converges; report it without deriving a
+  // Progress pair, since a stray label must not turn reconcile into an error.
+  if (statusOf(ctx.resolved, full.state.id) === "canceled") {
+    return { ok: true, text: `${full.identifier}: canceled; no owner transition to reconcile` };
+  }
   const state = deriveState(ctx.resolved, full);
   return {
     ok: true,

@@ -83,7 +83,11 @@ There is no resident commander-ticket agent and no resident pane.
 
 After each submitted stage, patrol status again. Continue eligible assigned
 work until every ticket is at an owner gate, Blocked on an external reason,
-or complete. Starting a worker does not end your supervision.
+Canceled by an owner decision, or complete. On an owner cancellation decision,
+run `igniter cancel <ticket> --reason "<reason>"` to record it, then stop the
+ticket's workers explicitly with the `worker stop` command; cancel never
+stops workers or touches the checkout by itself. Starting a worker does not
+end your supervision.
 
 ## Collecting reports
 
