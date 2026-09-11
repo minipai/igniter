@@ -2,70 +2,38 @@
 
 **A software factory for coding agents.**
 
-Turn Linear tickets into working features, independent acceptance evidence,
-and changes you approve for delivery.
+Turn Linear tickets into working features with independent acceptance testing
+and delivery you approve. A Commander runs in your terminal and coordinates
+Build, Acceptance, and Deliver agents through Herdr.
 
-Igniter gives your agents a shared workflow from request to delivery. A Global
-Commander runs in your terminal, coordinates specialist agents through Herdr,
-and keeps the work moving through Linear. Builders implement. Acceptance agents
-test the result. Deliver agents land the approved change. You set the direction
-and decide when it ships.
-
-```bash
-igniter start
-```
-
-The Global Commander runs from the project root, patrols the queue with
-`igniter status --json`, and drives each ticket through explicit
-ticket-targeted commands. One ticket at a time: a team of agents, a traceable
-path to delivery.
-
-## Built for the whole job
-
-- **Coordinated execution.** The Commander launches stage workers, supervises
-  their progress, collects their reports, and drives the next step. Each ticket
-  gets a Git worktree, and each worker gets its own scratch space.
-- **Independent acceptance.** A separate agent exercises the feature through
-  its public UI, CLI, or API. It receives the requirement, observable criteria,
-  and public runbook, never the source, diff, Git history, or Build plan, and
-  may start the product's own local service to do it. Findings come with
-  expected behavior, actual results, and evidence the owner can inspect.
-- **Evidence at every handoff.** Build reports include a committed checkpoint,
-  check results, and the evidence required by that repository's workflow. The
-  Commander validates stage reports and records receipts against the checkpoint
-  they cover.
-- **The right agent for each role.** Configure Codex, Claude Code, or OpenCode
-  per role, with model selection, supported reasoning effort, and a stronger
-  Builder fallback for difficult work.
-- **Work that can resume.** Ticket state lives in Linear. Idempotent retries and
-  an explicit `worker restart` let the Commander pick up interrupted work while
-  preserving the existing worktree and recorded results.
-- **You own the release.** Review the evidence before approving delivery.
-  Delivery follows your repository's landing procedure, including any required
-  pull request and CI checks. Deployment requires your authorization.
+- **Isolated work.** Each ticket gets a Git worktree and a team of agents.
+- **Independent acceptance.** A separate agent tests the public UI, CLI, or API
+  against your criteria without seeing the source, diff, or Build plan.
+- **Your choice of agents.** Configure Codex, Claude Code, or OpenCode per role.
+- **Approval before delivery.** Review the evidence and decide when a change lands.
 
 ## The workflow
 
 ![Igniter workflow: Build, independent Acceptance, and Deliver, with owner approvals and a return to Build when fixes are needed.](docs/workflow.svg)
 
-The Commander works from the project root. Build, Acceptance, and Deliver
-workers work inside ticket worktrees and report back to it. The Commander
-validates those reports and advances the ticket through
-explicit Igniter commands.
+You approve the first Build, authorize delivery after Acceptance passes, and
+confirm landing before Done. When Acceptance finds issues, Build fixes them
+and returns directly to Acceptance. Deployment requires your authorization.
 
-Linear is the project board and source of truth. Herdr hosts the stage agents.
-The Bun CLI connects both directly; there is no background Igniter service.
+Linear holds ticket state; Herdr hosts the agents. Igniter connects them
+directly, with no background service.
+
+## Dependencies
+
+- **Bun 1.3.11+** — runs Igniter; must be on `PATH`.
+- **Git** — isolates ticket work in worktrees.
+- **Herdr** — installed and running; hosts worker agents.
+- **Agent CLI** — install and authenticate the CLIs selected for your roles.
+  The [defaults](src/commander/config.yaml) use Codex; you can configure
+  Claude Code or OpenCode instead.
+- **Linear** — a project and a `LINEAR_API_KEY` environment variable.
 
 ## Get started
-
-### Prerequisites
-
-- Bun 1.3.11 or later on `PATH`, and Git.
-- Herdr installed and running.
-- The agent CLIs selected by your configuration, installed and authenticated.
-  The [bundled defaults](src/commander/config.yaml) use Codex for every role.
-  Projects can configure Claude Code or OpenCode instead.
-- A Linear project and a `LINEAR_API_KEY` supplied through your environment.
 
 ### Install
 
@@ -73,16 +41,16 @@ The Bun CLI connects both directly; there is no background Igniter service.
 bun add --global @minipai/igniter
 ```
 
-The package is published on
-[`npm`](https://www.npmjs.com/package/@minipai/igniter). The installed command
-is `igniter`; it runs in Bun and includes its Commander instructions and stage
-prompts.
-
 ### Connect a project
 
-Run `igniter start` inside an unconfigured Git repository and confirm the
-interactive initialization prompt. To configure it manually instead, create
-`.igniter/config.yaml` in the repository root:
+From your Git repository root, run:
+
+```bash
+igniter start
+```
+
+If the project is not configured, confirm the initialization prompt.
+For manual setup, create `.igniter/config.yaml` in the repository root:
 
 ```yaml
 project: Your Linear project
@@ -91,11 +59,10 @@ linear_org: your-workspace-slug
 max_running: 3
 ```
 
-`project` accepts a Linear project name or slug; `team` accepts a team name or
-key. Set `linear_org` to your own Linear workspace slug.
+`project` accepts a project name or slug; `team` accepts a team name or key.
+Use your Linear workspace slug for `linear_org`.
 
-Prepare these workflow statuses on the project's Linear team — the lifecycle
-is fixed, so these names are required:
+Prepare these statuses on the project's Linear team:
 
 | Status | Linear status type |
 | --- | --- |
@@ -105,8 +72,17 @@ is fixed, so these names are required:
 | Done | Completed |
 | Canceled | Canceled |
 
-Create a `Progress` label group with `Pending`, `In progress`, `Complete`,
-and `Blocked` child labels. Igniter validates this setup when a command runs.
+Create these child labels under a `Progress` label group:
+
+| Label group | Child label |
+| --- | --- |
+| Progress | Pending |
+| Progress | In progress |
+| Progress | Complete |
+| Progress | Blocked |
+
+Use the status and label names exactly as shown; Igniter validates them when
+a command runs.
 
 Give each ticket observable acceptance criteria, for example:
 
@@ -117,163 +93,53 @@ Give each ticket observable acceptance criteria, for example:
 - [ ] An empty result produces a CSV with headers and no data rows.
 ```
 
-### Start the factory
+### Start
 
-From that project's root directory, with `LINEAR_API_KEY` in the environment:
+From the project root, with `LINEAR_API_KEY` set:
 
 ```bash
 igniter start
 ```
 
-`igniter start` is the human entry point that opens the configured Commander in
-the current terminal. It takes no ticket: the Commander reads the queue with
-`igniter status --json` and advances each ticket through the explicit
-ticket-targeted commands. Stage protocol prompts are bundled with Igniter and
-cannot be replaced. A project may add optional, project-specific runbooks under
-`runbooks`; each entry is optional, relative to the repository root, must exist
-and be non-empty, and may not escape the repository:
+This opens the Commander in your terminal. If it is already open from project
+setup, continue in that session.
 
-```yaml
-runbooks:
-  build: .igniter/workflow/build.md
-  acceptance: .igniter/workflow/acceptance.md
-  deliver: .igniter/workflow/deliver.md
+### Assign a ticket
+
+Create a ticket in your configured Linear project with acceptance criteria,
+then move it to `Todo`. In the Commander conversation, ask it to start the
+ticket:
+
+```text
+Start ENG-123.
 ```
 
-A runbook adds the project's run, checks, acceptance environment, and delivery
-procedure on top of the bundled stage protocol; where they conflict, the
-bundled protocol wins.
+Replace `ENG-123` with your ticket ID. The Commander reads the ticket, prepares
+a worktree, and starts the Build agent. Review its evidence when it asks for
+your Build approval; after Acceptance passes, approve delivery, then confirm
+landing.
 
-### Follow progress
+## Documentation
 
-Use `igniter status` for a queue overview or `igniter status ENG-123 --json`
-for a ticket's current state.
-
-The Commander starts workers, reviews their reports, and advances assigned
-tickets through explicit commands. You approve the first Build, authorize
-Deliver after acceptance passes, and confirm landing before Done. Correction
-Builds return directly to acceptance.
-
-For an `In progress` ticket, `worker start` only reuses a live local worker.
-Rebuilding a worker requires an explicit `worker restart` and an existing local
-ticket workspace. Starting a new Commander does not automatically adopt tickets
-from an earlier session or another machine.
-
-Existing scripts should migrate these removed entry points:
-
-| Removed entry | Replacement |
-| --- | --- |
-| `igniter state --json` | `igniter status <ticket> --json` |
-| Bare `begin`, `submit`, `block`, `unblock` with Herdr workspace context | The same command with an explicit `<ticket>`; keep `--input -` or `--reason TEXT` |
-| Background Commander start | CLI `igniter start` in the calling terminal |
-| `status --json` fields `lastPollAt` and per-ticket `commander` | Commands refresh state on demand; read the current stage `worker` field |
-| Automatic owner-move recovery | `igniter reconcile <ticket>`, then explicit worker commands as needed |
-
-Workers write `submit.json` in their own scratch using the submit shape embedded
-in their work order from the canonical contract. Their sibling `result.md`
-contains the completion marker and only additional findings or risks. The
-Commander reviews both files, checks the checkpoint and evidence, and submits
-the JSON unchanged with
-`igniter submit ENG-123 --input - < "/absolute/scratch/submit.json"`.
-Missing, unfinished, malformed, or stale artifacts return to the same worker
-for correction; a valid schema never substitutes for content review. The first Build
-waits at Build + Complete for your approval. Your explicit approval
-allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
-from status, to move to Acceptance + Pending. A PASS Acceptance receipt similarly
-permits Deliver + Pending; a valid completed Deliver receipt permits Done.
-There is no `--to`: the completed stage determines the transition. Retrying
-with the same receipt ID cannot approve a later stage. Ordinary sync or
-continuation never grants approval. A correction Build returns automatically
-to Acceptance + Pending under the existing handoff rules.
-
-Every machine-readable Linear lifecycle record — receipts, stage-start
-(`begin`), owner approval, blocked, failed, canceled, and the incomplete-state
-diagnosis — is a single visible, versioned `igniter_receipt` or
-`igniter_event` YAML fenced block after a short human-readable summary line.
-Dispatch never writes a hidden `<!-- igniter:... -->` HTML marker or inline
-JSON comment anymore; a strict parser rejects an unknown version, an unknown
-or duplicate field, a missing required field, or more than one block per
-comment, and a rejection never authorizes a state transition. Comments from
-before this contract still carry the old hidden markers; dispatch reads
-those read-only so an in-progress ticket never loses its begin, approval, or
-recovery boundary, but never writes that format again.
-
-After each approved transition, the Commander starts the next worker, confirms
-delivery, and records begin. `worker start` owns worktree/scratch setup, stable
-per-role identities, tabs, effective model, and confirmed initial work-order
-delivery. It returns the role, model, worker identity, and result path. Use
-`worker send`, `worker restart --model MODEL` (or `--profile fallback`),
-`worker stop`, and `worker answer ... y|n` for worker operations. Use
-`--role build|acceptance|deliver` when targeting an earlier role or when several
-workers exist. Worker commands may read ticket context but never write Linear.
-A restart really replaces the selected worker and preserves existing work.
-
-`block`/`unblock`, `fail`, `cancel`, and `reconcile` operate Linear without hidden worker
-side effects. The Commander explicitly stops workers after handoffs and Done;
-Done cleanup keeps dirty, untracked, or unmerged work and pre-existing user tabs.
-An externally integrated Done still requires the Deliver report and explicit
-worker cleanup. Receipt/checkpoint validation and Git safety continue to apply
-at every handoff.
-
-Only an explicit owner authorization may run
-`igniter cancel ENG-123 --reason "<reason>"`: it moves a non-terminal ticket
-to Canceled, clears the Progress labels while keeping unrelated ones, and
-records the reason and source state as one versioned YAML cancellation event.
-`fail` returns failed work to Backlog for replanning, `block` waits on an
-external condition, and `cancel` terminates the ticket by owner decision.
-`cancel` never stops or deletes workers, the worktree, the branch, or unmerged
-content; after canceling, run `igniter worker stop ENG-123` explicitly. Done
-tickets are refused and an already-canceled retry reports `already canceled`
-without writing a second event.
-
-This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
-This repository's project runbooks live at `.igniter/workflow/build.md`,
-`.igniter/workflow/acceptance.md`, and `.igniter/workflow/deliver.md`, wired
-through the `runbooks` map in its `.igniter/config.yaml`. The Deliver runbook
-rebases onto remote `main`, pushes, opens a pull request, and watches required
-checks through GitHub's native auto-merge. A rebase changing only the SHA keeps
-the approval; a product change needed to fix CI returns to Build and acceptance.
+- [Workflow operations](docs/workflow.md) — reports, approvals, worker recovery,
+  cancellation, and command migration.
+- [Project runbooks](docs/workflow.md#project-runbooks) — add repository-specific
+  instructions for Build, Acceptance, and Deliver.
+- [Agent defaults](src/commander/config.yaml) — harness, model, and reasoning
+  settings that projects can override under `agents` in `.igniter/config.yaml`.
+- [Development](docs/development.md) — test commands, isolation, and coverage.
 
 ## Development
 
-From an Igniter source checkout:
+From a source checkout:
 
 ```bash
 bun install
 bun run check
 ```
 
-`bun run check` runs typechecking and Bun tests, including an isolated package
-smoke test and the CLI end-to-end suite. Run the black-box suite alone with:
-
-```bash
-bun run test:e2e
-```
-
-### CLI end-to-end boundaries
-
-The end-to-end suite launches a real CLI subprocess for every command and
-drives the production command protocol against a temporary Git repository and
-ticket worktrees. The subprocess reaches stateful in-memory Linear and Herdr
-fakes through a test-only process boundary. The suite never reads real
-credentials, contacts Linear, starts Herdr or an LLM, or changes the source
-checkout. Owner status moves are direct fixture mutations only;
-`submit` never pretends to merge Git.
-
-The named scenario groups cover:
-
-| Group | Coverage |
-| --- | --- |
-| Status and begin | Human and JSON status, explicit worker start and Todo stage recording, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
-| Lifecycle and owner gates | Build, Acceptance PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
-| Worker start | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate begin prevention, and ticket isolation. |
-| Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, and explicit worker cleanup recovery. |
-| Control commands | Explicit ticket status, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, missing-ticket refusals, and `start` with a fake foreground Commander. |
-| Refusal and Git safety | Malformed payloads, wrong stage, stale/HEAD/rebased checkpoints, owner-gate refusal, dirty/untracked/unmerged checkout retention, scratch symlink escape, and packed failure diagnostics. |
-
-All condition polling has a deadline. On failure, the harness reports recent CLI
-stdout/stderr/exit codes, in-memory Linear and Herdr calls, plus Git status,
-worktrees, and branches before removing its own resources.
+Checks include typechecking, unit tests, and CLI end-to-end tests. Tests use
+isolated fixtures, without real credentials or provider calls.
 
 ## License
 
