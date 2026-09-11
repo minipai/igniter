@@ -1,9 +1,9 @@
-# Bundled Commander defaults. Stage prompt paths are relative to this file.
-# A repository may override any agent profile field under `agents` in
-# `.igniter/config.yaml`; omitted fields inherit the values below. A repository
-# `stages` map completely replaces all three stage entries and prompt paths.
+# Bundled Commander defaults. A repository may override any agent profile
+# field under `agents` in `.igniter/config.yaml`; omitted fields inherit the
+# values below. Stage prompts are bundled and cannot be replaced; a project
+# may add optional per-stage runbooks under `runbooks` in `.igniter/config.yaml`.
 #
-# Every profile — commander, builder, reviewer, deliverer, and the builder
+# Every profile — commander, builder, acceptance, deliverer, and the builder
 # fallback — shares one shape: `harness`, `model`, and optional `effort`.
 # `effort` is cross-harness reasoning/thinking effort. Omit it to keep the
 # harness default; once set, dispatch translates it into the harness's
@@ -13,7 +13,7 @@
 # Codex model ids are bare (`gpt-5.6-sol`). Provider-qualified ids such as
 # `openai/...` belong to OpenCode and are rejected by the Codex ChatGPT login.
 #
-# Stage mapping is fixed: Build runs on builder, Acceptance on reviewer,
+# Stage mapping is fixed: Build runs on builder, Acceptance on acceptance,
 # Deliver on deliverer. builder.fallback is the stronger Build profile the
 # Commander falls back to for complex or repeatedly failing Build work.
 
@@ -31,7 +31,7 @@ agents:
       model: gpt-5.6-sol
       effort: high
 
-  reviewer:
+  acceptance:
     harness: codex
     model: gpt-5.6-sol
     effort: high
@@ -40,14 +40,3 @@ agents:
     harness: codex
     model: gpt-5.6-luna
     effort: high
-
-stages:
-  build:
-    prompt: stages/build.md
-    agent: builder
-  review:
-    prompt: stages/review.md
-    agent: reviewer
-  deliver:
-    prompt: stages/deliver.md
-    agent: deliverer

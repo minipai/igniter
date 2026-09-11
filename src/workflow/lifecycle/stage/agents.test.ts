@@ -14,14 +14,12 @@ import {
 import { parseDispatchConfig, STAGE_AGENTS } from "../../config/config";
 
 describe("stage mapping", () => {
-  test("Build runs on builder, Acceptance on reviewer, Deliver on deliverer", () => {
-    expect(STAGE_AGENTS).toEqual({ build: "builder", review: "reviewer", deliver: "deliverer" });
+  test("Build runs on builder, Acceptance on acceptance, Deliver on deliverer", () => {
+    expect(STAGE_AGENTS).toEqual({ build: "builder", acceptance: "acceptance", deliver: "deliverer" });
     const commander = parseDispatchConfig({ project: "x" }).commander;
-    for (const stage of ["build", "review", "deliver"] as const) {
-      expect(commander.stages[stage].agent).toBe(STAGE_AGENTS[stage]);
-    }
-    // Deliver no longer reuses Builder.
-    expect(commander.stages.deliver.agent).not.toBe("builder");
+    // The mapping is fixed by STAGE_AGENTS; each profile exists and is distinct.
+    expect(Object.keys(commander.agents).sort()).toEqual(["acceptance", "builder", "commander", "deliverer"]);
+    expect(STAGE_AGENTS.deliver).not.toBe("builder");
     expect(commander.agents.deliverer).toEqual({
       harness: "codex",
       model: "gpt-5.6-luna",
@@ -187,16 +185,16 @@ describe("run-recorded stage profiles", () => {
     const config = parseDispatchConfig({ project: "x" });
     const recorded = recordStageProfiles(config);
     expect(Object.keys(recorded).sort()).toEqual([
+      "profile_acceptance",
       "profile_builder",
       "profile_deliverer",
-      "profile_reviewer",
     ]);
     expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
       harness: "codex",
       model: "gpt-5.6-terra",
       fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
-    expect(JSON.parse(recorded["profile_reviewer"]!)).toEqual({
+    expect(JSON.parse(recorded["profile_acceptance"]!)).toEqual({
       harness: "codex",
       model: "gpt-5.6-sol",
       effort: "high",
@@ -214,12 +212,12 @@ describe("run-recorded stage profiles", () => {
     const config = parseDispatchConfig({ project: "x" });
     const rerun = commanderConfigForRun(config.commander, {
       profile_builder: "not json",
-      profile_reviewer: JSON.stringify({ harness: 42 }),
+      profile_acceptance: JSON.stringify({ harness: 42 }),
       profile_deliverer: JSON.stringify(["array"]),
     });
     expect(rerun.agents.builder).toEqual(config.commander.agents.builder);
     // Invalid fields fall back; absent fields stay absent, not inherited.
-    expect(rerun.agents.reviewer).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
+    expect(rerun.agents.acceptance).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
     expect(rerun.agents.deliverer).toEqual(config.commander.agents.deliverer);
   });
 
@@ -230,7 +228,7 @@ describe("run-recorded stage profiles", () => {
       project: "x",
       agents: {
         builder: { harness: "gemini", model: "new/builder", effort: "low" },
-        reviewer: { harness: "opencode", model: "new/reviewer" },
+        acceptance: { harness: "opencode", model: "new/acceptance" },
         deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
       },
     });
@@ -241,7 +239,7 @@ describe("run-recorded stage profiles", () => {
     });
     expect(rerun.agents.builder.effort).toBeUndefined();
     expect(rerun.agents.builder.fallback.effort).toBe("high");
-    expect(rerun.agents.reviewer.model).toBe("gpt-5.6-sol");
+    expect(rerun.agents.acceptance.model).toBe("gpt-5.6-sol");
     expect(rerun.agents.deliverer.harness).toBe("codex");
   });
 

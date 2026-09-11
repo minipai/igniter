@@ -20,7 +20,7 @@ import { FakeWorkspaces } from "./fake-workspaces";
 import { scratchFor } from "../service/worktree/worker-scope";
 
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const TODO = "st-todo";
 const DONE = "st-done";
 const CANCELED = "st-canceled";
@@ -88,21 +88,21 @@ describe("status", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx);
-      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, title: "Second", labelIds: [COMPLETE] });
+      addIssue(h.world, { identifier: "STA-2", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, title: "Second", labelIds: [COMPLETE] });
       h.workspaces.seedWorkspace("STA-2", {
         ticket: "STA-2",
-        status: "review",
+        status: "acceptance",
         progress: "complete",
         checkpoint: "abc",
-        receipt_kind: "review-pass",
+        receipt_kind: "acceptance-pass",
         receipt_id: "comment-9",
       });
       const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("1 / 3 slots");
       expect(out.text).toContain("STA-1  Build/In progress");
-      expect(out.text).toContain("STA-2  Review/Complete");
-      expect(out.text).toContain("receipt review-pass:comment-9");
+      expect(out.text).toContain("STA-2  Acceptance/Complete");
+      expect(out.text).toContain("receipt acceptance-pass:comment-9");
       const data = out.data as { slots: { used: number; max: number }; tickets: Record<string, unknown>[] };
       expect(data.slots).toEqual({ used: 1, max: 3 });
       expect(data.tickets).toMatchObject([
@@ -347,14 +347,14 @@ describe("worker start profiles", () => {
       h.workspaces.seedWorkspace("STA-7", {
         ticket: "STA-7",
         profile_builder: JSON.stringify({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-        profile_reviewer: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
+        profile_acceptance: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
       });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
         agents: {
           builder: { harness: "gemini", model: "new/builder", effort: "low" },
-          reviewer: { harness: "opencode", model: "new/reviewer" },
+          acceptance: { harness: "opencode", model: "new/acceptance" },
         },
       });
       const out = await runCommand({ command: "worker.start", ticket: "STA-7" }, h.ctx);
@@ -542,7 +542,7 @@ describe("worker work order", () => {
         team: "Starcoder",
         agents: {
           builder: { harness: "gemini", model: "new/builder", effort: "low" },
-          reviewer: { harness: "opencode", model: "new/reviewer" },
+          acceptance: { harness: "opencode", model: "new/acceptance" },
           deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
         },
       });
@@ -582,14 +582,14 @@ describe("worker work order", () => {
       addIssue(h.world, { identifier: "STA-8", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const out = await runCommand({ command: "worker.start", ticket: "STA-8" }, h.ctx);
       expect(out.ok).toBe(true);
-      const scratch = { builder: scratchFor(h.repoRoot, "STA-8", "builder"), reviewer: scratchFor(h.repoRoot, "STA-8", "reviewer"), deliverer: scratchFor(h.repoRoot, "STA-8", "deliverer") };
+      const scratch = { builder: scratchFor(h.repoRoot, "STA-8", "builder"), acceptance: scratchFor(h.repoRoot, "STA-8", "acceptance"), deliverer: scratchFor(h.repoRoot, "STA-8", "deliverer") };
       const { existsSync } = await import("node:fs");
       expect(existsSync(scratch.builder)).toBe(true);
-      expect(existsSync(scratch.reviewer)).toBe(true);
+      expect(existsSync(scratch.acceptance)).toBe(true);
       expect(existsSync(scratch.deliverer)).toBe(true);
       expect(h.workspaces.tokensFor("STA-8")).toMatchObject({
         scratch_builder: scratch.builder,
-        scratch_reviewer: scratch.reviewer,
+        scratch_acceptance: scratch.acceptance,
         scratch_deliverer: scratch.deliverer,
       });
       const inbox = h.workspaces.promptsFor("builder-sta-8");

@@ -1,7 +1,7 @@
 // "Is this ticket running?" is a question for Herdr, not for comment
 // ordering on a Linear issue: one factory host, workspaces on this machine.
 // The snapshot already carries everything needed — agent sessions are named
-// `commander|builder|reviewer-<ticket>` (lowercased) and workspace tokens
+// `commander|builder|acceptance-<ticket>` (lowercased) and workspace tokens
 // may carry the identifier too.
 
 import { createHerdrSocket } from "../../../herdr/client/socket.ts";
@@ -108,7 +108,7 @@ export interface WorkspaceListing {
   workspaces?: { tokens?: Record<string, string | null> }[];
 }
 
-const AGENT_NAME = /^(?:builder|reviewer|deliverer)-([a-z]{2,}-\d+)$/i;
+const AGENT_NAME = /^(?:builder|acceptance|deliverer)-([a-z]{2,}-\d+)$/i;
 const TICKET_TOKEN = /^[A-Z]{2,}-\d+$/;
 
 /** The Build worker for a ticket's current stage. */
@@ -117,8 +117,8 @@ export function builderName(identifier: string): string {
 }
 
 /** The Acceptance worker beside a ticket's stage. */
-export function reviewerName(identifier: string): string {
-  return `reviewer-${identifier.toLowerCase()}`;
+export function acceptanceName(identifier: string): string {
+  return `acceptance-${identifier.toLowerCase()}`;
 }
 
 /** The Deliver worker for a ticket's current stage. */
@@ -126,12 +126,12 @@ export function delivererName(identifier: string): string {
   return `deliverer-${identifier.toLowerCase()}`;
 }
 
-export type StageWorkerStage = "build" | "review" | "deliver";
+export type StageWorkerStage = "build" | "acceptance" | "deliver";
 
-/** The stage worker name for one stage: builder/reviewer/deliverer-<ticket>. */
+/** The stage worker name for one stage: builder/acceptance/deliverer-<ticket>. */
 export function stageWorkerName(stage: StageWorkerStage, identifier: string): string {
   if (stage === "build") return builderName(identifier);
-  if (stage === "review") return reviewerName(identifier);
+  if (stage === "acceptance") return acceptanceName(identifier);
   return delivererName(identifier);
 }
 

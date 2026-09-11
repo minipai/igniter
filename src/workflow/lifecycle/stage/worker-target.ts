@@ -27,7 +27,7 @@ export async function readWorkerView(ticket: string, ctx: CommandContext): Promi
   const snapshot = await ctx.workspaces.snapshot();
   const workspace = workspaceForTicket(snapshot, ticket);
   const live = snapshot.agents.filter((agent) => agent.workspaceId === workspace?.workspaceId &&
-    (["build", "review", "deliver"] as const).some((stage) => agent.name === workerAgentName(stage, ticket)) &&
+    (["build", "acceptance", "deliver"] as const).some((stage) => agent.name === workerAgentName(stage, ticket)) &&
     !/^(done|ended|exited|failed|gone|stopped)$/i.test(agent.agentStatus));
   return { ticket, full, status, snapshot, workspace, live };
 }
@@ -38,10 +38,10 @@ export function selectWorker(view: WorkerView, role?: WorkerRole): {
   agent: SnapshotAgent | undefined;
 } {
   if (!role && view.live.length > 1) {
-    throw new Error(`multiple workers for ${view.ticket}; select --role build|review|deliver`);
+    throw new Error(`multiple workers for ${view.ticket}; select --role build|acceptance|deliver`);
   }
   const stage = role ??
-    (["build", "review", "deliver"] as const).find((candidate) =>
+    (["build", "acceptance", "deliver"] as const).find((candidate) =>
       view.live[0]?.name === workerAgentName(candidate, view.ticket)) ??
     (view.status ? stageForStatus(view.status) : null);
   if (!stage) throw new Error(`no worker role for ${view.ticket}; select --role`);

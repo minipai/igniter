@@ -35,7 +35,7 @@ describe("extractRunningTickets", () => {
         agents: [
           { name: "deliverer-STA-1" },
           { name: "builder-STA-2" },
-          { name: "reviewer-STA-3" },
+          { name: "acceptance-STA-3" },
           { name: "bash" },
           { name: null },
           {},

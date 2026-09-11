@@ -19,8 +19,8 @@ export async function beginCommand(ticket: string, ctx: CommandContext): Promise
     if (state.progress === "in_progress" && state.status !== "todo") {
       return { ok: true, text: `already began ${full.identifier}: ${state.status}+in_progress` };
     }
-    if (!["todo", "build", "review", "deliver"].includes(state.status) || (!bare && state.progress !== "pending")) {
-      throw new ProtocolError(`begin needs Todo, Build, Review, or Deliver + Pending; ${state.status}+${state.progress}`);
+    if (!["todo", "build", "acceptance", "deliver"].includes(state.status) || (!bare && state.progress !== "pending")) {
+      throw new ProtocolError(`begin needs Todo, Build, Acceptance, or Deliver + Pending; ${state.status}+${state.progress}`);
     }
     if (state.criteria.length === 0) throw new ProtocolError("begin requires acceptance criteria");
     if (state.status === "todo" && await countBuildSlots(ctx.client, ctx.resolved) >= ctx.resolved.config.maxRunning) {

@@ -116,7 +116,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
 
       const wrongKind = expectFail(
         await e2e.cli(["submit", "STA-20", "--input", "-"], {
-          stdin: JSON.stringify({ ...buildPayload(worktreeHeadOf(e2e.repoDir, "STA-20")), kind: "review" }),
+          stdin: JSON.stringify({ ...buildPayload(worktreeHeadOf(e2e.repoDir, "STA-20")), kind: "acceptance" }),
         }),
         'build submit needs {"v":1,"kind":"build"',
       );
@@ -130,7 +130,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
       expectOk(await e2e.cli(["submit", "STA-20", "--input", "-"], {
         stdin: JSON.stringify(buildPayload(head)),
       }));
-      // The first Build waits at Build+Complete: a Review payload is refused
+      // The first Build waits at Build+Complete: a Acceptance payload is refused
       // without touching Linear, and the owner handoff is still pending.
       const comments = issue.comments.map((comment) => comment.body);
       const wrongStage = expectFail(
@@ -187,7 +187,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
       );
       expect(stale.stdout).toBe("");
       expect(stale.stderr).toContain(`worktree HEAD is ${moved}`);
-      expect(issue.stateId).toBe("st-review");
+      expect(issue.stateId).toBe("st-acceptance");
       expect(progressNames(e2e, issue)).toEqual(["In progress"]);
       expect(issue.comments.map((comment) => comment.body)).toEqual(receiptBodies);
       expect(issue.attachments).toEqual([]);
@@ -197,7 +197,7 @@ describe("e2e submit refusal has no workflow side effects", () => {
 });
 
 describe("e2e rebased approval and scratch boundaries", () => {
-  test("a real rebase changes SHA and makes the old Review PASS receipt stale", async () => {
+  test("a real rebase changes SHA and makes the old Acceptance PASS receipt stale", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-22",
@@ -240,7 +240,7 @@ describe("e2e rebased approval and scratch boundaries", () => {
       expect(issue.comments.map((comment) => comment.body)).toEqual(commentsBefore);
       expect(issue.attachments.map((attachment) => attachment.url)).toEqual(attachmentsBefore);
       expect(issue.comments.map((comment) => parseReceiptBlock(comment.body)?.kind)).not.toContain("deliver");
-      expect(latestValidReceipt(issue.comments)?.receipt).toMatchObject({ kind: "review-pass", checkpoint: approved });
+      expect(latestValidReceipt(issue.comments)?.receipt).toMatchObject({ kind: "acceptance-pass", checkpoint: approved });
     });
   });
 

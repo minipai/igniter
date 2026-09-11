@@ -239,7 +239,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
     return this.agents.find((a) => a.name === agentName)?.inbox ?? [];
   }
 
-  /** Occupy a workspace pane with a named stage agent, the way a live Builder or Reviewer tab does. */
+  /** Occupy a workspace pane with a named stage agent, the way a live Builder or Acceptance tab does. */
   seedAgent(
     label: string,
     name: string,

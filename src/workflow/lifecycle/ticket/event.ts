@@ -2,12 +2,12 @@ import { createHash } from "node:crypto";
 import { parseRecord, recordBlock, RecordParseError, strictFields, type RecordValue } from "./record.ts";
 
 const EVENT = "igniter_event";
-const BEGIN_STAGES = ["build", "review", "deliver"] as const;
-const APPROVAL_SOURCES = ["build", "review", "deliver"] as const;
-const APPROVAL_TARGETS = ["review", "deliver", "done"] as const;
-const BLOCKED_STAGES = ["todo", "build", "review", "deliver"] as const;
-const INCOMPLETE_STAGES = ["build", "review", "deliver"] as const;
-const CANCELED_FROM = ["backlog", "todo", "build", "review", "deliver"] as const;
+const BEGIN_STAGES = ["build", "acceptance", "deliver"] as const;
+const APPROVAL_SOURCES = ["build", "acceptance", "deliver"] as const;
+const APPROVAL_TARGETS = ["acceptance", "deliver", "done"] as const;
+const BLOCKED_STAGES = ["todo", "build", "acceptance", "deliver"] as const;
+const INCOMPLETE_STAGES = ["build", "acceptance", "deliver"] as const;
+const CANCELED_FROM = ["backlog", "todo", "build", "acceptance", "deliver"] as const;
 
 export type BeginStage = (typeof BEGIN_STAGES)[number];
 export type ApprovalSource = (typeof APPROVAL_SOURCES)[number];

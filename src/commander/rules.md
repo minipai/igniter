@@ -39,17 +39,22 @@ Repository-specific engineering rules come from the target repository.
 - **Owner:** accepts the evidence, authorizes delivery, and confirms landing.
 
 Build, Acceptance, and Deliver each run as one stage worker
-(`builder-<ticket>`, `reviewer-<ticket>`, `deliverer-<ticket>`) in the
+(`builder-<ticket>`, `acceptance-<ticket>`, `deliverer-<ticket>`) in the
 ticket worktree. The Global Commander creates each worker only when its
 stage is prepared with `igniter worker start <ticket>`, without stealing focus.
 Only after delivery is confirmed does `igniter begin <ticket>` record the start.
 
 ## Project settings
 
-The stage prompts come from `.igniter/config.yaml`. When its `stages` map is
-present, it completely replaces the bundled Build, Review, and Deliver
-prompts; all three entries are required and each prompt path is relative to
-the repository root. Without that map, Igniter uses its bundled prompts.
+The stage protocol prompts are bundled with Igniter and cannot be replaced.
+`.igniter/config.yaml` may add optional, project-specific runbooks under
+`runbooks` — `runbooks.build`, `runbooks.acceptance`, `runbooks.deliver`.
+Each entry is optional, is relative to the repository root, must exist and be
+non-empty, and may not escape the repository. A runbook adds the project's
+run, checks, acceptance environment, and delivery procedure on top of the
+bundled stage protocol; it never changes the Linear state machine,
+authorization scope, receipt ownership, completion marker, or the black-box
+Acceptance boundary. Where they conflict, the bundled protocol wins.
 
 The optional `delivery` field names an additional project-instruction document
 relative to the repository root. When configured, read it directly without
@@ -70,17 +75,18 @@ Project instructions can define:
   destination. The default is browser evidence on the Linear issue.
 - **Risk areas:** paths or keywords that require an owner decision before
   acceptance. The default is none.
-- **Stages:** added or skipped work. By default, run Build, independent
-  acceptance, and Deliver. `skip: review` makes the Commander perform the same
-  black-box protocol; `skip: recording` requires alternative evidence and a
-  stated reason.
 - **Conventions:** repository branch, commit, review, and landing rules. Use
   AGENTS.md or CLAUDE.md when present.
+
+The lifecycle is fixed — Backlog → Todo → Build → Acceptance → Deliver → Done
+with Progress Pending | In progress | Complete | Blocked — and every ticket
+runs Build, independent Acceptance, and Deliver in that order. Projects cannot
+add, skip, or reorder stages.
 
 Bundled agent profiles contain harness, model, and optional effort;
 `.igniter/config.yaml` may override any field, and omitted fields inherit
 the bundled default. Each stage selects one profile: Build runs on
-`builder`, Acceptance on `reviewer`, Deliver on `deliverer`. `reviewer` is
+`builder`, Acceptance on `acceptance`, Deliver on `deliverer`. `acceptance` is
 a wiring name, not permission to perform code review, and
 `builder.fallback` is the stronger Build profile. `effort` is
 cross-harness reasoning/thinking effort: the launch translates it into the
@@ -125,17 +131,17 @@ call Linear directly or through MCP, or publish receipts.
   validated report using the schema returned by `status`:
   - The first Build lands in Build + Complete and waits there for the
     owner's approval.
-  - A correction Build (after a Review FAIL or after the owner sends Review
-    + Complete back to Build) lands straight back in Review + Pending with
+  - A correction Build (after an Acceptance FAIL or after the owner sends
+    Acceptance + Complete back to Build) lands straight back in Acceptance + Pending with
     no further owner step.
-  - Review PASS lands in Review + Complete.
-  - Review FAIL lands in Build + Pending.
+  - Acceptance PASS lands in Acceptance + Complete.
+  - Acceptance FAIL lands in Build + Pending.
   - Deliver lands in Deliver + Complete.
 - `igniter approve <ticket> --receipt <id>` records the owner's explicit approval of the
   current completed stage, bound to the receipt identity returned by status.
   Never pass `--to`: a valid Build receipt permits
-  Build + Complete to Review + Pending; a valid Review PASS receipt permits
-  Review + Complete to Deliver + Pending; a valid Deliver receipt permits
+  Build + Complete to Acceptance + Pending; a valid Acceptance PASS receipt permits
+  Acceptance + Complete to Deliver + Pending; a valid Deliver receipt permits
   Deliver + Complete to Done only after the change has landed. The command
   validates stage, Progress, receipt, checkpoint, and handoff rules and records
   the approval against that stage and receipt. It never starts a worker.
@@ -216,42 +222,47 @@ adoption. Use `igniter worker restart <ticket>` for an explicit local rebuild.
 
 Worker commands may read ticket context but never write Linear:
 
-- `igniter worker send <ticket> --role build|review|deliver TEXT` sends work to
+- `igniter worker send <ticket> --role build|acceptance|deliver TEXT` sends work to
   the explicitly selected role. Never guess when several roles exist.
-- `igniter worker restart <ticket> --role build|review|deliver --model MODEL`
-  (or `--profile builder|reviewer|deliverer|fallback`, with `--harness` and
+- `igniter worker restart <ticket> --role build|acceptance|deliver --model MODEL`
+  (or `--profile builder|acceptance|deliverer|fallback`, with `--harness` and
   `--effort` when needed) rebuilds the selected worker using the effective profile/model. It preserves
   worktree changes and checkpoint; tell the replacement to inspect the diff.
-- `igniter worker stop <ticket> --role build|review|deliver` stops only that
+- `igniter worker stop <ticket> --role build|acceptance|deliver` stops only that
   workflow worker; use it explicitly after a handoff, block, failure, or Done.
-- `igniter worker answer <ticket> --role build|review|deliver y|n` answers a
+- `igniter worker answer <ticket> --role build|acceptance|deliver y|n` answers a
   verified live permission dialog.
 
 Retain the IDs of workflow-created tabs and close only those during cleanup.
 
 Dispatch reads the bundled Commander defaults at the Igniter install
-location, applies agent and complete-stage overrides from
+location, applies agent overrides and optional runbooks from
 `.igniter/config.yaml`, and puts the effective stage and agent settings in the
-work order. Use those effective values. Stage prompt paths are absolute and
-name either a repository prompt or a bundled fallback.
+work order. Use those effective values. The bundled stage prompt path is
+always absolute; a configured runbook path is absolute too, and neither ever
+replaces the other.
 
 Pass the worker:
 
-- its absolute configured stage prompt path;
+- its absolute bundled stage protocol prompt path (never a repository prompt);
+- its optional absolute project runbook path, when the stage configures one,
+  clearly marked as secondary to the bundled protocol;
 - the inputs that stage prompt allows, supplied by the generated work order;
 - the worker's own scratch paths for `submit.json` and `result.md`, and the
   submit shape generated from the same canonical source as status; and
 - an instruction to read and follow repository rules.
 
 Each rule has one owner: this document owns roles, handoffs, and the
-Commander's approval scope; each stage prompt owns that stage's inputs and
-procedure; the generated work order supplies the per-run facts and the
-worker's hard boundaries. Keep those homes consistent.
+Commander's approval scope; each bundled stage prompt owns that stage's
+protocol, inputs, and procedure; the generated work order supplies the
+per-run facts, the runbook path, and the worker's hard boundaries. Keep those
+homes consistent.
 
 The Commander does not read stage prompts into its own context. It passes the
-absolute configured path from the work order for the worker to read directly.
+absolute bundled prompt path from the work order for the worker to read
+directly.
 
-Use `builder-<ticket>` for Build, `reviewer-<ticket>` for Review, and
+Use `builder-<ticket>` for Build, `acceptance-<ticket>` for Acceptance, and
 `deliverer-<ticket>` for Deliver. The Deliver name may remain unassociated on
 the current board; that does not prevent the worker from running.
 
@@ -267,8 +278,8 @@ ticket with the concrete reason.
 The feature request pre-authorizes read-only access to the repository, its
 instructions, and source paths within the task, plus read/write inside the
 ticket worktree and the worker's own igniter scratch (named in the work
-order). The Commander assets and repository stage prompts named by absolute
-path in the work order are pre-authorized read-only too.
+order). The Commander assets and the bundled stage prompts and runbooks named
+by absolute path in the work order are pre-authorized read-only too.
 Launch each worker normally in the ticket worktree. Do not invent or translate
 generic permission flags: harnesses do not share one permission UI. Never
 start a Claude stage worker with `--remote-control`; Herdr owns its pane and
@@ -307,7 +318,7 @@ the same canonical source as status; workers need no Igniter or Linear access.
   per-criterion self-acceptance, reproduction
   steps, and evidence required by the repository workflow in JSON; code-review
   findings and unresolved concerns in `result.md` when not covered by JSON.
-- **Review — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
+- **Acceptance — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
   with expected, actual, evidence, and environment details in JSON.
 - **Deliver — `DELIVERY_COMPLETE`:** checkpoint, landed target-branch commit,
   commit lineage, merge result, and remaining owner steps in JSON's
@@ -337,15 +348,15 @@ On Todo + Pending or Build + Pending, run status, worker start, confirm initial
 work-order delivery, then begin. On a returned Build + Pending, use the original
 Build role and the same sequence before continuing its correction.
 
-Before Review, require a committed checkpoint and every check or artifact
+Before Acceptance, require a committed checkpoint and every check or artifact
 named by the repository workflow. Compare its diff with the configured Risk
 areas. Block on a listed risk and wait for the owner.
 
 Build evidence is self-acceptance, never approval. After the first Build
 submit the ticket rests at Build + Complete: do not create the Acceptance
 worker until the owner approves and `igniter approve <ticket> --receipt <id>` records the
-Build handoff to Review + Pending. A correction Build needs no
-owner step and returns straight to Review + Pending. There is no code audit by
+Build handoff to Acceptance + Pending. A correction Build needs no
+owner step and returns straight to Acceptance + Pending. There is no code audit by
 default. Only the owner may request a bounded read-only audit, and it never
 replaces black-box acceptance.
 
@@ -353,10 +364,10 @@ When a Builder model switch is needed, use `igniter worker restart <ticket>
 --role build --model MODEL`. Confirm the returned effective model and real
 replacement worker; preserve the worktree and current checkpoint.
 
-## Review
+## Acceptance
 
-After a correction Build or an owner-approved Build handoff lands in Review +
-Pending, run status, `igniter worker start <ticket> --role review`, confirm
+After a correction Build or an owner-approved Build handoff lands in Acceptance +
+Pending, run status, `igniter worker start <ticket> --role acceptance`, confirm
 delivery, then `igniter begin <ticket>`. Give it no Build plan, diff, file list,
 implementation explanation, or Builder conclusion.
 
@@ -366,10 +377,10 @@ only the reproducible failed criteria — never fix inside acceptance, never
 open a second Builder.
 
 On PASS, validate and publish its evidence, read the destination back, then
-submit the Review report. Keep owner acceptance pending.
+submit the Acceptance report. Keep owner acceptance pending.
 
-On FAIL, submit the Review report so the ticket returns to Build + Pending,
-stop the Review worker explicitly, then use status, worker start, confirmed
+On FAIL, submit the Acceptance report so the ticket returns to Build + Pending,
+stop the Acceptance worker explicitly, then use status, worker start, confirmed
 delivery, and begin for Build. Send only reproducible failed criteria to the original
 Build agent. The new checkpoint requires another acceptance attempt. Recheck
 the failures plus a short smoke test; do not reopen passed criteria for
@@ -380,14 +391,14 @@ explicitly changes or waives it. Environment or tool failures are reported
 separately and do not fail a product criterion.
 
 Ask the owner only from Blocked: run `igniter block <ticket> --reason "<what you need>"`
-before putting any question to the owner, so Linear shows Review + Blocked
+before putting any question to the owner, so Linear shows Acceptance + Blocked
 instead of staying In progress. After the owner answers, run `igniter unblock <ticket>`,
 then status, worker start, confirmed delivery, `igniter begin <ticket>`, and continue.
 
 ## Deliver
 
 The owner's explicit approval authorizes `igniter approve <ticket> --receipt <id>` to move
-Review + Complete to Deliver + Pending. Read status, run worker start, confirm
+Acceptance + Complete to Deliver + Pending. Read status, run worker start, confirm
 delivery, then begin. Pass the accepted checkpoint and repository landing
 instructions to the configured Deliver worker.
 
@@ -402,7 +413,7 @@ stay in Deliver only when it preserves the accepted behavior while reconciling
 the patch with the current target. When landing needs a product-behavior change,
 the agent stops reusing the old approval and returns the ticket to acceptance
 or the owner for a new decision, starting from a new Build submit. Build and
-Review do not push; only a newly approved Deliver updates the remote branch.
+Acceptance do not push; only a newly approved Deliver updates the remote branch.
 
 Require the Deliver agent to finish the repository's delivery instructions;
 preparing a merge, opening a pull request without following its checks, or
@@ -412,7 +423,7 @@ steps before submitting the Deliver report. Do not deploy unless the owner
 requested it; push only when the repository instructions require it.
 
 This is a process trust boundary, not a proof: the program checks that a valid
-Review PASS receipt binds the approved checkpoint, that approval moved the
+Acceptance PASS receipt binds the approved checkpoint, that approval moved the
 ticket to Deliver, and that the reported landed commit exists on local `main`.
 It performs no patch-id, replay, or content/tree-equivalence comparison and
 never claims it can detect unaccepted content on its own.

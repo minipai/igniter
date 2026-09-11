@@ -10,7 +10,7 @@ import {
   latestValidReceipt,
   parseReceiptBlock,
   receiptBlock,
-  reviewReceiptBody,
+  acceptanceReceiptBody,
   type ReceiptKind,
 } from "./protocol";
 import { RecordParseError } from "./record";
@@ -29,10 +29,10 @@ function buildPayload() {
   };
 }
 
-function reviewPayload(verdict: "pass" | "fail") {
+function acceptancePayload(verdict: "pass" | "fail") {
   return {
     v: 1 as const,
-    kind: "review" as const,
+    kind: "acceptance" as const,
     verdict,
     checkpoint: CHECKPOINT,
     results: [
@@ -65,8 +65,8 @@ describe("receipt publisher", () => {
   test("every receipt carries exactly one parseable block and no HTML marker", () => {
     const bodies: [string, ReceiptKind][] = [
       [buildReceiptBody(buildPayload(), SUBMISSION), "build"],
-      [reviewReceiptBody(reviewPayload("pass"), SUBMISSION), "review-pass"],
-      [reviewReceiptBody(reviewPayload("fail"), SUBMISSION), "review-fail"],
+      [acceptanceReceiptBody(acceptancePayload("pass"), SUBMISSION), "acceptance-pass"],
+      [acceptanceReceiptBody(acceptancePayload("fail"), SUBMISSION), "acceptance-fail"],
       [deliverReceiptBody(deliverPayload(), SUBMISSION), "deliver"],
     ];
     for (const [body, kind] of bodies) {
@@ -77,7 +77,7 @@ describe("receipt publisher", () => {
   });
 
   test("receiptBlock round-trips through the parser for every kind", () => {
-    for (const kind of ["build", "review-pass", "review-fail", "deliver"] as const) {
+    for (const kind of ["build", "acceptance-pass", "acceptance-fail", "deliver"] as const) {
       const landed = kind === "deliver" ? CHECKPOINT : undefined;
       expect(parseReceiptBlock(`report\n\n${receiptBlock(kind, CHECKPOINT, SUBMISSION, landed)}\n`)).toEqual({
         kind,
@@ -183,20 +183,20 @@ describe("receipt lookup", () => {
       id: "c1",
       receipt: { kind: "build", checkpoint: "aaa", submission: "s1" },
     });
-    const newer = { id: "c4", body: `newest\n\n${receiptBlock("review-pass", "aaa", "s3")}\n` };
+    const newer = { id: "c4", body: `newest\n\n${receiptBlock("acceptance-pass", "aaa", "s3")}\n` };
     expect(latestValidReceipt([oldValid, newer])).toMatchObject({
       id: "c4",
-      receipt: { kind: "review-pass" },
+      receipt: { kind: "acceptance-pass" },
     });
     expect(latestValidReceipt([prose])).toBeNull();
   });
 
-  test("a legacy v1 Deliver receipt stays newer than its Review PASS", () => {
+  test("a legacy v1 Deliver receipt stays newer than its Acceptance PASS", () => {
     const checkpoint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const comments = [
       {
-        id: "review",
-        body: `review\n\n${receiptBlock("review-pass", checkpoint, "review-submission")}\n`,
+        id: "acceptance",
+        body: `acceptance\n\n${receiptBlock("acceptance-pass", checkpoint, "acceptance-submission")}\n`,
       },
       {
         id: "legacy-deliver",
@@ -220,10 +220,10 @@ describe("receipt lookup", () => {
   test("findReceipt dedupes on kind plus submission", () => {
     const comments = [
       { id: "c1", body: `a\n\n${receiptBlock("build", "aaa", "s1")}\n` },
-      { id: "c2", body: `b\n\n${receiptBlock("review-pass", "aaa", "s2")}\n` },
+      { id: "c2", body: `b\n\n${receiptBlock("acceptance-pass", "aaa", "s2")}\n` },
     ];
     expect(findReceipt(comments, "build", "s1")?.id).toBe("c1");
-    expect(findReceipt(comments, "review-pass", "s2")?.id).toBe("c2");
+    expect(findReceipt(comments, "acceptance-pass", "s2")?.id).toBe("c2");
     expect(findReceipt(comments, "build", "s2")).toBeNull();
     expect(findReceipt(comments, "deliver", "s1")).toBeNull();
   });

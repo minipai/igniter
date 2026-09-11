@@ -21,7 +21,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 const TODO = "st-todo";
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const DELIVER = "st-deliver";
 const PENDING = "label-pending";
 const IN_PROGRESS = "label-in-progress";
@@ -142,12 +142,12 @@ describe("ticket-targeted worker start", () => {
     }
   });
 
-  test("Review and Deliver derive their workers", async () => {
+  test("Acceptance and Deliver derive their workers", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      addIssue(h.world, { identifier: "STA-2", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand({ command: "worker.start", ticket: "STA-2" }, h.ctx)).ok).toBe(true);
-      expect(h.workspaces.agents.find((a) => a.name === "reviewer-sta-2")).toBeDefined();
+      expect(h.workspaces.agents.find((a) => a.name === "acceptance-sta-2")).toBeDefined();
       addIssue(h.world, { identifier: "STA-3", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand({ command: "worker.start", ticket: "STA-3" }, h.ctx)).ok).toBe(true);
       expect(h.workspaces.agents.find((a) => a.name === "deliverer-sta-3")).toBeDefined();
@@ -213,7 +213,7 @@ describe("ticket-targeted worker start", () => {
     } finally { h.stop(); }
   });
 
-  test("worker start sends a project stage prompt loaded from .igniter/config.yaml", async () => {
+  test("worker start passes the bundled prompt and a configured runbook", async () => {
     const h = await harness();
     try {
       const workflow = join(h.repoRoot, ".igniter", "workflow");
@@ -221,22 +221,21 @@ describe("ticket-targeted worker start", () => {
       writeFileSync(join(h.repoRoot, ".igniter", "config.yaml"), [
         "project: igniter",
         "team: Starcoder",
-        "stages:",
-        "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
-        "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
-        "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
+        "runbooks:",
+        "  build: .igniter/workflow/build.md",
         "",
       ].join("\n"));
-      for (const stage of ["build", "review", "deliver"] as const) {
-        writeFileSync(join(workflow, `${stage}.md`), `# project ${stage}\n`);
-      }
-      h.ctx.resolved.config.commander = (await loadDispatchConfig(h.repoRoot)).commander;
+      writeFileSync(join(workflow, "build.md"), "# project build runbook\n");
+      const loaded = await loadDispatchConfig(h.repoRoot);
+      h.ctx.resolved.config.runbooks = loaded.runbooks;
 
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       const order = h.workspaces.promptsFor("builder-sta-1")[0]!;
       expect(order).toContain(join(workflow, "build.md"));
-      expect(order).not.toContain(commanderAssetPaths().prompts.build);
+      expect(order).toContain(commanderAssetPaths().prompts.build);
+      expect(order).toContain("The Igniter stage protocol is bundled with Igniter; no project config can replace it.");
+      expect(order).toContain("Where the runbook conflicts, the bundled protocol wins.");
     } finally {
       h.stop();
     }
@@ -257,7 +256,7 @@ describe("explicit result collection and submission", () => {
       const resultPath = join(dir, "result.md");
       const artifactPath = join(dir, "submit.json");
       writeFileSync(artifactPath, JSON.stringify(buildPayload(), null, 2));
-      writeFileSync(resultPath, "# Build result\n\nCode review: no findings.\nUnresolved concerns: none.\n\nBUILD_HANDOFF_COMPLETE\n");
+      writeFileSync(resultPath, "# Build result\n\nCode acceptance: no findings.\nUnresolved concerns: none.\n\nBUILD_HANDOFF_COMPLETE\n");
       const report = readFileSync(resultPath, "utf8");
       expect(report).toContain("BUILD_HANDOFF_COMPLETE");
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
@@ -268,7 +267,7 @@ describe("explicit result collection and submission", () => {
       const out = await runCommand({ command: "submit", ticket: "STA-1", payload }, h.ctx);
       expect(out.ok).toBe(true);
       // The first Build waits at Build+Complete for owner acceptance;
-      // only the owner handoff moves it toward Review.
+      // only the owner handoff moves it toward Acceptance.
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([COMPLETE]);
       expect(latestValidReceipt(h.world.issues[0]!.comments)).toMatchObject({ receipt: { kind: "build" } });

@@ -55,7 +55,7 @@ function input(overrides: Partial<StageWorkOrderInput> = {}): StageWorkOrderInpu
 describe("generated stage work order inputs", () => {
   for (const [stage, worker, marker] of [
     ["build", "builder", "BUILD_HANDOFF_COMPLETE"],
-    ["review", "reviewer", "ACCEPTANCE_COMPLETE"],
+    ["acceptance", "acceptance", "ACCEPTANCE_COMPLETE"],
     ["deliver", "deliverer", "DELIVERY_COMPLETE"],
   ] as const) {
     test(`${stage} embeds the canonical submit shape and preserves the completion gate`, () => {
@@ -113,7 +113,7 @@ describe("generated stage work order inputs", () => {
   });
 
   test("Acceptance receives only the requirement, observable criteria, runbook, and checkpoint", () => {
-    const order = buildStageWorkOrder(input({ stage: "review", resultPath: "/scratch/sta-241/reviewer/result.md" }));
+    const order = buildStageWorkOrder(input({ stage: "acceptance", resultPath: "/scratch/sta-241/acceptance/result.md" }));
     expect(order).toContain("Requirement: 統一 stage 指令");
     expect(order).toContain("Observable acceptance criteria:");
     expect(order).toContain("Acceptance 只收到需求與可觀察條件");
@@ -130,12 +130,43 @@ describe("generated stage work order inputs", () => {
   });
 
   test("Acceptance may start the tested product's local service but not Igniter, Linear, or publication", () => {
-    const order = buildStageWorkOrder(input({ stage: "review", resultPath: "/scratch/sta-241/reviewer/result.md" }));
+    const order = buildStageWorkOrder(input({ stage: "acceptance", resultPath: "/scratch/sta-241/acceptance/result.md" }));
     expect(order).toMatch(/tested product's own local services/i);
     expect(order).toContain("Do not run any `igniter` command");
     expect(order).toContain("do not call Linear");
     expect(order).toContain("do not publish Linear receipts");
     expect(order).toContain("Do not publish externally on your own");
+  });
+
+  test("the bundled protocol prompt is always named and a runbook is optional", () => {
+    const plain = buildStageWorkOrder(input({ stage: "build" }));
+    expect(plain).toContain("Read the stage prompt at /igniter/stages/build.md");
+    expect(plain).toContain("The Igniter stage protocol is bundled with Igniter; no project config can replace it.");
+    expect(plain).not.toContain("Project runbook");
+
+    const withRunbook = buildStageWorkOrder(input({
+      stage: "acceptance",
+      promptPath: "/igniter/stages/acceptance.md",
+      resultPath: "/scratch/sta-241/acceptance/result.md",
+      runbook: "/repo/.igniter/workflow/acceptance.md",
+    }));
+    expect(withRunbook).toContain("Read the stage prompt at /igniter/stages/acceptance.md");
+    expect(withRunbook).toContain("Read the project runbook at /repo/.igniter/workflow/acceptance.md");
+    expect(withRunbook).toContain("The bundled stage protocol prompt above defines the non-overridable stage contract");
+    expect(withRunbook).toContain("Where the runbook conflicts, the bundled protocol wins.");
+  });
+
+  test("the acceptance runbook stays public while the bundled black-box prompt still forbids source inspection", () => {
+    const order = buildStageWorkOrder(input({
+      stage: "acceptance",
+      promptPath: "/igniter/stages/acceptance.md",
+      resultPath: "/scratch/sta-241/acceptance/result.md",
+      runbook: "/repo/ACCEPTANCE.md",
+    }));
+    expect(order).toContain("Read the project runbook at /repo/ACCEPTANCE.md");
+    expect(order).toContain("Do not read source files, git history, or diffs");
+    expect(order).not.toContain(HINT);
+    expect(order).not.toContain(DESCRIPTION);
   });
 });
 
@@ -168,7 +199,7 @@ async function generatedOrder(state: string, identifier = "STA-241"): Promise<st
   };
   const out = await workerCommand({ command: "worker.start", ticket: identifier }, ctx);
   if (!out.ok) throw new Error(out.text);
-  const role = state === "st-review" ? "reviewer" : state === "st-deliver" ? "deliverer" : "builder";
+  const role = state === "st-acceptance" ? "acceptance" : state === "st-deliver" ? "deliverer" : "builder";
   return workspaces.promptsFor(`${role}-${identifier.toLowerCase()}`)[0]!;
 }
 
@@ -181,7 +212,7 @@ describe("worker start delivers the generated per-stage work order", () => {
   });
 
   test("Acceptance withholds implementation hints and allows the local product service", async () => {
-    const order = await generatedOrder("st-review");
+    const order = await generatedOrder("st-acceptance");
     expect(order).toContain("Requirement: 統一 stage 指令");
     expect(order).toContain("Acceptance 只收到需求與可觀察條件");
     expect(order).toContain("本機服務可啟動");

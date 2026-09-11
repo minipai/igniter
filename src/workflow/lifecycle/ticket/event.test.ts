@@ -71,7 +71,7 @@ describe("event record strictness", () => {
   });
 
   test("kind-specific parsers return null for a different valid kind", () => {
-    const approval = approvalEventBody(TICKET, "receipt-1", SUBMISSION, CHECKPOINT, "build", "review");
+    const approval = approvalEventBody(TICKET, "receipt-1", SUBMISSION, CHECKPOINT, "build", "acceptance");
     expect(parseBeginEvent(approval)).toBeNull();
     expect(parseBlockedEvent(approval)).toBeNull();
     expect(parseFailedEvent(approval)).toBeNull();
@@ -91,22 +91,22 @@ describe("begin event", () => {
   });
 
   test("preserves a non-null preceding receipt submission", () => {
-    const body = beginEventBody(TICKET, "review", SUBMISSION);
-    expect(parseBeginEvent(body)).toEqual({ ticket: TICKET, stage: "review", after: SUBMISSION });
+    const body = beginEventBody(TICKET, "acceptance", SUBMISSION);
+    expect(parseBeginEvent(body)).toEqual({ ticket: TICKET, stage: "acceptance", after: SUBMISSION });
   });
 
   test("returns null for a body with no event block", () => {
     expect(parseBeginEvent("Stage started: build.")).toBeNull();
   });
 
-  test("rejects a stage outside build/review/deliver", () => {
+  test("rejects a stage outside build/acceptance/deliver", () => {
     const body = "```yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: backlog\n  after: null\n```";
-    expect(() => parseBeginEvent(body)).toThrow(/stage.*build, review, deliver/);
+    expect(() => parseBeginEvent(body)).toThrow(/stage.*build, acceptance, deliver/);
   });
 
   test("reads the legacy HTML begin marker read-only", () => {
-    const legacy = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: TICKET, stage: "review", after: SUBMISSION })} -->\nStage started: review; preceding receipt ${SUBMISSION}.`;
-    expect(parseBeginEvent(legacy)).toEqual({ ticket: TICKET, stage: "review", after: SUBMISSION });
+    const legacy = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: TICKET, stage: "acceptance", after: SUBMISSION })} -->\nStage started: acceptance; preceding receipt ${SUBMISSION}.`;
+    expect(parseBeginEvent(legacy)).toEqual({ ticket: TICKET, stage: "acceptance", after: SUBMISSION });
   });
 
   test("reads a legacy begin marker with a null preceding receipt", () => {
@@ -124,39 +124,39 @@ describe("begin event", () => {
   });
 
   test("ignores a legacy begin marker embedded after comment prose", () => {
-    const marker = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: TICKET, stage: "review", after: SUBMISSION })} -->`;
+    const marker = `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: TICKET, stage: "acceptance", after: SUBMISSION })} -->`;
     expect(parseBeginEvent(`quoted evidence\n${marker}\nprose`)).toBeNull();
   });
 });
 
 describe("approval event", () => {
   test("approvalEventBody round-trips through parseApprovalEvent", () => {
-    const body = approvalEventBody(TICKET, "receipt-1", SUBMISSION, CHECKPOINT, "build", "review");
+    const body = approvalEventBody(TICKET, "receipt-1", SUBMISSION, CHECKPOINT, "build", "acceptance");
     expect(parseApprovalEvent(body)).toEqual({
       ticket: TICKET,
       receipt: "receipt-1",
       submission: SUBMISSION,
       checkpoint: CHECKPOINT,
       source: "build",
-      target: "review",
+      target: "acceptance",
     });
   });
 
   test("rejects an invalid source/target pair", () => {
-    const body = "```yaml\nigniter_event:\n  version: 1\n  kind: approval\n  ticket: STA-1\n  receipt: r1\n  submission: s1\n  checkpoint: abc123\n  source: nope\n  target: review\n```";
-    expect(() => parseApprovalEvent(body)).toThrow(/source.*build, review, deliver/);
+    const body = "```yaml\nigniter_event:\n  version: 1\n  kind: approval\n  ticket: STA-1\n  receipt: r1\n  submission: s1\n  checkpoint: abc123\n  source: nope\n  target: acceptance\n```";
+    expect(() => parseApprovalEvent(body)).toThrow(/source.*build, acceptance, deliver/);
   });
 
   test("reads the legacy HTML approval marker read-only", () => {
     const legacy =
-      `<!-- igniter:approval ${JSON.stringify({ v: 1, ticket: TICKET, receipt: "receipt-1", submission: SUBMISSION, checkpoint: CHECKPOINT, source: "review", target: "deliver" })} -->\n` +
-      `Approved review+complete → deliver+pending; receipt receipt-1, checkpoint ${CHECKPOINT}.`;
+      `<!-- igniter:approval ${JSON.stringify({ v: 1, ticket: TICKET, receipt: "receipt-1", submission: SUBMISSION, checkpoint: CHECKPOINT, source: "acceptance", target: "deliver" })} -->\n` +
+      `Approved acceptance+complete → deliver+pending; receipt receipt-1, checkpoint ${CHECKPOINT}.`;
     expect(parseApprovalEvent(legacy)).toEqual({
       ticket: TICKET,
       receipt: "receipt-1",
       submission: SUBMISSION,
       checkpoint: CHECKPOINT,
-      source: "review",
+      source: "acceptance",
       target: "deliver",
     });
   });
@@ -173,7 +173,7 @@ describe("approval event", () => {
   test("ignores a legacy approval marker embedded after comment prose", () => {
     const marker = `<!-- igniter:approval ${JSON.stringify({
       v: 1, ticket: TICKET, receipt: "receipt-1", submission: SUBMISSION, checkpoint: CHECKPOINT,
-      source: "build", target: "review",
+      source: "build", target: "acceptance",
     })} -->`;
     expect(parseApprovalEvent(`quoted evidence\n${marker}\nprose`)).toBeNull();
   });
@@ -188,17 +188,17 @@ describe("blocked event", () => {
 
   test("keeps the reason prose out of the YAML block, in the prose above it", () => {
     const reason = "flaky CI needs a human";
-    const body = `Blocked: ${reason}\n\n${blockedEventBody(TICKET, "review", reason)}`;
+    const body = `Blocked: ${reason}\n\n${blockedEventBody(TICKET, "acceptance", reason)}`;
     expect(body).toContain(reason);
     expect(body.split("```yaml")[1]).not.toContain(reason);
-    expect(parseBlockedEvent(body)).toEqual({ ticket: TICKET, stage: "review", reason: textFingerprint(reason) });
+    expect(parseBlockedEvent(body)).toEqual({ ticket: TICKET, stage: "acceptance", reason: textFingerprint(reason) });
   });
 
   test("hasBlockedEvent matches same ticket/stage/reason and rejects a different reason", () => {
     const reason = "flaky CI needs a human";
     const body = blockedEventBody(TICKET, "build", reason);
     expect(hasBlockedEvent([{ body }], TICKET, "build", reason)).toBe(true);
-    expect(hasBlockedEvent([{ body }], TICKET, "review", reason)).toBe(false);
+    expect(hasBlockedEvent([{ body }], TICKET, "acceptance", reason)).toBe(false);
     expect(hasBlockedEvent([{ body }], TICKET, "build", "a different reason")).toBe(false);
   });
 
@@ -297,7 +297,7 @@ describe("incomplete-state event", () => {
   });
 
   test("distinguishes multi-label progress keys", () => {
-    const body = incompleteEventBody(TICKET, "review", "pending+complete", SUBMISSION, "park:kind-mismatch");
+    const body = incompleteEventBody(TICKET, "acceptance", "pending+complete", SUBMISSION, "park:kind-mismatch");
     expect(parseIncompleteEvent(body)).toMatchObject({ progress: "pending+complete", receipt: SUBMISSION });
   });
 

@@ -72,9 +72,9 @@ export async function approveTicket(
     throw new ProtocolError("stale approval: read status and use its current receipt.id; no stage was approved");
   }
   const { kind, checkpoint, submission } = latest.receipt;
-  const source: ApprovalSource | null = kind === "build" ? "build" : kind === "review-pass" ? "review" : kind === "deliver" ? "deliver" : null;
-  if (!source) throw new ProtocolError("approve requires a Build, Review PASS, or Deliver receipt");
-  const target: ApprovalTarget = source === "build" ? "review" : source === "review" ? "deliver" : "done";
+  const source: ApprovalSource | null = kind === "build" ? "build" : kind === "acceptance-pass" ? "acceptance" : kind === "deliver" ? "deliver" : null;
+  if (!source) throw new ProtocolError("approve requires a Build, Acceptance PASS, or Deliver receipt");
+  const target: ApprovalTarget = source === "build" ? "acceptance" : source === "acceptance" ? "deliver" : "done";
   const state = approvalState(deps, full);
   // The durable intent is written before either status or Progress. It is
   // also the audit record: a retry uses exactly this receipt and transition.
@@ -96,8 +96,8 @@ export async function approveTicket(
   }
   if (!/^[0-9a-f]{7,64}$/.test(checkpoint)) throw new ProtocolError("approval receipt checkpoint must be a Git hash");
   if (kind === "deliver") {
-    const review = latestReceiptOf(full.comments, "review-pass");
-    if (!review || review.receipt.checkpoint !== checkpoint) throw new ProtocolError("delivery receipt does not bind the passing review checkpoint");
+    const acceptance = latestReceiptOf(full.comments, "acceptance-pass");
+    if (!acceptance || acceptance.receipt.checkpoint !== checkpoint) throw new ProtocolError("delivery receipt does not bind the passing acceptance checkpoint");
     const landed = latest.receipt.landed!;
     if (!/^[0-9a-f]{7,64}$/.test(landed)) throw new ProtocolError("delivery receipt landed commit must be a Git hash");
     try {
@@ -109,9 +109,9 @@ export async function approveTicket(
     if (!(await checkpointInLineage(deps, full.identifier, checkpoint))) {
       throw new ProtocolError("approval receipt checkpoint is not in the ticket branch lineage");
     }
-    if (kind === "review-pass") {
+    if (kind === "acceptance-pass") {
       const build = latestReceiptOf(full.comments, "build");
-      if (!build || build.receipt.checkpoint !== checkpoint) throw new ProtocolError("passing review does not bind the latest Build checkpoint");
+      if (!build || build.receipt.checkpoint !== checkpoint) throw new ProtocolError("passing acceptance does not bind the latest Build checkpoint");
     }
   }
   if (!recorded) {

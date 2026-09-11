@@ -3,6 +3,8 @@ import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CANONICAL_PROGRESS,
+  CANONICAL_STATES,
   DEFAULT_COMMANDER_CONFIG,
   DEFAULT_PROGRESS,
   DEFAULT_STATES,
@@ -34,26 +36,31 @@ describe("parseDispatchConfig", () => {
       herdrRemote: undefined,
       commander: DEFAULT_COMMANDER_CONFIG,
       delivery: undefined,
+      runbooks: {},
     });
   });
 
-  test("defaults name the seven statuses and the Progress group", () => {
-    expect(DEFAULT_STATES).toEqual({
+  test("the lifecycle and Progress names are fixed protocol constants", () => {
+    expect(CANONICAL_STATES).toEqual({
       backlog: "Backlog",
       todo: "Todo",
       build: "Build",
-      review: "Review",
+      acceptance: "Acceptance",
       deliver: "Deliver",
       done: "Done",
       canceled: "Canceled",
     });
-    expect(DEFAULT_PROGRESS).toEqual({
+    expect(CANONICAL_PROGRESS).toEqual({
       group: "Progress",
       pending: "Pending",
       in_progress: "In progress",
       complete: "Complete",
       blocked: "Blocked",
     });
+    // Parsing never changes them, whatever a project writes elsewhere.
+    const config = parseDispatchConfig({ project: "x" });
+    expect(config.states).toEqual(CANONICAL_STATES);
+    expect(config.progress).toEqual(CANONICAL_PROGRESS);
   });
 
   test("accepts a delivery path, defaulting to absent", () => {
@@ -84,35 +91,44 @@ describe("parseDispatchConfig", () => {
     expect(() => parseDispatchConfig({ project: "x", target_branch: 42 })).toThrow('"target_branch"');
   });
 
-  test("accepts a full file", () => {
+  test("accepts a full file with agents and runbooks", () => {
     const config = parseDispatchConfig({
       project: "igniter",
       team: "Starcoder",
       max_running: 2,
-      states: {
-        backlog: "Backlog",
-        todo: "Todo",
-        build: "Build",
-        review: "Review",
-        deliver: "Deliver",
-        done: "Done",
-      },
-      progress: {
-        group: "Progress",
-        pending: "Pending",
-        in_progress: "In progress",
-        complete: "Complete",
-        blocked: "Blocked",
-      },
       herdr_remote: "art@192.168.88.8",
       agents: {
         builder: { model: "custom/builder" },
-        reviewer: { harness: "codex" },
+        acceptance: { harness: "codex" },
+      },
+      runbooks: {
+        build: ".igniter/workflow/build.md",
+        acceptance: ".igniter/workflow/acceptance.md",
+        deliver: ".igniter/workflow/deliver.md",
       },
     });
     expect(config.maxRunning).toBe(2);
     expect(config.commander.agents.builder.model).toBe("custom/builder");
-    expect(config.commander.agents.reviewer.harness).toBe("codex");
+    expect(config.commander.agents.acceptance.harness).toBe("codex");
+    expect(config.runbooks).toEqual({
+      build: ".igniter/workflow/build.md",
+      acceptance: ".igniter/workflow/acceptance.md",
+      deliver: ".igniter/workflow/deliver.md",
+    });
+  });
+
+  test("runbooks is optional and each entry is independent", () => {
+    expect(parseDispatchConfig({ project: "x" }).runbooks).toEqual({});
+    expect(parseDispatchConfig({ project: "x", runbooks: { build: "b.md" } }).runbooks).toEqual({ build: "b.md" });
+    expect(parseDispatchConfig({ project: "x", runbooks: { acceptance: "a.md" } }).runbooks).toEqual({ acceptance: "a.md" });
+  });
+
+  test("rejects bad runbook values and unknown stages", () => {
+    expect(() => parseDispatchConfig({ project: "x", runbooks: 42 })).toThrow('"runbooks"');
+    expect(() => parseDispatchConfig({ project: "x", runbooks: { build: "" } })).toThrow('runbooks."build"');
+    expect(() => parseDispatchConfig({ project: "x", runbooks: { testing: "t.md" } })).toThrow(
+      'unknown runbook stage "testing" (known: build, acceptance, deliver)',
+    );
   });
 
   test("loads bundled agent profiles and applies repository overrides", () => {
@@ -123,18 +139,15 @@ describe("parseDispatchConfig", () => {
       model: "gpt-5.6-terra",
       fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
-    expect(defaults.agents.reviewer).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
+    expect(defaults.agents.acceptance).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
     expect(defaults.agents.deliverer).toEqual({ harness: "codex", model: "gpt-5.6-luna", effort: "high" });
-    expect(defaults.stages.build.agent).toBe("builder");
-    expect(defaults.stages.review.agent).toBe("reviewer");
-    expect(defaults.stages.deliver.agent).toBe("deliverer");
 
     const overridden = parseDispatchConfig({
       project: "x",
       agents: {
         commander: { model: "custom/commander" },
         builder: { harness: "codex", model: "gpt-5.6-sol", fallback: { model: "fallback/model" } },
-        reviewer: { model: "review/model" },
+        acceptance: { model: "acceptance/model" },
         deliverer: { harness: "claude", effort: "low" },
       },
     }).commander;
@@ -144,55 +157,24 @@ describe("parseDispatchConfig", () => {
     expect(overridden.agents.builder.model).toBe("gpt-5.6-sol");
     expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
     expect(overridden.agents.builder.fallback.effort).toBe("high");
-    expect(overridden.agents.reviewer.model).toBe("review/model");
+    expect(overridden.agents.acceptance.model).toBe("acceptance/model");
     expect(overridden.agents.deliverer).toEqual({ harness: "claude", model: "gpt-5.6-luna", effort: "low" });
     expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("codex");
-  });
-
-  test("accepts a complete stage override while agent fields still merge", () => {
-    const merged = parseDispatchConfig({
-      project: "x",
-      agents: { builder: { model: "custom/builder" } },
-      stages: {
-        build: { prompt: ".igniter/workflow/build.md", agent: "builder" },
-        review: { prompt: ".igniter/workflow/review.md", agent: "reviewer" },
-        deliver: { prompt: ".igniter/workflow/deliver.md", agent: "deliverer" },
-      },
-    }).commander;
-    expect(merged.agents.builder.model).toBe("custom/builder");
-    expect(merged.stages.build.prompt).toBe(".igniter/workflow/build.md");
-    expect(merged.stages.review.prompt).toBe(".igniter/workflow/review.md");
-    expect(merged.stages.deliver.prompt).toBe(".igniter/workflow/deliver.md");
-  });
-
-  test("a stage override must be complete and keep protocol agent roles", () => {
-    expect(() => parseDispatchConfig({
-      project: "x",
-      stages: { build: { prompt: "build.md", agent: "builder" } },
-    })).toThrow('stages."review" is required');
-    expect(() => parseDispatchConfig({
-      project: "x",
-      stages: {
-        build: { prompt: "build.md", agent: "reviewer" },
-        review: { prompt: "review.md", agent: "reviewer" },
-        deliver: { prompt: "deliver.md", agent: "deliverer" },
-      },
-    })).toThrow('stages."build" must run on "builder"');
   });
 
   test("rejects invalid agent overrides", () => {
     expect(() => parseDispatchConfig({
       project: "x",
       agents: { tester: { harness: "codex" } },
-    })).toThrow('unknown agent "tester" (known: commander, builder, reviewer, deliverer)');
+    })).toThrow('unknown agent "tester" (known: commander, builder, acceptance, deliverer)');
     expect(() => parseDispatchConfig({
       project: "x",
       agents: { builder: { harness: "" } },
     })).toThrow('"harness"');
     expect(() => parseDispatchConfig({
       project: "x",
-      agents: { reviewer: { fallback: { model: "x" } } },
-    })).toThrow('unknown agents."reviewer" setting "fallback"');
+      agents: { acceptance: { fallback: { model: "x" } } },
+    })).toThrow('unknown agents."acceptance" setting "fallback"');
     expect(() => parseDispatchConfig({
       project: "x",
       agents: { deliverer: { fallback: { model: "x" } } },
@@ -215,44 +197,20 @@ describe("parseDispatchConfig", () => {
     expect(() => parseDispatchConfig({})).toThrow('"project" is required');
   });
 
-  test("the old stage roles fail parsing, so an old config cannot start", () => {
+  test("the removed states, progress, and stages maps fail with a migration error", () => {
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { queued: "Ready to build" } }),
-    ).toThrow('unknown states role "queued"');
+      parseDispatchConfig({ project: "x", states: { backlog: "Backlog" } }),
+    ).toThrow('"states" is no longer configurable');
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { building: "Building" } }),
-    ).toThrow('unknown states role "building"');
+      parseDispatchConfig({ project: "x", progress: { group: "Progress" } }),
+    ).toThrow('"progress" is no longer configurable');
     expect(() =>
-      parseDispatchConfig({ project: "x", states: { failed: "Todo" } }),
-    ).toThrow('unknown states role "failed"');
-    expect(() =>
-      parseDispatchConfig({ project: "x", states: { merge: "Ready to merge" } }),
-    ).toThrow('unknown states role "merge"');
+      parseDispatchConfig({ project: "x", stages: { build: { prompt: "b.md", agent: "builder" } } }),
+    ).toThrow('"stages" is no longer configurable');
   });
 
-  test("duplicate status names fail parsing", () => {
-    expect(() =>
-      parseDispatchConfig({ project: "x", states: { todo: "Build" } }),
-    ).toThrow("seven distinct Linear statuses");
-  });
-
-  test("duplicate progress labels fail parsing", () => {
-    expect(() =>
-      parseDispatchConfig({ project: "x", progress: { complete: "Pending" } }),
-    ).toThrow("four distinct Linear labels");
-  });
-
-  test("unknown progress roles fail parsing", () => {
-    expect(() => parseDispatchConfig({ project: "x", progress: { queued: "Q" } })).toThrow(
-      'unknown progress role "queued"',
-    );
-  });
-
-  test("rejects bad max_running and unknown state roles", () => {
+  test("rejects bad max_running", () => {
     expect(() => parseDispatchConfig({ project: "x", max_running: 0 })).toThrow('"max_running"');
-    expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
-      'unknown states role "later" (known: backlog, todo, build, review, deliver, done, canceled)',
-    );
   });
 });
 
@@ -286,63 +244,69 @@ describe("loadDispatchConfig", () => {
     expect(config.delivery).toBeUndefined();
   });
 
-  test("stage overrides resolve to non-empty files under the repo root", async () => {
+  test("the bundled stage prompt is always available regardless of runbooks", () => {
+    const paths = commanderAssetPaths();
+    expect(promptPathForStage(paths, "build")).toBe(paths.prompts.build);
+    expect(promptPathForStage(paths, "acceptance")).toBe(paths.prompts.acceptance);
+    expect(promptPathForStage(paths, "deliver")).toBe(paths.prompts.deliver);
+  });
+
+  test("runbooks resolve to non-empty files under the repo root", async () => {
     const yaml = [
       "project: igniter",
-      "stages:",
-      "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
-      "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
-      "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
+      "runbooks:",
+      "  build: .igniter/workflow/build.md",
+      "  acceptance: .igniter/workflow/acceptance.md",
+      "  deliver: .igniter/workflow/deliver.md",
       "",
     ].join("\n");
     const dir = configDir(yaml);
     mkdirSync(join(dir, ".igniter", "workflow"));
-    for (const stage of ["build", "review", "deliver"] as const) {
+    for (const stage of ["build", "acceptance", "deliver"] as const) {
       writeFileSync(join(dir, ".igniter", "workflow", `${stage}.md`), `# ${stage}\n`);
     }
     const config = await loadDispatchConfig(dir);
-    expect(config.commander.stages.build.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "build.md")));
-    expect(config.commander.stages.review.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "review.md")));
-    expect(config.commander.stages.deliver.prompt).toBe(realpathSync(join(dir, ".igniter", "workflow", "deliver.md")));
-    expect(promptPathForStage(commanderAssetPaths(), "build", config.commander)).toBe(
-      realpathSync(join(dir, ".igniter", "workflow", "build.md")),
-    );
+    expect(config.runbooks.build).toBe(realpathSync(join(dir, ".igniter", "workflow", "build.md")));
+    expect(config.runbooks.acceptance).toBe(realpathSync(join(dir, ".igniter", "workflow", "acceptance.md")));
+    expect(config.runbooks.deliver).toBe(realpathSync(join(dir, ".igniter", "workflow", "deliver.md")));
 
-    writeFileSync(join(dir, ".igniter", "workflow", "review.md"), "");
-    await expect(loadDispatchConfig(dir)).rejects.toThrow('stages."review"."prompt"');
+    writeFileSync(join(dir, ".igniter", "workflow", "acceptance.md"), "");
+    await expect(loadDispatchConfig(dir)).rejects.toThrow('runbooks."acceptance"');
   });
 
-  test("stage override prompts cannot escape the repo root", async () => {
-    const dir = configDir([
-      "project: igniter",
-      "stages:",
-      "  build: { prompt: ../build.md, agent: builder }",
-      "  review: { prompt: review.md, agent: reviewer }",
-      "  deliver: { prompt: deliver.md, agent: deliverer }",
-      "",
-    ].join("\n"));
+  test("a partial runbooks map needs no other entries", async () => {
+    const dir = configDir("project: igniter\nrunbooks:\n  build: build.md\n");
+    writeFileSync(join(dir, "build.md"), "# Build runbook\n");
+    const config = await loadDispatchConfig(dir);
+    expect(config.runbooks.build).toBe(realpathSync(join(dir, "build.md")));
+    expect(config.runbooks.acceptance).toBeUndefined();
+    expect(config.runbooks.deliver).toBeUndefined();
+  });
+
+  test("runbooks cannot escape the repo root", async () => {
+    const dir = configDir("project: igniter\nrunbooks:\n  build: ../build.md\n");
     await expect(loadDispatchConfig(dir)).rejects.toThrow("outside");
   });
 
-  test("stage override prompts cannot escape through a symbolic link", async () => {
-    const yaml = [
-      "project: igniter",
-      "stages:",
-      "  build: { prompt: .igniter/workflow/build.md, agent: builder }",
-      "  review: { prompt: .igniter/workflow/review.md, agent: reviewer }",
-      "  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }",
-      "",
-    ].join("\n");
-    const dir = configDir(yaml);
+  test("an absolute runbook path is refused", async () => {
+    const dir = configDir("project: igniter\nrunbooks:\n  build: /etc/passwd\n");
+    await expect(loadDispatchConfig(dir)).rejects.toThrow('runbooks."build" must be relative to the repo root');
+  });
+
+  test("runbooks cannot escape through a symbolic link", async () => {
+    const dir = configDir("project: igniter\nrunbooks:\n  build: .igniter/workflow/build.md\n");
     const workflow = join(dir, ".igniter", "workflow");
-    const outside = join(mkdtempSync(join(tmpdir(), "igniter-prompt-outside-")), "outside.md");
+    const outside = join(mkdtempSync(join(tmpdir(), "igniter-runbook-outside-")), "outside.md");
     mkdirSync(workflow);
     writeFileSync(outside, "# outside\n");
     symlinkSync(outside, join(workflow, "build.md"));
-    writeFileSync(join(workflow, "review.md"), "# review\n");
-    writeFileSync(join(workflow, "deliver.md"), "# deliver\n");
 
     await expect(loadDispatchConfig(dir)).rejects.toThrow("through a symbolic link");
+  });
+
+  test("a missing runbook is rejected", async () => {
+    const dir = configDir("project: igniter\nrunbooks:\n  build: .igniter/workflow/build.md\n");
+    await expect(loadDispatchConfig(dir)).rejects.toThrow('runbooks."build"');
   });
 });
 
@@ -387,7 +351,7 @@ test("omitted agents fall back to the bundled profiles", () => {
       model: "gpt-5.6-terra",
       fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     },
-    reviewer: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
+    acceptance: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     deliverer: { harness: "codex", model: "gpt-5.6-luna", effort: "high" },
   });
 });

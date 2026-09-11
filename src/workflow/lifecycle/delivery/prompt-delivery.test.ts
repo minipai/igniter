@@ -77,8 +77,8 @@ describe("delivery identity", () => {
       { project: "other" },
       { ticket: "STA-2" },
       { ticket: null },
-      { role: "reviewer" as const },
-      { stage: "review" as const },
+      { role: "acceptance" as const },
+      { stage: "acceptance" as const },
       { agent: "builder-sta-2" },
       { workOrder: "deadbeef" },
     ]) {

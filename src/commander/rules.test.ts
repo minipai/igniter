@@ -8,13 +8,12 @@ const commanderConfig = Bun.YAML.parse(
   agents: {
     commander: { harness: string; model: string; effort?: string };
     builder: { harness: string; model: string; effort?: string; fallback: { harness: string; model: string; effort?: string } };
-    reviewer: { harness: string; model: string; effort?: string };
+    acceptance: { harness: string; model: string; effort?: string };
     deliverer: { harness: string; model: string; effort?: string };
   };
-  stages: Record<"build" | "review" | "deliver", { prompt: string; agent: string }>;
 };
-const stageNames = ["build", "review", "deliver"] as const;
-const stageDocuments = stageNames.map((stage) => `./${commanderConfig.stages[stage].prompt}`);
+const stageNames = ["build", "acceptance", "deliver"] as const;
+const stageDocuments = stageNames.map((stage) => `./stages/${stage}.md`);
 const stageRules = await Promise.all(
   stageDocuments.map((path) => Bun.file(new URL(path, import.meta.url)).text()),
 );
@@ -45,24 +44,23 @@ describe("Commander delivery protocol", () => {
     expect(linkedRules).toContain("the change has landed");
   });
 
-  test("passes one prompt to each stage worker", () => {
+  test("passes one bundled prompt to each stage worker", () => {
     expect(commonRules).toContain("bundled Commander defaults");
-    expect(commonRules).toContain("completely replaces the bundled Build, Review, and Deliver");
-    expect(commonRules).toContain("absolute configured path");
-    expect(commonRules).toContain("repository stage prompts named by absolute");
+    expect(commonRules).toContain("The stage protocol prompts are bundled with Igniter and cannot be replaced.");
+    expect(commonRules).toContain("runbooks.build");
+    expect(commonRules).toContain("it never changes the Linear state machine");
+    expect(commonRules).toContain("absolute bundled stage protocol prompt");
     expect(commonRules).not.toContain("src/commander/config.yaml");
-    expect(commanderConfig.stages.build.prompt).toBe("stages/build.md");
-    expect(commanderConfig.stages.review.prompt).toBe("stages/review.md");
-    expect(commanderConfig.stages.deliver.prompt).toBe("stages/deliver.md");
+    expect(stageDocuments).toEqual(["build.md", "acceptance.md", "deliver.md"].map((name) => `./stages/${name}`));
     expect(commanderConfig.agents.commander.harness).toBe("codex");
     expect(commanderConfig.agents.commander.model).toBe("gpt-6-astra");
     expect(commanderConfig.agents.commander.effort).toBe("medium");
     expect(commanderConfig.agents.builder.harness).toBe("codex");
     expect(commanderConfig.agents.builder.model).toBe("gpt-5.6-terra");
     expect(commanderConfig.agents.builder.effort).toBeUndefined();
-    expect(commanderConfig.agents.reviewer.harness).toBe("codex");
-    expect(commanderConfig.agents.reviewer.model).toBe("gpt-5.6-sol");
-    expect(commanderConfig.agents.reviewer.effort).toBe("high");
+    expect(commanderConfig.agents.acceptance.harness).toBe("codex");
+    expect(commanderConfig.agents.acceptance.model).toBe("gpt-5.6-sol");
+    expect(commanderConfig.agents.acceptance.effort).toBe("high");
     expect(commanderConfig.agents.deliverer.harness).toBe("codex");
     expect(commanderConfig.agents.deliverer.model).toBe("gpt-5.6-luna");
     expect(commanderConfig.agents.deliverer.effort).toBe("high");
@@ -195,11 +193,11 @@ describe("Commander delivery protocol", () => {
 
   test("keeps workflow-specific artifacts out of the bundled stages", () => {
     expect(commonRules).toContain("`deliverer-<ticket>`");
-    expect(commanderConfig.stages.build.agent).toBe("builder");
-    expect(commanderConfig.stages.review.agent).toBe("reviewer");
-    expect(commanderConfig.stages.deliver.agent).toBe("deliverer");
+    expect(commonRules).toContain("Build runs on");
+    expect(commonRules).toContain("Acceptance on `acceptance`");
+    expect(commonRules).toContain("Deliver on `deliverer`");
     expect(rules.toLowerCase()).not.toContain("diffwalk");
-    expect(rules).not.toContain("--publish-review");
+    expect(rules).not.toContain("--publish-acceptance");
     expect(stageRules[0]).toContain("repository instructions");
     expect(stageRules[0]).toContain("evidence");
     expect(stageRules[2]).toContain("Complete the configured landing procedure");
@@ -208,9 +206,9 @@ describe("Commander delivery protocol", () => {
 
   test("names the legal Linear handoffs", () => {
     expect(commonRules).toContain("The first Build lands in Build + Complete and waits there");
-    expect(commonRules).toContain("A correction Build (after a Review FAIL or after the owner sends Review");
-    expect(commonRules).toContain("Review PASS lands in Review + Complete.");
-    expect(commonRules).toContain("Review FAIL lands in Build + Pending.");
+    expect(commonRules).toContain("A correction Build (after an Acceptance FAIL or after the owner sends");
+    expect(commonRules).toContain("Acceptance PASS lands in Acceptance + Complete.");
+    expect(commonRules).toContain("Acceptance FAIL lands in Build + Pending.");
     expect(commonRules).toContain("Deliver lands in Deliver + Complete.");
     expect(commonRules).toContain("Deliver + Complete to Done");
     expect(commonRules).toContain("The Acceptance agent never modifies product code");
@@ -227,7 +225,7 @@ describe("Commander delivery protocol", () => {
     expect(rules).not.toContain("igniter stage verify");
     expect(rules).not.toContain("igniter stage acceptance");
     expect(rules).not.toContain("igniter stage failed");
-    expect(rules).not.toContain("review_count");
+    expect(rules).not.toContain("acceptance_count");
     expect(rules).not.toContain("verify_count");
     expect(rules).not.toContain("owner_pending");
     expect(rules).not.toContain("opencode-session-usage");
@@ -236,7 +234,7 @@ describe("Commander delivery protocol", () => {
   test("asks the owner only from Blocked", () => {
     expect(commonRules).toContain("Ask the owner only from Blocked");
     expect(commonRules).toContain('`igniter block <ticket> --reason "<what you need>"`');
-    expect(commonRules).toContain("Review + Blocked");
+    expect(commonRules).toContain("Acceptance + Blocked");
     expect(commonRules).toContain("`igniter unblock <ticket>`");
     expect(commonRules).toContain("`igniter begin <ticket>`");
   });

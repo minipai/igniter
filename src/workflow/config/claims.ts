@@ -84,10 +84,11 @@ export async function readQueue(
 
 /**
  * Validate the whole configuration once at startup and fail fast with a
- * clear message: unknown project, unknown team, any status name missing on
- * the team, a status on the wrong workflow type, or the Progress group and
- * its four labels missing or mis-grouped. An old config (queued, building,
- * review, failed, merge) fails here at parse time with unknown roles.
+ * clear message: unknown project, unknown team, any canonical status name
+ * missing on the team, a status on the wrong workflow type, or the Progress
+ * group and its four labels missing or mis-grouped. The lifecycle and
+ * Progress names are Igniter protocol constants; old `states`, `progress`,
+ * and `stages` config fails at parse time with a migration error.
  */
 export async function validateStartup(client: LinearClientLike, config: DispatchConfig): Promise<ResolvedDispatch> {
   const projects = await client.listProjects();
@@ -128,7 +129,7 @@ export async function validateStartup(client: LinearClientLike, config: Dispatch
     backlog: "backlog",
     todo: "unstarted",
     build: "started",
-    review: "started",
+    acceptance: "started",
     deliver: "started",
     done: "completed",
     canceled: "canceled",
@@ -139,12 +140,13 @@ export async function validateStartup(client: LinearClientLike, config: Dispatch
     const state = states.find((s) => s.name === name);
     if (!state) {
       throw new Error(
-        `config error: status "${name}" (states.${role}) does not exist on team "${teamName}" (check .igniter/config.yaml)`,
+        `config error: status "${name}" (the canonical ${role} status) does not exist on team "${teamName}"; ` +
+          `the team workflow needs Backlog, Todo, Build, Acceptance, Deliver, and Done`,
       );
     }
     if (state.type !== expectedType[role]) {
       throw new Error(
-        `config error: status "${name}" (states.${role}) must be a ${expectedType[role]}-type state on team "${teamName}" (got "${state.type}")`,
+        `config error: status "${name}" (the canonical ${role} status) must be a ${expectedType[role]}-type state on team "${teamName}" (got "${state.type}")`,
       );
     }
     stateIds[role] = state.id;
@@ -153,7 +155,7 @@ export async function validateStartup(client: LinearClientLike, config: Dispatch
   const group = labels.find((l) => l.name === config.progress.group);
   if (!group) {
     throw new Error(
-      `config error: label group "${config.progress.group}" (progress.group) was not found on team "${teamName}" (check .igniter/config.yaml)`,
+      `config error: label group "${config.progress.group}" (the canonical Progress group) was not found on team "${teamName}"`,
     );
   }
   const ids = {} as Record<ProtocolProgress, string>;
@@ -162,7 +164,7 @@ export async function validateStartup(client: LinearClientLike, config: Dispatch
     const label = labels.find((l) => l.name === name && l.parent?.id === group.id);
     if (!label) {
       throw new Error(
-        `config error: label "${name}" (progress.${role}) is not in label group "${config.progress.group}" on team "${teamName}" (check .igniter/config.yaml)`,
+        `config error: label "${name}" (the canonical ${role} label) is not in label group "${config.progress.group}" on team "${teamName}"`,
       );
     }
     ids[role] = label.id;

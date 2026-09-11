@@ -25,7 +25,7 @@ import { FakeGit } from "../../testing/fake-git";
 import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const DELIVER = "st-deliver";
 const DONE = "st-done";
 const TODO = "st-todo";
@@ -94,10 +94,10 @@ function buildPayload(head = HEAD) {
   };
 }
 
-function reviewPayload(verdict: "pass" | "fail", head = HEAD) {
+function acceptancePayload(verdict: "pass" | "fail", head = HEAD) {
   return {
     v: 1,
-    kind: "review",
+    kind: "acceptance",
     verdict,
     checkpoint: head,
     results: [
@@ -138,7 +138,7 @@ let seedClock = 0;
 function seedReceipt(
   h: Harness,
   identifier: string,
-  kind: "build" | "review-pass" | "review-fail" | "deliver",
+  kind: "build" | "acceptance-pass" | "acceptance-fail" | "deliver",
   checkpoint = HEAD,
   submission = "sub-seed-00000001",
 ): string {
@@ -180,8 +180,8 @@ async function ticketCommand(
   return runCommand({ command: "begin", ticket: identifier }, h.ctx);
 }
 
-/** Start a worker and record Build, submit the first Build, and hand it to Review: the owner moves Build+Complete to Review and an explicit reconcile converges it. */
-async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
+/** Start a worker and record Build, submit the first Build, and hand it to Acceptance: the owner moves Build+Complete to Acceptance and an explicit reconcile converges it. */
+async function toAcceptanceComplete(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
@@ -189,25 +189,25 @@ async function toReviewComplete(h: Harness, identifier: string): Promise<void> {
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
   expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
   seedLineage(h, identifier);
-  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  await h.client.setIssueState(issueOf(h, identifier).id, ACCEPTANCE);
   expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect(issueOf(h, identifier).labelIds).toEqual([PENDING]);
   expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
-  expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
+  expect((await ticketCommand(h, identifier, "submit", JSON.stringify(acceptancePayload("pass")))).ok).toBe(true);
   seedLineage(h, identifier);
 }
 
 describe("owner transitions from Linear state", () => {
-  test("Review+Complete with a review-pass receipt waits silently for the owner", async () => {
+  test("Acceptance+Complete with a acceptance-pass receipt waits silently for the owner", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-1", "review-pass");
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // The owner still owns it; reconcile creates no workspace or worker.
       expect(h.workspaces.workspaces).toHaveLength(0);
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(h.lines.some((l) => /approved|sent back|refusing|failed/.test(l))).toBe(false);
     } finally {
@@ -218,8 +218,8 @@ describe("owner transitions from Linear state", () => {
   test("approval converges with no workspace metadata at all", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-1", "review-pass");
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       // A fresh process: empty workspaces, no tokens anywhere.
       h.workspaces.workspaces = [];
@@ -227,7 +227,7 @@ describe("owner transitions from Linear state", () => {
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
+      expect(reconciled.text).toContain("approved: Acceptance+Complete → Deliver+Pending");
     } finally {
       h.stop();
     }
@@ -236,7 +236,7 @@ describe("owner transitions from Linear state", () => {
   test("a restarted process converges the approval from Linear alone", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       // Owner approves while dispatch is down.
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       // Restart: fresh workspaces, fresh git, fresh decisions, same Linear.
@@ -263,7 +263,7 @@ describe("owner transitions from Linear state", () => {
       expect(reconciled.ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
+      expect(reconciled.text).toContain("approved: Acceptance+Complete → Deliver+Pending");
       expect(workspaces.workspaces).toHaveLength(0);
       expect(workspaces.calls).toHaveLength(0);
     } finally {
@@ -274,7 +274,7 @@ describe("owner transitions from Linear state", () => {
   test("a missing workspace never blocks convergence", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       h.workspaces.workspaces = [];
       h.workspaces.failMethods.add("snapshot");
@@ -283,7 +283,7 @@ describe("owner transitions from Linear state", () => {
       expect(reconciled.ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
+      expect(reconciled.text).toContain("approved: Acceptance+Complete → Deliver+Pending");
       expect(h.workspaces.calls).toHaveLength(0);
     } finally {
       h.stop();
@@ -294,15 +294,15 @@ describe("owner transitions from Linear state", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-1", "review-pass");
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-2", "review-fail", HEAD, "sub-seed-00000002");
+      seedReceipt(h, "STA-2", "acceptance-fail", HEAD, "sub-seed-00000002");
       seedLineage(h, "STA-2");
       for (const id of ["STA-1", "STA-2"]) {
         const reconciled = await runCommand({ command: "reconcile", ticket: id }, h.ctx);
         expect(reconciled.ok).toBe(true);
-        expect(reconciled.text).toContain("sent back: Review+Complete → Build+Pending");
+        expect(reconciled.text).toContain("sent back: Acceptance+Complete → Build+Pending");
         expect(issueOf(h, id).stateId).toBe(BUILD);
         expect(issueOf(h, id).labelIds).toEqual([PENDING]);
       }
@@ -314,7 +314,7 @@ describe("owner transitions from Linear state", () => {
   test("Deliver+Complete with a deliver receipt waits; Done clears Progress", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       await ticketCommand(h, "STA-1", "begin");
@@ -340,7 +340,7 @@ describe("owner transitions from Linear state", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-1", "review-pass", "replaced-commit");
+      seedReceipt(h, "STA-1", "acceptance-pass", "replaced-commit");
       // No lineage for the receipt checkpoint: the branch moved on.
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
@@ -355,7 +355,7 @@ describe("owner transitions from Linear state", () => {
   test("a delivered ticket is not judged stale after the rebase rewrote its branch", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       await ticketCommand(h, "STA-1", "begin");
@@ -394,18 +394,18 @@ describe("owner transitions from Linear state", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
-      // Review+Complete bound to a deliver receipt: not a completed review.
-      addIssue(h.world, { identifier: "STA-2", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      // Acceptance+Complete bound to a deliver receipt: not a completed acceptance.
+      addIssue(h.world, { identifier: "STA-2", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       seedReceipt(h, "STA-2", "deliver", HEAD, "sub-seed-00000002");
       seedLineage(h, "STA-2");
       // Done still carrying Progress without a delivery receipt.
       addIssue(h.world, { identifier: "STA-3", stateId: DONE, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-3", "review-pass", HEAD, "sub-seed-00000003");
+      seedReceipt(h, "STA-3", "acceptance-pass", HEAD, "sub-seed-00000003");
       // Deliver+Complete with no receipt at all.
       addIssue(h.world, { identifier: "STA-4", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       const diagnostics = [
-        "only a review-pass approval converges here",
-        "only a completed Build handoff or passing review belongs here",
+        "only an acceptance-pass approval converges here",
+        "only a completed Build handoff or passing acceptance belongs here",
         "lands the delivery first",
         "holds no valid Igniter receipt",
       ];
@@ -425,7 +425,7 @@ describe("owner transitions from Linear state", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
-      seedReceipt(h, "STA-1", "review-pass");
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       // A newer comment with two receipt blocks is invalid and skipped.
       const block = receiptBlock("deliver", HEAD, "sub-broken-0000001", HEAD);
@@ -436,7 +436,7 @@ describe("owner transitions from Linear state", () => {
       });
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
+      expect(reconciled.text).toContain("approved: Acceptance+Complete → Deliver+Pending");
     } finally {
       h.stop();
     }
@@ -534,26 +534,26 @@ describe("submission retries", () => {
 describe("multi-receipt tickets read newest-first", () => {
   const HEAD2 = "cafef00dcafe0002";
 
-  /** Build, hand to Review, fail the review, rebuild at a new checkpoint, pass the review. */
+  /** Build, hand to Acceptance, fail the acceptance, rebuild at a new checkpoint, pass the acceptance. */
   async function toSecondPass(h: Harness, identifier: string): Promise<void> {
     addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
     expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
     expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
     expect((await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
     seedLineage(h, identifier);
-    await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+    await h.client.setIssueState(issueOf(h, identifier).id, ACCEPTANCE);
     expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
     expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(acceptancePayload("fail")))).ok).toBe(true);
     h.git.head = HEAD2;
     expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
-    // The correction submit returns straight to Review+Pending: no owner step.
+    // The correction submit returns straight to Acceptance+Pending: no owner step.
     const corrected = await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload(HEAD2)));
     expect(corrected.ok).toBe(true);
-    expect(corrected.text).toContain("→ Review+Pending");
-    expect(issueOf(h, identifier).stateId).toBe(REVIEW);
+    expect(corrected.text).toContain("→ Acceptance+Pending");
+    expect(issueOf(h, identifier).stateId).toBe(ACCEPTANCE);
     expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
-    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(reviewPayload("pass", HEAD2)))).ok).toBe(true);
+    expect((await ticketCommand(h, identifier, "submit", JSON.stringify(acceptancePayload("pass", HEAD2)))).ok).toBe(true);
     h.git.ancestors.add(`${HEAD2} feature/${identifier.toLowerCase()}`);
     h.git.ancestors.add(`${HEAD2} main`);
   }
@@ -565,9 +565,9 @@ describe("multi-receipt tickets read newest-first", () => {
   test("fetchIssue normalizes the newest-first wire order to chronological", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       seedReceipt(h, "STA-1", "build", HEAD, "sub-old-0000000001");
-      seedReceipt(h, "STA-1", "review-pass", HEAD, "sub-new-0000000002");
+      seedReceipt(h, "STA-1", "acceptance-pass", HEAD, "sub-new-0000000002");
       const read = await h.client.fetchIssue(issueOf(h, "STA-1").id);
       // The wire serves newest first; the client sorts oldest first.
       expect(read!.comments.map((c) => c.id)).toEqual(["comment-seed-1", "comment-seed-2"]);
@@ -586,10 +586,10 @@ describe("multi-receipt tickets read newest-first", () => {
       const out = await ticketCommand(h, "STA-1", "status");
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
-      expect(data).toMatchObject({ status: "review", progress: "complete", checkpoint: HEAD2 });
+      expect(data).toMatchObject({ status: "acceptance", progress: "complete", checkpoint: HEAD2 });
       // Not the superseded first build receipt.
       expect(data["receipt"]).toMatchObject({
-        kind: "review-pass",
+        kind: "acceptance-pass",
         id: newest.id,
         checkpoint: HEAD2,
       });
@@ -606,7 +606,7 @@ describe("multi-receipt tickets read newest-first", () => {
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(DELIVER);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("approved: Review+Complete → Deliver+Pending");
+      expect(reconciled.text).toContain("approved: Acceptance+Complete → Deliver+Pending");
       expect(reconciled.text).toContain(HEAD2);
     } finally {
       h.stop();
@@ -621,7 +621,7 @@ describe("multi-receipt tickets read newest-first", () => {
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(reconciled.text).toContain("sent back: Review+Complete → Build+Pending");
+      expect(reconciled.text).toContain("sent back: Acceptance+Complete → Build+Pending");
     } finally {
       h.stop();
     }
@@ -673,7 +673,7 @@ describe("owner-move guards", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE, PENDING] });
-      seedReceipt(h, "STA-1", "review-pass");
+      seedReceipt(h, "STA-1", "acceptance-pass");
       // No branch lineage for the receipt checkpoint: the repair refuses as
       // stale and the ticket parks as Deliver+Blocked with one diagnosis.
       const outcome = await outcomeOf(h, "STA-1");
@@ -739,7 +739,7 @@ describe("owner-move guards", () => {
       addIssue(h.world, { identifier: "STA-1", stateId: DELIVER, priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       issueOf(h, "STA-1").comments.push({
         id: "comment-old",
-        body: "<!-- igniter:receipt review-pass head-1 sub-1 -->\nAgent acceptance: PASS\n",
+        body: "<!-- igniter:receipt acceptance-pass head-1 sub-1 -->\nAgent acceptance: PASS\n",
         createdAt: "2026-09-04T00:00:00.000001Z",
       });
       seedLineage(h, "STA-1");
@@ -760,7 +760,7 @@ describe("owner-move guards", () => {
       expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
       seedLineage(h, "STA-1");
-      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      await h.client.setIssueState(issueOf(h, "STA-1").id, ACCEPTANCE);
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       await ticketCommand(h, "STA-1", "begin");
       // A planted newer receipt for another checkpoint moves history on. The
@@ -768,10 +768,10 @@ describe("owner-move guards", () => {
       // tests published through the shared fake clock.
       issueOf(h, "STA-1").comments.push({
         id: "comment-planted",
-        body: `note\n\n${receiptBlock("review-fail", "other-checkpoint", "sub-plant-00000001")}\n`,
+        body: `note\n\n${receiptBlock("acceptance-fail", "other-checkpoint", "sub-plant-00000001")}\n`,
         createdAt: "2026-09-05T00:00:00.000000Z",
       });
-      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(reviewPayload("pass")));
+      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(acceptancePayload("pass")));
       expect(out.ok).toBe(false);
       expect(out.text).toContain("history moved on");
     } finally {
@@ -784,7 +784,7 @@ describe("cli reads the Linear receipt", () => {
   test("status <ticket> --json shows the Linear receipt when the workspace cache is empty", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       // Drop the cached receipt: the Linear comment still carries the truth.
@@ -798,7 +798,7 @@ describe("cli reads the Linear receipt", () => {
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
       expect(data).toMatchObject({ status: "deliver", progress: "pending", checkpoint: HEAD });
-      expect(data["receipt"]).toMatchObject({ kind: "review-pass", checkpoint: HEAD });
+      expect(data["receipt"]).toMatchObject({ kind: "acceptance-pass", checkpoint: HEAD });
       expect(typeof (data["receipt"] as Record<string, unknown>)["submission"]).toBe("string");
     } finally {
       h.stop();
@@ -808,9 +808,9 @@ describe("cli reads the Linear receipt", () => {
   test("status <ticket> --json prefers the older valid receipt over a malformed newest", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       // A malformed newest comment never shadows the valid receipt beneath it.
-      const block = receiptBlock("review-pass", HEAD, "sub-broken-0000001");
+      const block = receiptBlock("acceptance-pass", HEAD, "sub-broken-0000001");
       issueOf(h, "STA-1").comments.push({
         id: "comment-broken",
         body: `note\n\n${block}\n${block}\n`,
@@ -825,7 +825,7 @@ describe("cli reads the Linear receipt", () => {
       const out = await ticketCommand(h, "STA-1", "status");
       expect(out.ok).toBe(true);
       const data = out.data as Record<string, unknown>;
-      expect(data["receipt"]).toMatchObject({ kind: "review-pass", checkpoint: HEAD });
+      expect(data["receipt"]).toMatchObject({ kind: "acceptance-pass", checkpoint: HEAD });
     } finally {
       h.stop();
     }
@@ -834,13 +834,13 @@ describe("cli reads the Linear receipt", () => {
   test("status lists the Linear receipt", async () => {
     const h = await harness();
     try {
-      await toReviewComplete(h, "STA-1");
+      await toAcceptanceComplete(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, DELIVER);
       expect((await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       const out = await runCommand({ command: "status" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("STA-1  Deliver/");
-      expect(out.text).toContain("receipt review-pass:comment-");
+      expect(out.text).toContain("receipt acceptance-pass:comment-");
     } finally {
       h.stop();
     }

@@ -2,7 +2,7 @@
 // of the cross-harness `effort` field into each harness's native
 // reasoning/thinking launch option.
 //
-// Every profile — commander, builder, reviewer, deliverer, and the builder
+// Every profile — commander, builder, acceptance, deliverer, and the builder
 // fallback — is `harness` + `model` + optional `effort`. `effort` may be
 // omitted to keep the harness default; once set it must become a real
 // launch argument or fail explicitly before launch, never silently dropped.
@@ -116,7 +116,7 @@ export function foregroundCommandFor(profile: CommanderAgentConfig, workOrder: s
 /** Workspace metadata keys carrying the worker-start stage-agent profiles. */
 export const PROFILE_TOKENS = [
   "profile_builder",
-  "profile_reviewer",
+  "profile_acceptance",
   "profile_deliverer",
 ] as const;
 
@@ -136,7 +136,7 @@ export function recordStageProfiles(config: DispatchConfig): Record<string, stri
   const agents = config.commander.agents;
   return {
     profile_builder: freezeProfile(agents.builder),
-    profile_reviewer: freezeProfile(agents.reviewer),
+    profile_acceptance: freezeProfile(agents.acceptance),
     profile_deliverer: freezeProfile(agents.deliverer),
   };
 }
@@ -165,7 +165,7 @@ export function launchProblems(config: DispatchConfig): string[] {
     ["commander", agents.commander],
     ["builder", agents.builder],
     ["builder.fallback", agents.builder.fallback],
-    ["reviewer", agents.reviewer],
+    ["acceptance", agents.acceptance],
     ["deliverer", agents.deliverer],
   ];
   const problems: string[] = [];
@@ -239,9 +239,8 @@ export function commanderConfigForRun(
     agents: {
       commander: commander.agents.commander,
       builder: { ...builder, fallback: builderFallback },
-      reviewer: thawProfile(tokens["profile_reviewer"], commander.agents.reviewer),
+      acceptance: thawProfile(tokens["profile_acceptance"], commander.agents.acceptance),
       deliverer: thawProfile(tokens["profile_deliverer"], commander.agents.deliverer),
     },
-    stages: commander.stages,
   };
 }

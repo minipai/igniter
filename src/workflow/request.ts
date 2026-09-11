@@ -1,5 +1,5 @@
-export type WorkerRole = "build" | "review" | "deliver";
-export type WorkerProfile = "builder" | "reviewer" | "deliverer" | "fallback";
+export type WorkerRole = "build" | "acceptance" | "deliver";
+export type WorkerProfile = "builder" | "acceptance" | "deliverer" | "fallback";
 export type WorkerAnswer = "y" | "n";
 
 export type CommandRequest =

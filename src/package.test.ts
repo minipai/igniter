@@ -42,7 +42,7 @@ test("the published package runs outside the checkout with its bundled assets", 
       "package.json", "README.md", "LICENSE", "src/cli.ts",
       "src/commander/assets.ts", "src/commander/rules.md", "src/commander/config.yaml",
       "src/commander/global.md", "src/commander/stages/build.md",
-      "src/commander/stages/review.md", "src/commander/stages/deliver.md",
+      "src/commander/stages/acceptance.md", "src/commander/stages/deliver.md",
     ]) {
       expect(files).toContain(`package/${file}`);
     }
