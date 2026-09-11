@@ -59,10 +59,16 @@ Unless the project settings skip recording:
 Keep validated evidence available for the handoff. If recording is
 unavailable, provide validated alternative evidence and explain why.
 
-For CLI or API behavior, report a command transcript per criterion: the exact
-command, integer exit code, and needed stdout and stderr excerpts. Attach or
-link oversized output rather than truncating failure details. State PASS or
-FAIL yourself; no tool derives the verdict from an exit code.
+For CLI or API behavior, report a short, focused command transcript per
+criterion: the exact command, integer exit code, and needed stdout and stderr
+excerpts. The receipt renders the command inline and verbatim, so use one
+short, readable invocation. Prefer a named deterministic test or concise
+existing command; do not embed long `if`/`then`/`else` shell control flow or
+chained narration merely to manufacture evidence. At least one stdout or
+stderr excerpt must be non-empty, and the command, final exit code, and output
+must describe the same invocation. Attach or link oversized output rather
+than truncating failure details. State PASS or FAIL yourself; no tool derives
+the verdict from an exit code.
 
 ## Report
 
