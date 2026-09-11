@@ -241,10 +241,10 @@ describe("canceled event", () => {
 
   test("keeps the reason prose out of the YAML block, in the prose above it", () => {
     const reason = "owner ended the scope";
-    const body = `Canceled: ${reason}\n\n${canceledEventBody(TICKET, reason, "review", "none", "id1")}`;
+    const body = `Canceled: ${reason}\n\n${canceledEventBody(TICKET, reason, "acceptance", "none", "id1")}`;
     expect(body).toContain(reason);
     expect(body.split("```yaml")[1]).not.toContain(reason);
-    expect(parseCanceledEvent(body)).toMatchObject({ from: "review", progress: "none", identity: "id1" });
+    expect(parseCanceledEvent(body)).toMatchObject({ from: "acceptance", progress: "none", identity: "id1" });
   });
 
   test("records a progress set of several labels", () => {
@@ -254,7 +254,7 @@ describe("canceled event", () => {
 
   test("rejects a from status outside the cancellable set", () => {
     const body = "```yaml\nigniter_event:\n  version: 1\n  kind: canceled\n  ticket: STA-1\n  reason: abc\n  from: done\n  progress: none\n  identity: id\n```";
-    expect(() => parseCanceledEvent(body)).toThrow(/from.*backlog, todo, build, review, deliver/);
+    expect(() => parseCanceledEvent(body)).toThrow(/from.*backlog, todo, build, acceptance, deliver/);
   });
 
   test("rejects a body with an identity mismatch in the field set", () => {

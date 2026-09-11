@@ -94,7 +94,7 @@ describe("validateStartup", () => {
       });
       await expect(
         validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
-      ).rejects.toThrow('(states.canceled) must be a canceled-type state');
+      ).rejects.toThrow('status "Canceled" (the canonical canceled status) must be a canceled-type state');
       fake.world.statesByTeam["team-1"]!.forEach((state) => {
         if (state.id === "st-canceled") state.type = "canceled";
       });
