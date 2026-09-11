@@ -104,6 +104,7 @@ describe("foreground lifecycle", () => {
         'model_reasoning_effort="medium"',
       ]);
       expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
+      expect(launch.command.at(-1)).not.toContain("Assigned ticket");
       expect(launch.command.at(-1)).toContain("not your assignment");
       expect(launch.command.at(-1)).toContain("missing local worker never makes it yours");
       expect(launch.command.at(-1)).toContain(commanderAssetPaths().global);
@@ -117,21 +118,6 @@ describe("foreground lifecycle", () => {
       h.stop();
     }
   });
-
-  test("ticket foreground launches carry their assignment and never create Herdr agents", async () => {
-    const h = await harness();
-    try {
-      for (const identifier of ["STA-1", "STA-2", "STA-1"]) {
-        if (!h.world.issues.some((issue) => issue.identifier === identifier)) {
-          addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-        }
-        const out = await runCommand({ command: "start", ticket: identifier }, h.ctx);
-        expect(out.ok).toBe(true);
-        expect((out.data as { command: string[] }).command.at(-1)).toContain(`Assigned ticket: ${identifier}`);
-      }
-      expect(h.workspaces.calls).toEqual([]);
-    } finally { h.stop(); }
-  });
 });
 
 describe("ticket-targeted worker start", () => {
@@ -139,8 +125,8 @@ describe("ticket-targeted worker start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      expect((await runCommand({ command: "start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
-      // Assignment alone moves no Linear state and starts no worker.
+      expect((await runCommand({ command: "start" }, h.ctx)).ok).toBe(true);
+      // Starting alone moves no Linear state and starts no worker.
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeUndefined();
       // The Commander confirms the worker before recording the stage start.

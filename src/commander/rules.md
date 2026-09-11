@@ -2,7 +2,8 @@
 
 Deliver exactly one feature per ticket. The Global Commander is Igniter's
 single project-level Commander: CLI `igniter start` launches it in the calling
-terminal, and `igniter start STA-X` assigns a ticket to that foreground session.
+terminal. `igniter start` is the human entry point only and takes no ticket;
+you take up a ticket through the explicit ticket-targeted commands.
 It supervises every ticket from the project workspace through ticket-targeted
 commands. A ticket workspace holds only the worktree, metadata, scratch, and
 the current stage worker. There is no resident commander-ticket agent and no
@@ -110,12 +111,13 @@ call Linear directly or through MCP, or publish receipts.
   retry. It returns the ticket, criteria, status, Progress,
   checkpoint, latest receipt, legal next commands, and current submit
   schema, with no ticket workspace context.
-- `igniter start [<ticket>]` starts the configured Commander directly in the
-  calling terminal and, with a ticket, assigns it immediately. It never opens a
-  Herdr workspace, tab, or pane for the Commander. Assignment is always
-  explicit: queue visibility is not assignment, a fresh start is not a restart,
-  and a missing local worker is not a globally orphaned ticket. Without a
-  ticket, startup only patrols the queue; it adopts no In-progress ticket.
+- `igniter start` is the human entry point that launches the configured
+  Commander directly in the calling terminal. It takes no ticket: read the
+  queue with `igniter status --json` and advance a ticket with the explicit
+  ticket-targeted commands. It never opens a Herdr workspace, tab, or pane
+  for the Commander. Assignment is always explicit: queue visibility is not assignment,
+  a fresh start is not a restart, and a missing local worker is not a globally orphaned ticket.
+  Startup only patrols the queue; it adopts no In-progress ticket.
 - `igniter begin <ticket>` only validates and records the current stage start:
   Todo becomes Build and Pending becomes In progress. It never prepares a
   worktree, creates a worker, sends a prompt, or confirms worker delivery.

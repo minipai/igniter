@@ -21,15 +21,15 @@ const stageRules = await Promise.all(
 const rules = [commonRules, ...stageRules].join("\n");
 
 describe("Commander delivery protocol", () => {
-  test.each([undefined, { identifier: "STA-1", title: "Build a feature" }])("foreground launch points to Global Commander instructions and explicit status: %j", (assignment) => {
+  test("foreground launch points to Global Commander instructions and the queue status", () => {
     const order = buildCommanderLaunchPrompt({
       project: "fixture", team: "STA", repoRoot: "/fixture", targetBranch: "main",
       globalMd: "/fixture/global.md",
-      assignment,
     });
     expect(order).toContain("/fixture/global.md");
-    expect(order).toContain(assignment ? "igniter status STA-1 --json" : "igniter status --json");
-
+    expect(order).toContain("igniter status --json");
+    expect(order).not.toContain("igniter status STA-");
+    expect(order).not.toContain("Assigned ticket");
   });
 
   test("the startup document loads complete Commander rules", async () => {
@@ -83,7 +83,8 @@ describe("Commander delivery protocol", () => {
   test("keeps every ticket command with the Global Commander", () => {
     expect(commonRules).toContain("Only the Global Commander runs ticket commands");
     expect(commonRules).toContain("There is no resident commander-ticket agent");
-    expect(commonRules).toContain("`igniter start [<ticket>]`");
+    expect(commonRules).toContain("`igniter start` is the human entry point");
+    expect(commonRules).not.toMatch(/`igniter start (?:\[?<ticket>\]?|STA-\w+)/);
     for (const command of [
       "`igniter status <ticket> --json`",
       "`igniter begin <ticket>`",

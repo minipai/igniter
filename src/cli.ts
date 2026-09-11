@@ -33,7 +33,7 @@ function mainCli(
   cli.command("status [ticket]", "Show dispatch or ticket status")
     .option("--json", "Print JSON status")
     .action(actions.statusCommand);
-  cli.command("start [ticket]", "Launch the foreground Commander")
+  cli.command("start", "Launch the foreground Commander")
     .action(actions.startCommand);
   cli.command("begin <ticket>", "Record the confirmed stage start")
     .action(actions.beginCommand);

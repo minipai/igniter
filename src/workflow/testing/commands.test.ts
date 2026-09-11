@@ -14,7 +14,7 @@ import { validateStartup, type ResolvedDispatch } from "../config/claims";
 import { parseDispatchConfig } from "../config/config";
 import { recordStageProfiles } from "../lifecycle/stage/agents";
 import { LinearClient } from "../service/linear/linear";
-import { addIssue, standardWorld, startFakeLinear } from "../service/linear/fake-linear";
+import { addIssue, startFakeLinear, type FakeLinearHandle, standardWorld } from "../service/linear/fake-linear";
 import { FakeGit } from "./fake-git";
 import { FakeWorkspaces } from "./fake-workspaces";
 import { scratchFor } from "../service/worktree/worker-scope";
@@ -40,7 +40,7 @@ interface Harness {
   stop: () => void;
 }
 
-async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient; resolved: ResolvedDispatch; world: ReturnType<typeof standardWorld> }> {
+async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient; resolved: ResolvedDispatch; world: ReturnType<typeof standardWorld>; fake: FakeLinearHandle }> {
   const world = standardWorld("test-key");
   const fake = startFakeLinear(world);
   const client = new LinearClient({ apiKey: "test-key", endpoint: fake.url, fetchImpl: fake.fetchImpl });
@@ -65,7 +65,7 @@ async function harness(maxRunning = 3): Promise<Harness & { client: LinearClient
     repoRoot,
     git,
   };
-  return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, stop: () => fake.stop() };
+  return { ctx, lines, workspaces, git, repoRoot, client, resolved, world, fake, stop: () => fake.stop() };
 }
 
 describe("status", () => {
@@ -375,15 +375,21 @@ describe("worker start profiles", () => {
 });
 
 describe("foreground start", () => {
-  test("start refuses unknown tickets and finished ones", async () => {
+  test("start takes no ticket, queries no Linear, and prepares a queue-patrolling Commander", async () => {
     const h = await harness();
     try {
-      expect((await runCommand({ command: "start", ticket: "STA-404" }, h.ctx)).ok).toBe(false);
-      addIssue(h.world, { identifier: "STA-9", stateId: DONE, priority: 1, description: CRITERIA });
-      const done = await runCommand({ command: "start", ticket: "STA-9" }, h.ctx);
-      expect(done.ok).toBe(false);
-      expect(done.text).toContain("ticket is Done");
+      addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
+      const before = h.fake.requests;
+      const out = await runCommand({ command: "start" }, h.ctx);
+      expect(h.fake.requests).toBe(before);
+      expect(out.ok).toBe(true);
+      expect(out.text).toContain("patrolling queue and active tickets");
+      const launch = out.data as { kind: string; command: string[] };
+      expect(launch.kind).toBe("commander_foreground");
+      expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
+      expect(launch.command.at(-1)).not.toContain("Assigned ticket");
       expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.world.issues[0]!.stateId).toBe(TODO);
     } finally {
       h.stop();
     }

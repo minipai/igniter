@@ -4,7 +4,7 @@ export type WorkerAnswer = "y" | "n";
 
 export type CommandRequest =
   | { command: "status"; ticket?: string; json?: boolean }
-  | { command: "start"; ticket?: string }
+  | { command: "start" }
   | { command: "begin"; ticket: string }
   | { command: "reconcile"; ticket: string }
   | { command: "approve"; ticket: string; receipt: string }

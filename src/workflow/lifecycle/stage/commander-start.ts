@@ -2,7 +2,6 @@
 import { commanderAssetPaths, type CommanderAssetPaths } from "../../../commander/assets.ts";
 import { foregroundCommandFor } from "./agents.ts";
 import type { ResolvedDispatch } from "../../config/claims.ts";
-import type { FullIssue } from "../ticket/protocol.ts";
 
 export interface CommanderStartDeps {
   resolved: ResolvedDispatch;
@@ -22,23 +21,13 @@ export interface CommanderLaunchInput {
   repoRoot: string;
   targetBranch: string;
   globalMd: string;
-  assignment?: { identifier: string; title: string };
 }
 
 export function buildCommanderLaunchPrompt(input: CommanderLaunchInput): string {
-  const context =
+  return (
     `Run the Igniter Global Commander workflow documented at ${input.globalMd}.\n` +
     `Project: ${input.project} (team ${input.team}). Workspace: ${input.repoRoot}. ` +
-    `Delivery target branch: \`${input.targetBranch}\`; follow the configured project delivery instructions.\n`;
-  if (input.assignment) {
-    return (
-      context +
-      `Assigned ticket: ${input.assignment.identifier}: "${input.assignment.title}". ` +
-      `Begin with \`igniter status ${input.assignment.identifier} --json\`.\n`
-    );
-  }
-  return (
-    context +
+    `Delivery target branch: \`${input.targetBranch}\`; follow the configured project delivery instructions.\n` +
     `Begin with \`igniter status --json\`.\n` +
     `No ticket is assigned: an active or In-progress ticket in that queue is visibility only, ` +
     `not your assignment, and a missing local worker never makes it yours.\n`
@@ -46,10 +35,7 @@ export function buildCommanderLaunchPrompt(input: CommanderLaunchInput): string 
 }
 
 /** The configured interactive Commander command for the calling terminal. */
-export function prepareCommanderForeground(
-  deps: CommanderStartDeps,
-  assignment?: FullIssue,
-): CommanderForegroundLaunch {
+export function prepareCommanderForeground(deps: CommanderStartDeps): CommanderForegroundLaunch {
   const config = deps.resolved.config;
   const assets = deps.assets ?? commanderAssetPaths();
   const profile = config.commander.agents.commander;
@@ -59,7 +45,6 @@ export function prepareCommanderForeground(
     repoRoot: deps.repoRoot,
     targetBranch: config.targetBranch,
     globalMd: assets.global,
-    ...(assignment ? { assignment: { identifier: assignment.identifier, title: assignment.title } } : {}),
   });
   return {
     kind: "commander_foreground",
