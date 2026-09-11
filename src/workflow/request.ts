@@ -12,6 +12,7 @@ export type CommandRequest =
   | { command: "submit"; ticket: string; payload: unknown }
   | { command: "block"; ticket: string; reason: string }
   | { command: "unblock"; ticket: string }
+  | { command: "cancel"; ticket: string; reason: string }
   | { command: "worker.start"; ticket: string; role?: WorkerRole }
   | { command: "worker.send"; ticket: string; role?: WorkerRole; text: string }
   | {

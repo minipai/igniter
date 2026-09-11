@@ -197,6 +197,39 @@ describe("finished status actions", () => {
       h.stop();
     }
   });
+
+  test("Canceled offers explicit worker cleanup and stays read-only", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: CANCELED, description: CRITERIA, labelIds: [] });
+      const out = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
+      expect(out.ok).toBe(true);
+      expect(out.data).toMatchObject({ status: "canceled", progress: null, next: ["worker stop"] });
+      expect(String((out.data as Record<string, unknown>)["note"])).toContain("Canceled by owner decision");
+      expect(h.world.issues[0]!.comments).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("a Canceled ticket with a stray Progress label still reports and reconciles without an error", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-1", stateId: CANCELED, description: CRITERIA, labelIds: [IN_PROGRESS] });
+      const status = await runCommand({ command: "status", ticket: "STA-1", json: true }, h.ctx);
+      expect(status.ok).toBe(true);
+      expect(status.data).toMatchObject({ status: "canceled", progress: null, next: ["worker stop"] });
+      const reconcile = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
+      expect(reconcile.ok).toBe(true);
+      expect(reconcile.text).toContain("canceled; no owner transition");
+      // Read-only: the stray label and state are untouched.
+      expect(h.world.issues[0]!.stateId).toBe(CANCELED);
+      expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
+      expect(h.world.issues[0]!.comments).toHaveLength(0);
+    } finally {
+      h.stop();
+    }
+  });
 });
 
 describe("begin", () => {

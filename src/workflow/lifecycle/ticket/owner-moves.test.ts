@@ -693,9 +693,23 @@ describe("owner-move guards", () => {
       addIssue(h.world, { identifier: "OTH-1", stateId: DELIVER, priority: 1, description: CRITERIA, projectId: "proj-2", labelIds: [COMPLETE] });
       const foreign = await outcomeOf(h, "OTH-1");
       expect(foreign.result?.text).toContain('not in project "igniter"');
-      addIssue(h.world, { identifier: "STA-9", stateId: "st-canceled", priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      addIssue(h.world, { identifier: "STA-9", stateId: "st-mystery", priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
       const unknown = await outcomeOf(h, "STA-9");
       expect(unknown.result?.text).toContain("unknown Linear status");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("Canceled is a terminal owner state and stays quiet whatever Progress it carries", async () => {
+    const h = await harness();
+    try {
+      addIssue(h.world, { identifier: "STA-9", stateId: "st-canceled", priority: 1, description: CRITERIA, labelIds: [COMPLETE] });
+      const outcome = await outcomeOf(h, "STA-9");
+      expect(outcome.result).toBeNull();
+      expect(issueOf(h, "STA-9").stateId).toBe("st-canceled");
+      expect(issueOf(h, "STA-9").labelIds).toEqual(["label-complete"]);
+      expect(issueOf(h, "STA-9").comments).toHaveLength(0);
     } finally {
       h.stop();
     }

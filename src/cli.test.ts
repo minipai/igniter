@@ -211,6 +211,7 @@ describe("CAC command actions", () => {
       { argv: ["submit", "STA-1", "--input", "-"], request: { command: "submit", ticket: "STA-1", payload: { ok: true } }, input: '{"ok":true}' },
       { argv: ["block", "STA-1", "--reason", "waiting"], request: { command: "block", ticket: "STA-1", reason: "waiting" } },
       { argv: ["unblock", "STA-1"], request: { command: "unblock", ticket: "STA-1" } },
+      { argv: ["cancel", "STA-1", "--reason", "owner decided"], request: { command: "cancel", ticket: "STA-1", reason: "owner decided" } },
       { argv: ["worker", "start", "STA-1", "--role", "build"], request: { command: "worker.start", ticket: "STA-1", role: "build" } },
       { argv: ["worker", "send", "STA-1", "--role", "review", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "review", text: "check this" } },
       { argv: ["worker", "stop", "STA-1", "--role", "deliver"], request: { command: "worker.stop", ticket: "STA-1", role: "deliver" } },
@@ -251,6 +252,7 @@ describe("CAC validation and help", () => {
     { args: ["start", "--help"], usage: "igniter start", option: "--help" },
     { args: ["approve", "--help"], usage: "igniter approve <ticket>", option: "--receipt <id>" },
     { args: ["submit", "--help"], usage: "igniter submit <ticket>", option: "--input <source>" },
+    { args: ["cancel", "--help"], usage: "igniter cancel <ticket>", option: "--reason <text>" },
     { args: ["worker", "--help"], usage: "igniter worker <command>", option: "restart <ticket>" },
     { args: ["worker", "restart", "--help"], usage: "igniter worker restart <ticket>", option: "--model <model>" },
   ])("help comes from its CAC declaration: $args", async ({ args, usage, option }) => {
@@ -263,7 +265,7 @@ describe("CAC validation and help", () => {
 
   test.each([
     ["begin"], ["approve", "STA-1"], ["fail", "STA-1"], ["submit", "STA-1"],
-    ["block", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
+    ["block", "STA-1"], ["cancel", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
     ["status", "--bogus"], ["start", "STA-1"], ["start", "STA-1", "--publish-review"],
     ["worker", "start", "STA-1", "--role", "other"],
     ["worker", "restart", "STA-1", "--profile", "other"],

@@ -226,7 +226,7 @@ describe("acceptance criteria", () => {
 });
 
 describe("startup validation", () => {
-  test("maps the six statuses and the Progress group", async () => {
+  test("maps the seven statuses and the Progress group", async () => {
     const h = await harness();
     try {
       expect(h.resolved.stateIds).toMatchObject({
@@ -236,6 +236,7 @@ describe("startup validation", () => {
         review: REVIEW,
         deliver: DELIVER,
         done: DONE,
+        canceled: "st-canceled",
       });
       expect(h.resolved.progress).toMatchObject({
         groupId: "label-progress",

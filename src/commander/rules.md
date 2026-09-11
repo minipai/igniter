@@ -145,6 +145,16 @@ call Linear directly or through MCP, or publish receipts.
   start the worker, confirm delivery, and record the start with `begin`.
 - `igniter fail <ticket> --reason TEXT` returns the ticket to Backlog without
   stopping workers or cleaning the workspace. Stop workers explicitly.
+- `igniter cancel <ticket> --reason TEXT` moves a non-terminal ticket to the
+  configured Canceled status with Progress cleared and records the owner's
+  cancellation. Only an explicit owner authorization may run it: an ordinary
+  continuation, a worker report, or a stage failure is never cancellation
+  authority. `fail` returns failed work to Backlog for replanning, `block`
+  waits on an external condition, and `cancel` terminates the ticket by owner
+  decision. `cancel` never stops or deletes workers, the worktree, the branch,
+  or unmerged content — after canceling, run `igniter worker stop <ticket>`
+  explicitly, keeping the existing safety rules. Done tickets are refused;
+  an already-canceled retry reports `already canceled` without a second event.
 - `igniter reconcile <ticket>` normalizes an existing Linear owner move and
   receipt state only. It never starts, stops, or sends messages to workers.
 
@@ -171,11 +181,11 @@ commit.
 
 Every machine-readable lifecycle record Igniter writes to a Linear comment —
 a receipt, a stage-start (`begin`), an owner approval, a blocked comment, a
-failed comment, or an incomplete-state diagnosis — is one visible, versioned
-`igniter_receipt` or `igniter_event` YAML fenced block after a short
-human-readable line, never a hidden `<!-- igniter:... -->` HTML marker or
-inline JSON. History predating this contract still carries the old hidden
-markers; dispatch still reads those read-only for begin, approval, and
+failed comment, a canceled comment, or an incomplete-state diagnosis — is one
+visible, versioned `igniter_receipt` or `igniter_event` YAML fenced block
+after a short human-readable line, never a hidden `<!-- igniter:... -->` HTML
+marker or inline JSON. History predating this contract still carries the old
+hidden markers; dispatch still reads those read-only for begin, approval, and
 recovery boundaries, but never writes that format again.
 
 ## Feature branch

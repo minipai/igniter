@@ -10,19 +10,19 @@
 // submission identity plus read-back is what converges a retry instead of
 // duplicating. `Complete` is never shown before its receipt reads back.
 //
-// Status vocabulary: backlog, todo, build, review, deliver, done.
+// Status vocabulary: backlog, todo, build, review, deliver, done, canceled.
 // Progress vocabulary: pending, in_progress, complete, blocked.
-// Todo, Build, Review, Deliver carry exactly one Progress label; Backlog
-// and Done carry none. Status says which stage the work is in; Progress
-// says how far that stage has come.
+// Todo, Build, Review, Deliver carry exactly one Progress label; Backlog,
+// Done, and Canceled carry none. Status says which stage the work is in;
+// Progress says how far that stage has come.
 //
 // Every machine-readable record this module writes to a Linear comment is
 // one visible, versioned YAML fenced block after a short human-readable
 // line: `igniter_receipt` for build/review/deliver receipts (below), and
-// `igniter_event` (./event.ts) for begin, approval, blocked, failed, and
-// incomplete-state (STA-254). No hidden `<!-- igniter:... -->` HTML marker
-// or inline JSON is written by either. History from before this contract
-// still carries the old hidden markers; begin, approval, and
+// `igniter_event` (./event.ts) for begin, approval, blocked, failed,
+// canceled, and incomplete-state (STA-254). No hidden `<!-- igniter:... -->`
+// HTML marker or inline JSON is written by either. History from before this
+// contract still carries the old hidden markers; begin, approval, and
 // incomplete-state read those read-only so an in-progress ticket never
 // loses its stage-start, approval, or recovery boundary, but this module
 // never writes that format again.
@@ -36,19 +36,23 @@ import { LinearError } from "../../service/linear/linear.ts";
 import {
   beginEventBody,
   blockedEventBody,
+  canceledEventBody,
+  cancelIdentity,
   hasBlockedEvent,
+  hasCanceledEvent,
   incompleteEventBody,
   parseBeginEvent,
   parseIncompleteEvent,
   type BeginStage,
   type BlockedStage,
+  type CancelFrom,
 } from "./event.ts";
 import { parseRecord, recordBlock, RecordParseError, strictFields } from "./record.ts";
 
-export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done";
+export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done" | "canceled";
 export type ProtocolProgress = "pending" | "in_progress" | "complete" | "blocked";
 
-export const STATUSES: ProtocolStatus[] = ["backlog", "todo", "build", "review", "deliver", "done"];
+export const STATUSES: ProtocolStatus[] = ["backlog", "todo", "build", "review", "deliver", "done", "canceled"];
 export const PROGRESSES: ProtocolProgress[] = ["pending", "in_progress", "complete", "blocked"];
 
 /** Active stages carry exactly one Progress label. */
@@ -184,6 +188,16 @@ export function bareTodoState(resolved: ResolvedDispatch, full: FullIssue): Auth
     .filter((p): p is ProtocolProgress => p !== undefined);
   if (status !== "todo" || progresses.length !== 0) return null;
   return { status: "todo", progress: null, criteria: parseAcceptanceCriteria(full.description) };
+}
+
+/**
+ * Read-only recognition of a Canceled ticket. Canceled carries no Progress,
+ * so a stray Progress label is ignored for display instead of refusing the
+ * report. Null for any other status.
+ */
+export function canceledState(resolved: ResolvedDispatch, full: FullIssue): AuthoritativeState | null {
+  if (statusOf(resolved, full.state.id) !== "canceled") return null;
+  return { status: "canceled", progress: null, criteria: parseAcceptanceCriteria(full.description) };
 }
 
 /**
@@ -980,6 +994,7 @@ export function submitSchemaFor(status: ProtocolStatus, checkpoint: string | nul
 function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { next: string[]; note: string | null } {
   if (status === "backlog") return { next: [], note: "Backlog has no pending stage action" };
   if (status === "done") return { next: ["worker stop"], note: "run worker stop for guarded cleanup; validate the Deliver receipt and preserve uncommitted or unmerged work" };
+  if (status === "canceled") return { next: ["worker stop"], note: "Canceled by owner decision; run worker stop for guarded cleanup and preserve the checkout" };
   if (status === "todo") {
     if (progress === null) return { next: ["worker start", "begin"], note: "bare Todo (no Progress label): confirm worker start delivery before begin records Build+In progress" };
     if (progress === "pending") return { next: ["worker start", "begin"], note: "confirm worker start delivery before begin" };
@@ -1535,6 +1550,112 @@ export async function unblockMutation(
   );
 }
 
+/** The Progress set of a fully read issue as one scalar key: none | in_progress | complete+blocked. */
+function progressSetText(full: FullIssue, resolved: ResolvedDispatch): string {
+  const found = (full.labels ?? [])
+    .map((label) => progressOf(resolved, label.id))
+    .filter((progress): progress is ProtocolProgress => progress !== undefined);
+  return found.length === 0 ? "none" : [...found].sort().join("+");
+}
+
+export function cancelCommentBody(
+  reason: string,
+  ticket: string,
+  from: CancelFrom,
+  progress: string,
+  identity: string,
+): string {
+  return `Canceled: ${reason}\n\n${canceledEventBody(ticket, reason, from, progress, identity)}`;
+}
+
+/**
+ * The owner-authorized cancellation for `igniter cancel`: write one
+ * versioned YAML `igniter_event` comment, move the ticket to Canceled, and
+ * clear its Progress labels while keeping every unrelated label. A Done
+ * ticket is refused; a ticket already in Canceled reports `already canceled`
+ * and converges any leftover Progress without writing a new event. The
+ * event identity dedupes the retry: a lost write result reads back before
+ * deciding whether to write, so the same reason and source state never
+ * produce two events. This Linear operation never stops workers, never
+ * touches the workspace, worktree, or branch, and never deletes content:
+ * `worker stop` is a separate, explicit command.
+ */
+export async function cancelMutation(
+  deps: ProtocolDeps,
+  full: FullIssue,
+  reason: string,
+): Promise<CommandResult> {
+  const { resolved } = deps;
+  const status = statusOf(resolved, full.state.id);
+  if (!status) {
+    throw new ProtocolError(
+      `refused: ${full.identifier} sits in unknown Linear status "${full.state.name}"; ` +
+        `expected one of ${STATUSES.map((s) => resolved.config.states[s]).join(", ")}`,
+    );
+  }
+  if (status === "done") {
+    throw new ProtocolError(`refused: ${full.identifier} is Done and cannot be canceled`);
+  }
+  if (status === "canceled") return alreadyCanceled(deps, full);
+  const progress = progressSetText(full, resolved);
+  const identity = cancelIdentity(full.identifier, reason, status, progress);
+  const before = await readback(deps, full.id);
+  if (statusOf(resolved, before.state.id) === "canceled") return alreadyCanceled(deps, before);
+  if (statusOf(resolved, before.state.id) !== status || progressSetText(before, resolved) !== progress) {
+    throw new ProtocolError(`ticket moved while canceling; read status before retrying`);
+  }
+  if (!hasCanceledEvent(before.comments, full.identifier, identity)) {
+    try {
+      await deps.client.addComment(
+        full.id,
+        cancelCommentBody(reason, full.identifier, status as CancelFrom, progress, identity),
+      );
+    } catch (error) {
+      if (!isTransientLinearError(error)) throw error;
+      const read = await readback(deps, full.id);
+      if (!hasCanceledEvent(read.comments, full.identifier, identity)) throw error;
+    }
+    const commented = await readback(deps, full.id);
+    if (!hasCanceledEvent(commented.comments, full.identifier, identity)) {
+      throw new ProtocolError(`cancel event did not read back from Linear; retry the command`);
+    }
+  }
+  const targetState = resolved.stateIds.canceled;
+  try {
+    await deps.client.setIssueState(full.id, targetState);
+  } catch (error) {
+    if (!isTransientLinearError(error)) throw error;
+    const current = await readback(deps, full.id);
+    if (current.state.id !== targetState) throw error;
+  }
+  const moved = await readback(deps, full.id);
+  await setProgress(deps, moved, null);
+  const verified = await readback(deps, full.id);
+  if (statusOf(resolved, verified.state.id) !== "canceled" || progressSetText(verified, resolved) !== "none") {
+    throw new ProtocolError(`Linear did not converge on Canceled with Progress cleared; retry the command`);
+  }
+  const text = `canceled ${full.identifier}: ${reason}; worker stop is a separate command`;
+  await deps.decisions.record(full.identifier, `canceled: from ${status}+${progress}, reason "${reason}"`);
+  return { ok: true, text };
+}
+
+/**
+ * A ticket that already reads Canceled never gets a second event: report
+ * `already canceled` and converge any leftover Progress labels (an
+ * unrelated label survives), so a retry after a partial write leaves a
+ * clean terminal state without duplicating anything.
+ */
+async function alreadyCanceled(deps: ProtocolDeps, full: FullIssue): Promise<CommandResult> {
+  if (progressSetText(full, deps.resolved) !== "none") {
+    await setProgress(deps, full, null);
+    const verified = await readback(deps, full.id);
+    if (statusOf(deps.resolved, verified.state.id) !== "canceled" || progressSetText(verified, deps.resolved) !== "none") {
+      throw new ProtocolError(`Linear did not converge on Canceled with Progress cleared; retry the command`);
+    }
+  }
+  return { ok: true, text: `already canceled ${full.identifier}; no change` };
+}
+
 // ---------------------------------------------------------------------------
 // Incomplete active state (STA-190)
 //
@@ -1933,6 +2054,9 @@ export async function normalizeOwnerMove(
   if (!linearStatus) {
     return fail(`${full.identifier} sits in unknown Linear status "${full.state.name}"; ignoring`);
   }
+  // Canceled is a terminal owner state: reconcile never converges or
+  // comments on it, whatever Progress labels it may still carry.
+  if (linearStatus === "canceled") return quiet();
   // Incomplete active states converge through the receipt-proven repair
   // or the same-stage Blocked park below — never by picking one of
   // several carried labels, never by guessing. Other statuses keep the

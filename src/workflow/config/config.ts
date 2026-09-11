@@ -54,6 +54,7 @@ export interface DispatchStates {
   review: string;
   deliver: string;
   done: string;
+  canceled: string;
 }
 
 export interface DispatchProgress {
@@ -96,6 +97,7 @@ export const DEFAULT_STATES: DispatchStates = {
   review: "Review",
   deliver: "Deliver",
   done: "Done",
+  canceled: "Canceled",
 };
 export const DEFAULT_PROGRESS: DispatchProgress = {
   group: "Progress",
@@ -148,9 +150,10 @@ function parseStates(raw: unknown): DispatchStates {
       key !== "build" &&
       key !== "review" &&
       key !== "deliver" &&
-      key !== "done"
+      key !== "done" &&
+      key !== "canceled"
     ) {
-      fail(`unknown states role "${key}" (known: backlog, todo, build, review, deliver, done)`);
+      fail(`unknown states role "${key}" (known: backlog, todo, build, review, deliver, done, canceled)`);
     }
     if (typeof value !== "string" || value.trim() === "") {
       fail(`states."${key}" must be a non-empty status name`);
@@ -159,7 +162,7 @@ function parseStates(raw: unknown): DispatchStates {
   }
   const names = Object.values(states);
   if (new Set(names).size !== names.length) {
-    fail(`"states" must name six distinct Linear statuses (got ${JSON.stringify(names)})`);
+    fail(`"states" must name seven distinct Linear statuses (got ${JSON.stringify(names)})`);
   }
   return states;
 }

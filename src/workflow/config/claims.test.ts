@@ -49,7 +49,7 @@ describe("validateStartup", () => {
     try {
       expect(resolved.projectId).toBe("proj-1");
       expect(resolved.teamName).toBe("Starcoder");
-      expect(resolved.stateIds).toMatchObject({ todo: TODO, build: BUILD, review: REVIEW, deliver: DELIVER, done: DONE, backlog: BACKLOG });
+      expect(resolved.stateIds).toMatchObject({ todo: TODO, build: BUILD, review: REVIEW, deliver: DELIVER, done: DONE, backlog: BACKLOG, canceled: "st-canceled" });
       expect(resolved.progress.ids).toMatchObject({
         pending: PENDING,
         in_progress: IN_PROGRESS,
@@ -82,6 +82,24 @@ describe("validateStartup", () => {
           states: { backlog: "Backlog", todo: "Build", build: "Todo", review: "Review", deliver: "Deliver", done: "Done" },
         })),
       ).rejects.toThrow("(states.todo) must be a unstarted-type state");
+    } finally {
+      fake.stop();
+    }
+  });
+
+  test("Canceled must map to a canceled-type Linear workflow state", async () => {
+    const { fake, client } = await setup();
+    try {
+      fake.world.statesByTeam["team-1"]!.forEach((state) => {
+        if (state.id === "st-canceled") state.type = "completed";
+      });
+      await expect(
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('(states.canceled) must be a canceled-type state');
+      fake.world.statesByTeam["team-1"]!.forEach((state) => {
+        if (state.id === "st-canceled") state.type = "canceled";
+      });
+      expect((await validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" }))).stateIds.canceled).toBe("st-canceled");
     } finally {
       fake.stop();
     }

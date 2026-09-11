@@ -23,9 +23,9 @@ stages:
     agent: deliverer
 
 # Linear status display names: igniter's vocabulary on the left, whatever
-# this Linear workspace calls it on the right. Dispatch validates all six
+# this Linear workspace calls it on the right. Dispatch validates all seven
 # at startup, including their workflow types (backlog, unstarted, three
-# started, completed).
+# started, completed, canceled).
 states:
   backlog: Backlog
   todo: Todo
@@ -33,6 +33,7 @@ states:
   review: Review
   deliver: Deliver
   done: Done
+  canceled: Canceled
 
 # Progress label group: the group name plus its four labels, shared across
 # all stages. Dispatch validates the group and every label's membership at

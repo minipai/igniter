@@ -37,7 +37,7 @@ describe("parseDispatchConfig", () => {
     });
   });
 
-  test("defaults name the six statuses and the Progress group", () => {
+  test("defaults name the seven statuses and the Progress group", () => {
     expect(DEFAULT_STATES).toEqual({
       backlog: "Backlog",
       todo: "Todo",
@@ -45,6 +45,7 @@ describe("parseDispatchConfig", () => {
       review: "Review",
       deliver: "Deliver",
       done: "Done",
+      canceled: "Canceled",
     });
     expect(DEFAULT_PROGRESS).toEqual({
       group: "Progress",
@@ -232,7 +233,7 @@ describe("parseDispatchConfig", () => {
   test("duplicate status names fail parsing", () => {
     expect(() =>
       parseDispatchConfig({ project: "x", states: { todo: "Build" } }),
-    ).toThrow("six distinct Linear statuses");
+    ).toThrow("seven distinct Linear statuses");
   });
 
   test("duplicate progress labels fail parsing", () => {
@@ -250,7 +251,7 @@ describe("parseDispatchConfig", () => {
   test("rejects bad max_running and unknown state roles", () => {
     expect(() => parseDispatchConfig({ project: "x", max_running: 0 })).toThrow('"max_running"');
     expect(() => parseDispatchConfig({ project: "x", states: { later: "Someday" } })).toThrow(
-      'unknown states role "later" (known: backlog, todo, build, review, deliver, done)',
+      'unknown states role "later" (known: backlog, todo, build, review, deliver, done, canceled)',
     );
   });
 });

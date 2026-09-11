@@ -7,12 +7,14 @@ const APPROVAL_SOURCES = ["build", "review", "deliver"] as const;
 const APPROVAL_TARGETS = ["review", "deliver", "done"] as const;
 const BLOCKED_STAGES = ["todo", "build", "review", "deliver"] as const;
 const INCOMPLETE_STAGES = ["build", "review", "deliver"] as const;
+const CANCELED_FROM = ["backlog", "todo", "build", "review", "deliver"] as const;
 
 export type BeginStage = (typeof BEGIN_STAGES)[number];
 export type ApprovalSource = (typeof APPROVAL_SOURCES)[number];
 export type ApprovalTarget = (typeof APPROVAL_TARGETS)[number];
 export type BlockedStage = (typeof BLOCKED_STAGES)[number];
 export type IncompleteStage = (typeof INCOMPLETE_STAGES)[number];
+export type CancelFrom = (typeof CANCELED_FROM)[number];
 
 export function beginEventBody(ticket: string, stage: BeginStage, after: string | null): string {
   return eventBlock("begin", [["ticket", ticket], ["stage", stage], ["after", after]]);
@@ -150,6 +152,61 @@ export function hasFailedEvent(comments: { body: string }[], ticket: string, rea
   });
 }
 
+export function canceledEventBody(
+  ticket: string,
+  reason: string,
+  from: CancelFrom,
+  progress: string,
+  identity: string,
+): string {
+  return eventBlock("canceled", [
+    ["ticket", ticket],
+    ["reason", textFingerprint(reason)],
+    ["from", from],
+    ["progress", progress],
+    ["identity", identity],
+  ]);
+}
+
+export function parseCanceledEvent(body: string): {
+  ticket: string;
+  reason: string;
+  from: CancelFrom;
+  progress: string;
+  identity: string;
+} | null {
+  const event = parseEvent(body);
+  if (!event || event.kind !== "canceled") return null;
+  return {
+    ticket: field(event.fields, "ticket", "canceled"),
+    reason: field(event.fields, "reason", "canceled"),
+    from: enumField(event.fields, "from", "canceled", CANCELED_FROM),
+    progress: field(event.fields, "progress", "canceled"),
+    identity: field(event.fields, "identity", "canceled"),
+  };
+}
+
+export function hasCanceledEvent(comments: { body: string }[], ticket: string, identity: string): boolean {
+  return comments.some(({ body }) => {
+    try {
+      const event = parseCanceledEvent(body);
+      return event?.ticket === ticket && event.identity === identity;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Retry-dedupe identity of one owner-authorized cancellation: same ticket,
+ * reason, and source status/progress, same identity. A lost write result
+ * re-runs the identical command and reads the identical event back instead
+ * of posting a second one.
+ */
+export function cancelIdentity(ticket: string, reason: string, from: string, progress: string): string {
+  return createHash("sha256").update(JSON.stringify([ticket, reason, from, progress])).digest("hex").slice(0, 16);
+}
+
 export function incompleteEventBody(
   ticket: string,
   stage: IncompleteStage,
@@ -201,7 +258,7 @@ export function textFingerprint(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-type EventKind = "begin" | "approval" | "blocked" | "failed" | "incomplete-state";
+type EventKind = "begin" | "approval" | "blocked" | "failed" | "incomplete-state" | "canceled";
 
 interface ParsedEvent {
   kind: EventKind;
@@ -234,6 +291,9 @@ function parseEvent(body: string): ParsedEvent | null {
       break;
     case "incomplete-state":
       keys = ["ticket", "stage", "progress", "receipt", "decision"];
+      break;
+    case "canceled":
+      keys = ["ticket", "reason", "from", "progress", "identity"];
       break;
     default:
       throw new RecordParseError(`refused: unknown event kind ${JSON.stringify(kind)}`);

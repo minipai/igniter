@@ -113,6 +113,7 @@ Prepare these workflow statuses on the project's Linear team:
 | Todo | Unstarted |
 | Build, Review, Deliver | Started |
 | Done | Completed |
+| Canceled | Canceled |
 
 Create a `Progress` label group with `Pending`, `In progress`, `Complete`,
 and `Blocked` child labels. Igniter validates this setup when a command runs.
@@ -194,7 +195,7 @@ continuation never grants approval. A correction Build returns automatically
 to Review + Pending under the existing handoff rules.
 
 Every machine-readable Linear lifecycle record — receipts, stage-start
-(`begin`), owner approval, blocked, failed, and the incomplete-state
+(`begin`), owner approval, blocked, failed, canceled, and the incomplete-state
 diagnosis — is a single visible, versioned `igniter_receipt` or
 `igniter_event` YAML fenced block after a short human-readable summary line.
 Dispatch never writes a hidden `<!-- igniter:... -->` HTML marker or inline
@@ -215,12 +216,23 @@ delivery. It returns the role, model, worker identity, and result path. Use
 workers exist. Worker commands may read ticket context but never write Linear.
 A restart really replaces the selected worker and preserves existing work.
 
-`block`/`unblock`, `fail`, and `reconcile` operate Linear without hidden worker
+`block`/`unblock`, `fail`, `cancel`, and `reconcile` operate Linear without hidden worker
 side effects. The Commander explicitly stops workers after handoffs and Done;
 Done cleanup keeps dirty, untracked, or unmerged work and pre-existing user tabs.
 An externally integrated Done still requires the Deliver report and explicit
 worker cleanup. Receipt/checkpoint validation and Git safety continue to apply
 at every handoff.
+
+Only an explicit owner authorization may run
+`igniter cancel ENG-123 --reason "<reason>"`: it moves a non-terminal ticket
+to Canceled, clears the Progress labels while keeping unrelated ones, and
+records the reason and source state as one versioned YAML cancellation event.
+`fail` returns failed work to Backlog for replanning, `block` waits on an
+external condition, and `cancel` terminates the ticket by owner decision.
+`cancel` never stops or deletes workers, the worktree, the branch, or unmerged
+content; after canceling, run `igniter worker stop ENG-123` explicitly. Done
+tickets are refused and an already-canceled retry reports `already canceled`
+without writing a second event.
 
 This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
 rebases onto remote `main`, pushes, opens a pull request, and watches required

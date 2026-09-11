@@ -53,6 +53,9 @@ function mainCli(
     .action(actions.blockCommand);
   cli.command("unblock <ticket>", "Return a blocked ticket to pending")
     .action(actions.unblockCommand);
+  cli.command("cancel <ticket>", "Cancel a ticket with owner authorization")
+    .option("--reason <text>", "Cancellation reason (required)")
+    .action(actions.cancelCommand);
   cli.command("worker <command>", "Operate a stage worker");
 
   cli.help((sections) => {
