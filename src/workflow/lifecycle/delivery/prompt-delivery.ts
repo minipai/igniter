@@ -23,10 +23,10 @@ import { createHash } from "node:crypto";
 import type { CommandWorkspaces } from "../../service/workspace/workspaces.ts";
 
 /** Who the prompt is for: one of the three stage workers. */
-export type PromptRole = "builder" | "reviewer" | "deliverer";
+export type PromptRole = "builder" | "acceptance" | "deliverer";
 
 /** Which stage the prompt belongs to. */
-export type PromptStage = "build" | "review" | "deliver";
+export type PromptStage = "build" | "acceptance" | "deliver";
 
 /**
  * Delivery identity: everything a retry must keep identical. `ticket` is

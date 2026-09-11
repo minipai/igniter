@@ -293,14 +293,14 @@ export function buildPayload(head: string) {
   };
 }
 
-export function reviewPayload(
+export function acceptancePayload(
   head: string,
   verdict: "pass" | "fail",
   evidenceUrl = "https://example.com/e2e/evidence-1",
 ) {
   return {
     v: 1,
-    kind: "review",
+    kind: "acceptance",
     verdict,
     checkpoint: head,
     results: [
@@ -320,7 +320,7 @@ export function reviewPayload(
 export function commandEvidencePayload(head: string, verdict: "pass" | "fail") {
   return {
     v: 1,
-    kind: "review",
+    kind: "acceptance",
     verdict,
     checkpoint: head,
     results: [

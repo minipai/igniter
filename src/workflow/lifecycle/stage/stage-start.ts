@@ -1,8 +1,8 @@
 // Worker lifecycle only. Linear stage changes belong to begin/submit/approve.
 
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { lstat, rename } from "node:fs/promises";
-import type { CommanderConfig, CommanderStage, DispatchConfig } from "../../config/config.ts";
+import type { CommanderStage, DispatchConfig } from "../../config/config.ts";
 import { STAGE_AGENTS } from "../../config/config.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../../../commander/assets.ts";
 import { launchFor } from "./agents.ts";
@@ -48,31 +48,27 @@ export type { StageWorkerStage };
 /** Linear status -> stage worker. Todo claims always prepare Build. */
 export function stageForStatus(status: ProtocolStatus): CommanderStage | null {
   if (status === "todo" || status === "build") return "build";
-  if (status === "review") return "review";
+  if (status === "acceptance") return "acceptance";
   if (status === "deliver") return "deliver";
   return null;
 }
 
-/** Worker scratch dir name per stage: builder/reviewer/deliverer. */
+/** Worker scratch dir name per stage: builder/acceptance/deliverer. */
 export function workerForStage(stage: CommanderStage): WorkerName {
   if (stage === "build") return "builder";
-  if (stage === "review") return "reviewer";
+  if (stage === "acceptance") return "acceptance";
   return "deliverer";
 }
 
-/** The stage worker agent name: builder/reviewer/deliverer-<ticket>. */
+/** The stage worker agent name: builder/acceptance/deliverer-<ticket>. */
 export function workerAgentName(stage: CommanderStage, identifier: string): string {
   return stageWorkerName(stage, identifier);
 }
 
-/** Absolute configured stage prompt, falling back to the bundled asset. */
-export function promptPathForStage(
-  assets: CommanderAssetPaths,
-  stage: CommanderStage,
-  commander?: CommanderConfig,
-): string {
-  const configured = commander?.stages[stage].prompt;
-  return configured !== undefined && isAbsolute(configured) ? configured : assets.prompts[stage];
+/** Absolute bundled stage prompt path. Igniter always supplies these; a
+ *  project runbook never replaces the bundled protocol prompt. */
+export function promptPathForStage(assets: CommanderAssetPaths, stage: CommanderStage): string {
+  return assets.prompts[stage];
 }
 
 /** The worker's result path: its own scratch dir plus `result.md`. */
@@ -91,6 +87,8 @@ export interface StageWorkOrderInput {
   resultPath: string;
   stage: CommanderStage;
   promptPath: string;
+  /** Optional absolute project runbook path for this stage, when configured. */
+  runbook?: string;
   harness: string;
   model: string;
   effort?: string;
@@ -100,13 +98,13 @@ export interface StageWorkOrderInput {
 
 const STAGE_LABEL: Record<CommanderStage, string> = {
   build: "Build",
-  review: "Acceptance",
+  acceptance: "Acceptance",
   deliver: "Deliver",
 };
 
 const STAGE_MARKER: Record<CommanderStage, string> = {
   build: "BUILD_HANDOFF_COMPLETE",
-  review: "ACCEPTANCE_COMPLETE",
+  acceptance: "ACCEPTANCE_COMPLETE",
   deliver: "DELIVERY_COMPLETE",
 };
 
@@ -124,6 +122,12 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
   const scratch = dirname(input.resultPath);
   const submitPath = join(scratch, "submit.json");
   const effort = input.effort !== undefined ? `; effort \`${input.effort}\`` : "";
+  const runbook = input.runbook !== undefined
+    ? `Read the project runbook at ${input.runbook} (an optional, project-specific addition to this stage).\n` +
+      `Follow it for this project's ${input.stage === "acceptance" ? "run, checks, and acceptance environment" : "run, checks, acceptance environment, and delivery procedure"}.\n` +
+      `The bundled stage protocol prompt above defines the non-overridable stage contract — roles, ` +
+      `authorization, safety, artifacts, and handoff. Where the runbook conflicts, the bundled protocol wins.\n`
+    : "";
   const delivery = input.delivery !== undefined
     ? `Project instructions: read \`${input.delivery}\` (relative to the repo root) as the delivery document. Do not search for another one. Also read the repository's AGENTS.md and follow it.\n`
     : `No delivery document is configured in \`.igniter/config.yaml\`. Read the repository's AGENTS.md (or equivalent) for how to run, check, and accept the project; do not invent project settings.\n`;
@@ -132,7 +136,10 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `The Global Commander is preparing your stage for ${input.identifier} and will record begin after delivery is confirmed.\n` +
     `\n` +
     `Read the stage prompt at ${input.promptPath} and run exactly that stage. ` +
+    `The Igniter stage protocol is bundled with Igniter; no project config can replace it. ` +
     `Do not read any other stage prompt.\n` +
+    `\n` +
+    runbook +
     `\n` +
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
     `${worktreeInstruction(input)}\n` +
@@ -191,7 +198,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
  * instead. Build and Deliver get the full request.
  */
 function stageInputBlock(input: StageWorkOrderInput): string {
-  if (input.stage === "review") {
+  if (input.stage === "acceptance") {
     return (
       `Requirement: ${input.title}\n` +
       `\n` +
@@ -212,21 +219,21 @@ function stageInputBlock(input: StageWorkOrderInput): string {
 
 function criteriaList(input: StageWorkOrderInput): string {
   if (input.criteria.length > 0) return input.criteria.map((c) => `- [ ] ${c}`).join("\n");
-  return input.stage === "review"
+  return input.stage === "acceptance"
     ? "- [ ] (no observable criteria listed; report the missing criteria instead of guessing)"
     : "- [ ] (no criteria listed; read the feature request above)";
 }
 
 /** Acceptance stays black-box: it may not read the source, diff, or history. */
 function checkpointInstruction(input: StageWorkOrderInput): string {
-  return input.stage === "review"
+  return input.stage === "acceptance"
     ? `Do not read source files, git history, or diffs; test the committed checkpoint only through its public surface.`
     : `Inspect the worktree diff and branch log first; never reset, clean, or discard unrelated work.`;
 }
 
 /** Acceptance runs from the worktree but never edits it. */
 function worktreeInstruction(input: StageWorkOrderInput): string {
-  return input.stage === "review"
+  return input.stage === "acceptance"
     ? `Run from there; do not modify the worktree and do not create another branch or worktree.`
     : `Work there; do not create another branch or worktree.`;
 }
@@ -343,7 +350,7 @@ export async function ensureStageWorkspace(
   const git = deps.git ?? bunGitRunner();
   const worktree = await ensureTicketWorktree(git, deps.repoRoot, identifier);
   const scratchRoot = scratchRootFor(deps.repoRoot, identifier);
-  for (const worker of ["builder", "reviewer", "deliverer"] as const) {
+  for (const worker of ["builder", "acceptance", "deliverer"] as const) {
     await ensureScratchDir(scratchFor(deps.repoRoot, identifier, worker), scratchRoot);
   }
   const snapshot = await deps.workspaces.snapshot();
@@ -353,7 +360,7 @@ export async function ensureStageWorkspace(
   const tokens = {
     ticket: identifier,
     scratch_builder: scratchFor(deps.repoRoot, identifier, "builder"),
-    scratch_reviewer: scratchFor(deps.repoRoot, identifier, "reviewer"),
+    scratch_acceptance: scratchFor(deps.repoRoot, identifier, "acceptance"),
     scratch_deliverer: scratchFor(deps.repoRoot, identifier, "deliverer"),
     ...recordStageProfiles(config),
     ...keptStageProfiles(existing?.tokens ?? {}),
@@ -473,17 +480,18 @@ export async function startStageTicket(
     if (order === undefined) {
       const git = deps.git ?? bunGitRunner();
       const head = (await git.run(["rev-parse", "HEAD"], ensured.worktreePath)).stdout.trim().split("\n")[0]?.trim();
-      const approved = stage === "deliver" ? latestReceiptOf(full.comments, "review-pass") : null;
+      const approved = stage === "deliver" ? latestReceiptOf(full.comments, "acceptance-pass") : null;
       const checkpoint = approved?.receipt.checkpoint ?? head;
       if (!checkpoint) throw new Error("worktree checkpoint is missing");
       order = buildStageWorkOrder({
         identifier: full.identifier, title: full.title, description: full.description,
         criteria: state.criteria, worktreePath: ensured.worktreePath, branch: ensured.branch,
         checkpoint, resultPath, stage,
-        promptPath: promptPathForStage(deps.assets ?? commanderAssetPaths(), stage, effective),
+        promptPath: promptPathForStage(deps.assets ?? commanderAssetPaths(), stage),
         harness: profile.harness, model: profile.model,
         ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
         ...(config.delivery !== undefined ? { delivery: config.delivery } : {}),
+        ...(config.runbooks[stage] !== undefined ? { runbook: config.runbooks[stage] } : {}),
       });
       saved = { run, order };
       await saveWorkOrder(recordPath, saved);

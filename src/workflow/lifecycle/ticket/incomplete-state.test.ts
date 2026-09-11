@@ -1,5 +1,5 @@
 // Incomplete active-state diagnosis and safe convergence (STA-190): an
-// active Build, Review, or Deliver ticket with zero or several Progress
+// active Build, Acceptance, or Deliver ticket with zero or several Progress
 // labels fails closed on `status`/`reconcile`/`begin`, converges from the
 // Linear status plus Progress plus the newest valid YAML receipt alone, and
 // never starts a stage agent. No network, no real credentials, no project.
@@ -27,7 +27,7 @@ import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const TODO = "st-todo";
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const DELIVER = "st-deliver";
 const PENDING = "label-pending";
 const IN_PROGRESS = "label-in-progress";
@@ -86,7 +86,7 @@ let seedClock = 1000;
 function seedReceipt(
   h: Harness,
   identifier: string,
-  kind: "build" | "review-pass" | "review-fail" | "deliver",
+  kind: "build" | "acceptance-pass" | "acceptance-fail" | "deliver",
   checkpoint = HEAD,
   submission = "sub-seed-00000001",
 ): void {
@@ -114,7 +114,7 @@ function markerComments(h: Harness, identifier: string): number {
 }
 
 describe("missing Progress on active stages", () => {
-  for (const [statusId, stage] of [[BUILD, "build"], [REVIEW, "review"], [DELIVER, "deliver"]] as const) {
+  for (const [statusId, stage] of [[BUILD, "build"], [ACCEPTANCE, "acceptance"], [DELIVER, "deliver"]] as const) {
     test(`${stage} with no Progress and no receipt parks as Blocked with no worker`, async () => {
       const h = await harness();
       try {
@@ -186,7 +186,7 @@ describe("multiple Progress labels fail closed", () => {
   test("a receipt-proven repair overwrites the carried set, never selects from it", async () => {
     const h = await harness();
     try {
-      // Neither carried label is Pending; only the review-pass receipt
+      // Neither carried label is Pending; only the acceptance-pass receipt
       // proves Deliver+Pending.
       addIssue(h.world, {
         identifier: "STA-1",
@@ -195,7 +195,7 @@ describe("multiple Progress labels fail closed", () => {
         description: CRITERIA,
         labelIds: [COMPLETE, IN_PROGRESS],
       });
-      seedReceipt(h, "STA-1", "review-pass");
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
@@ -233,16 +233,16 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
     }
   });
 
-  test("Review missing Progress with a build receipt repairs to Pending", async () => {
+  test("Acceptance missing Progress with a build receipt repairs to Pending", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       const commentsBefore = issueOf(h, "STA-1").comments.length;
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("review+none → review+pending");
+      expect(out.text).toContain("acceptance+none → acceptance+pending");
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(issueOf(h, "STA-1").comments).toHaveLength(commentsBefore);
       expect(workspaceWrites(h)).toEqual([]);
@@ -251,15 +251,15 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
     }
   });
 
-  test("Review missing Progress with a review-pass receipt repairs to Complete", async () => {
+  test("Acceptance missing Progress with a acceptance-pass receipt repairs to Complete", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
-      seedReceipt(h, "STA-1", "review-pass");
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
+      seedReceipt(h, "STA-1", "acceptance-pass");
       seedLineage(h, "STA-1");
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
-      expect(out.text).toContain("review+none → review+complete");
+      expect(out.text).toContain("acceptance+none → acceptance+complete");
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(workspaceWrites(h)).toEqual([]);
     } finally {
@@ -285,16 +285,16 @@ describe("receipt-proven repairs keep checkpoint and receipts", () => {
 });
 
 describe("insufficient or conflicting receipts park with one actionable comment", () => {
-  test("Review missing Progress bound to a review-fail receipt parks (failure belongs in Build)", async () => {
+  test("Acceptance missing Progress bound to a acceptance-fail receipt parks (failure belongs in Build)", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
-      seedReceipt(h, "STA-1", "review-fail");
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
+      seedReceipt(h, "STA-1", "acceptance-fail");
       seedLineage(h, "STA-1");
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("parked as");
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
       expect(markerComments(h, "STA-1")).toBe(1);
       const body = issueOf(h, "STA-1").comments.at(-1)?.body ?? "";
@@ -310,12 +310,12 @@ describe("insufficient or conflicting receipts park with one actionable comment"
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
-      seedReceipt(h, "STA-1", "review-pass", HEAD, "sub-old-0000000001");
+      seedReceipt(h, "STA-1", "acceptance-pass", HEAD, "sub-old-0000000001");
       seedReceipt(h, "STA-1", "build", HEAD, "sub-new-0000000002");
       seedLineage(h, "STA-1");
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("belongs in Review+Pending");
+      expect(out.text).toContain("belongs in Acceptance+Pending");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
       expect(markerComments(h, "STA-1")).toBe(1);
       expect(workspaceWrites(h)).toEqual([]);
@@ -327,8 +327,8 @@ describe("insufficient or conflicting receipts park with one actionable comment"
   test("a stale checkpoint parks instead of endorsing an old completion", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
-      seedReceipt(h, "STA-1", "review-pass", "replaced-commit");
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
+      seedReceipt(h, "STA-1", "acceptance-pass", "replaced-commit");
       // No lineage for the receipt checkpoint: the branch moved on.
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
@@ -376,7 +376,7 @@ describe("Herdr-independent convergence", () => {
       // would otherwise need a workspace. Every Herdr operation that could
       // open or read one — snapshot, workspace.create, agent.start — throws,
       // so any workspace dependency in convergence fails the command loudly.
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
@@ -436,7 +436,7 @@ describe("concurrent changes are never clobbered", () => {
   test("an owner fix landing mid-repair is kept, not overwritten", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       const stale = (await h.client.fetchIssue(issueOf(h, "STA-1").id)) as FullIssue;
@@ -505,17 +505,17 @@ describe("receipt-kind ownership", () => {
     }
   });
 
-  test("a stale correction receipt parks as stale, not as a Review handoff", async () => {
+  test("a stale correction receipt parks as stale, not as a Acceptance handoff", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [] });
-      seedReceipt(h, "STA-1", "review-pass", HEAD, "sub-old-0000000001");
+      seedReceipt(h, "STA-1", "acceptance-pass", HEAD, "sub-old-0000000001");
       seedReceipt(h, "STA-1", "build", "replaced-commit", "sub-new-0000000002");
       // No lineage for the correction checkpoint: stale beats stage-conflict.
       const out = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("stale");
-      expect(out.text).not.toContain("belongs in Review");
+      expect(out.text).not.toContain("belongs in Acceptance");
       expect(issueOf(h, "STA-1").labelIds).toEqual([BLOCKED]);
       expect(markerComments(h, "STA-1")).toBe(1);
     } finally {
@@ -569,7 +569,7 @@ describe("bad states stay ticket-targeted", () => {
   test("begin on an incomplete ticket starts no stage agent", async () => {
     const h = await harness();
     try {
-      addIssue(h.world, { identifier: "STA-1", stateId: REVIEW, priority: 1, description: CRITERIA, labelIds: [] });
+      addIssue(h.world, { identifier: "STA-1", stateId: ACCEPTANCE, priority: 1, description: CRITERIA, labelIds: [] });
       seedReceipt(h, "STA-1", "build");
       seedLineage(h, "STA-1");
       const commentsBefore = issueOf(h, "STA-1").comments.length;

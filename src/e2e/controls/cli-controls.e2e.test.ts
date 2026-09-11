@@ -211,19 +211,19 @@ describe("e2e CLI permission answers", () => {
       expect(submitted.stderr).toBe("");
       await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.startStage("STA-24"));
-      const reviewer = e2e.workspaces.agents.find((agent) => agent.name === "reviewer-sta-24")!;
-      expect(reviewer.kind).toBe("claude");
-      expect(reviewer.paneId).not.toBe(builder.paneId);
+      const acceptance = e2e.workspaces.agents.find((agent) => agent.name === "acceptance-sta-24")!;
+      expect(acceptance.kind).toBe("claude");
+      expect(acceptance.paneId).not.toBe(builder.paneId);
 
-      const denied = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "review", "n"]));
-      expect(denied.stdout).toContain("answered n for reviewer-sta-24");
+      const denied = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "acceptance", "n"]));
+      expect(denied.stdout).toContain("answered n for acceptance-sta-24");
       expect(denied.stderr).toBe("");
-      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: reviewer.paneId, keys: ["esc"] });
+      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: acceptance.paneId, keys: ["esc"] });
     }, {
       config: {
         agents: {
           builder: { harness: "opencode", model: "opencode-go/deepseek-v4-flash" },
-          reviewer: { harness: "claude", model: "claude-sonnet-5" },
+          acceptance: { harness: "claude", model: "claude-sonnet-5" },
         },
       },
     });

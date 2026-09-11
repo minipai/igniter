@@ -63,8 +63,8 @@ function seedLegacyIssue(
     labelIds,
     comments: [
       {
-        id: `review-${suffix}`,
-        body: `review\n\n${receiptBlock("review-pass", checkpoint, `review-${suffix}`)}\n`,
+        id: `acceptance-${suffix}`,
+        body: `acceptance\n\n${receiptBlock("acceptance-pass", checkpoint, `acceptance-${suffix}`)}\n`,
         createdAt: "2026-09-01T00:00:00.000001Z",
       },
       {
@@ -124,7 +124,7 @@ describe("e2e legacy Deliver receipt upgrade", () => {
       );
 
       // A restarted reader has no workspace metadata. Linear's newest
-      // receipt remains the legacy Deliver record, not the older Review PASS.
+      // receipt remains the legacy Deliver record, not the older Acceptance PASS.
       const status = expectOk(await e2e.cli(["status", clean.identifier, "--json"]));
       const state = JSON.parse(status.stdout) as {
         status: string;

@@ -9,8 +9,8 @@ import { realpathSync, lstatSync } from "node:fs";
 import { dirname, basename, join, resolve, sep } from "node:path";
 import { lstat, mkdir, rm } from "node:fs/promises";
 
-export type WorkerName = "builder" | "reviewer" | "deliverer";
-export const WORKER_NAMES: WorkerName[] = ["builder", "reviewer", "deliverer"];
+export type WorkerName = "builder" | "acceptance" | "deliverer";
+export const WORKER_NAMES: WorkerName[] = ["builder", "acceptance", "deliverer"];
 
 /** Deterministic scratch root for a ticket under the repo's ignored runtime data. */
 export function scratchRootFor(repoRoot: string, identifier: string): string {

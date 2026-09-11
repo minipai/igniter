@@ -105,13 +105,14 @@ max_running: 3
 `project` accepts a Linear project name or slug; `team` accepts a team name or
 key. Set `linear_org` to your own Linear workspace slug.
 
-Prepare these workflow statuses on the project's Linear team:
+Prepare these workflow statuses on the project's Linear team — the lifecycle
+is fixed, so these names are required:
 
 | Status | Linear status type |
 | --- | --- |
 | Backlog | Backlog |
 | Todo | Unstarted |
-| Build, Review, Deliver | Started |
+| Build, Acceptance, Deliver | Started |
 | Done | Completed |
 | Canceled | Canceled |
 
@@ -138,19 +139,21 @@ igniter start
 `igniter start` is the human entry point that opens the configured Commander in
 the current terminal. It takes no ticket: the Commander reads the queue with
 `igniter status --json` and advances each ticket through the explicit
-ticket-targeted commands. Projects may replace all three
-stage prompts through the `stages` map in `.igniter/config.yaml`; otherwise the
-short bundled prompts apply.
+ticket-targeted commands. Stage protocol prompts are bundled with Igniter and
+cannot be replaced. A project may add optional, project-specific runbooks under
+`runbooks`; each entry is optional, relative to the repository root, must exist
+and be non-empty, and may not escape the repository:
 
 ```yaml
-stages:
-  build: { prompt: .igniter/workflow/build.md, agent: builder }
-  review: { prompt: .igniter/workflow/review.md, agent: reviewer }
-  deliver: { prompt: .igniter/workflow/deliver.md, agent: deliverer }
+runbooks:
+  build: .igniter/workflow/build.md
+  acceptance: .igniter/workflow/acceptance.md
+  deliver: .igniter/workflow/deliver.md
 ```
 
-An override is complete: all three entries and non-empty prompt files under
-the repository root are required.
+A runbook adds the project's run, checks, acceptance environment, and delivery
+procedure on top of the bundled stage protocol; where they conflict, the
+bundled protocol wins.
 
 ### Follow progress
 
@@ -187,12 +190,12 @@ Missing, unfinished, malformed, or stale artifacts return to the same worker
 for correction; a valid schema never substitutes for content review. The first Build
 waits at Build + Complete for your approval. Your explicit approval
 allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
-from status, to move to Review + Pending. A PASS Review receipt similarly
+from status, to move to Acceptance + Pending. A PASS Acceptance receipt similarly
 permits Deliver + Pending; a valid completed Deliver receipt permits Done.
 There is no `--to`: the completed stage determines the transition. Retrying
 with the same receipt ID cannot approve a later stage. Ordinary sync or
 continuation never grants approval. A correction Build returns automatically
-to Review + Pending under the existing handoff rules.
+to Acceptance + Pending under the existing handoff rules.
 
 Every machine-readable Linear lifecycle record — receipts, stage-start
 (`begin`), owner approval, blocked, failed, canceled, and the incomplete-state
@@ -212,7 +215,7 @@ per-role identities, tabs, effective model, and confirmed initial work-order
 delivery. It returns the role, model, worker identity, and result path. Use
 `worker send`, `worker restart --model MODEL` (or `--profile fallback`),
 `worker stop`, and `worker answer ... y|n` for worker operations. Use
-`--role build|review|deliver` when targeting an earlier role or when several
+`--role build|acceptance|deliver` when targeting an earlier role or when several
 workers exist. Worker commands may read ticket context but never write Linear.
 A restart really replaces the selected worker and preserves existing work.
 
@@ -235,6 +238,9 @@ tickets are refused and an already-canceled retry reports `already canceled`
 without writing a second event.
 
 This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
+This repository's project runbooks live at `.igniter/workflow/build.md`,
+`.igniter/workflow/acceptance.md`, and `.igniter/workflow/deliver.md`, wired
+through the `runbooks` map in its `.igniter/config.yaml`. The Deliver runbook
 rebases onto remote `main`, pushes, opens a pull request, and watches required
 checks through GitHub's native auto-merge. A rebase changing only the SHA keeps
 the approval; a product change needed to fix CI returns to Build and acceptance.
@@ -270,7 +276,7 @@ The named scenario groups cover:
 | Group | Coverage |
 | --- | --- |
 | Status and begin | Human and JSON status, explicit worker start and Todo stage recording, unique Progress, preserved labels, live worker state, and recognizable CLI failures. |
-| Lifecycle and owner gates | Build, Review PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
+| Lifecycle and owner gates | Build, Acceptance PASS/FAIL, rebuild after a stale ended worker, Deliver, explicit owner approval/Done reconciliation, receipts, evidence, real Git landing, and safe cleanup. |
 | Worker start | Prompt delivery, Pending start recovery, live/missing/ended workers, slot limits, duplicate begin prevention, and ticket isolation. |
 | Safe retries | Resubmission, failures before writes, lost write responses, failed post-write reads, attachment readback, and explicit worker cleanup recovery. |
 | Control commands | Explicit ticket status, block/unblock, fail, explicit approval, worker start/send/restart/stop, mixed-harness `worker answer y/n`, stdin, missing-ticket refusals, and `start` with a fake foreground Commander. |

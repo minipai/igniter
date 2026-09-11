@@ -1,10 +1,10 @@
 // First-Build owner handoff and correction auto-return (STA-223).
 //
 // The first Build submit rests at Build+Complete for owner acceptance;
-// only the owner's move to Review plus an explicit reconcile hands
-// it to Review+Pending. A correction Build — after a Review FAIL or after
-// the owner sends Review+Complete back to Build — returns straight to
-// Review+Pending with no further owner step. Classification reads the
+// only the owner's move to Acceptance plus an explicit reconcile hands
+// it to Acceptance+Pending. A correction Build — after a Acceptance FAIL or after
+// the owner sends Acceptance+Complete back to Build — returns straight to
+// Acceptance+Pending with no further owner step. Classification reads the
 // Linear receipt history before the submission itself, so a retry never
 // changes it, and reconcile without an owner move keeps Build+Complete
 // still. Offline against the fake Linear endpoint: no real credentials, no
@@ -27,7 +27,7 @@ import { FakeGit } from "../../testing/fake-git";
 import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const TODO = "st-todo";
 const PENDING = "label-pending";
 const IN_PROGRESS = "label-in-progress";
@@ -112,10 +112,10 @@ function buildPayload(head = HEAD) {
   };
 }
 
-function reviewPayload(verdict: "pass" | "fail", head = HEAD) {
+function acceptancePayload(verdict: "pass" | "fail", head = HEAD) {
   return {
     v: 1,
-    kind: "review",
+    kind: "acceptance",
     verdict,
     checkpoint: head,
     results: [
@@ -160,15 +160,15 @@ async function initialSubmit(h: Harness, identifier: string, head = HEAD): Promi
   expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
 }
 
-/** Owner handoff: the owner moves Build+Complete to Review, an explicit reconcile converges it. */
+/** Owner handoff: the owner moves Build+Complete to Acceptance, an explicit reconcile converges it. */
 async function ownerHandoff(h: Harness, identifier: string): Promise<void> {
   seedLineage(h, identifier);
-  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  await h.client.setIssueState(issueOf(h, identifier).id, ACCEPTANCE);
   expect(issueOf(h, identifier).labelIds).toEqual([COMPLETE]);
   const reconciled = await runCommand({ command: "reconcile", ticket: identifier }, h.ctx);
   expect(reconciled.ok).toBe(true);
-  expect(reconciled.text).toContain("Build+Complete → Review+Pending");
-  expect(issueOf(h, identifier).stateId).toBe(REVIEW);
+  expect(reconciled.text).toContain("Build+Complete → Acceptance+Pending");
+  expect(issueOf(h, identifier).stateId).toBe(ACCEPTANCE);
   expect(issueOf(h, identifier).labelIds).toEqual([PENDING]);
 }
 
@@ -195,9 +195,9 @@ describe("initial Build handoff", () => {
         receipt: { kind: "build", checkpoint: HEAD },
       });
       // No Acceptance worker exists and none can start: begin needs Pending.
-      expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
+      expect(h.workspaces.agents.some((a) => a.name === "acceptance-sta-1")).toBe(false);
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(false);
-      expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
+      expect(h.workspaces.agents.some((a) => a.name === "acceptance-sta-1")).toBe(false);
       const state = (await ticketCommand(h, "STA-1", "status")).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "build", progress: "complete", next: ["approve"] });
     } finally {
@@ -222,14 +222,14 @@ describe("initial Build handoff", () => {
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
       expect(issueOf(h, "STA-1").comments.length).toBe(commentsBefore);
-      expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(false);
+      expect(h.workspaces.agents.some((a) => a.name === "acceptance-sta-1")).toBe(false);
       expect(h.lines.some((l) => /approved|Acceptance|wake/.test(l))).toBe(false);
     } finally {
       h.stop();
     }
   });
 
-  test("the owner handoff converges on explicit reconcile and the Commander can begin Review", async () => {
+  test("the owner handoff converges on explicit reconcile and the Commander can begin Acceptance", async () => {
     const h = await harness();
     try {
       await startBuild(h, "STA-1");
@@ -242,7 +242,7 @@ describe("initial Build handoff", () => {
       expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
-      expect(h.workspaces.agents.some((a) => a.name === "reviewer-sta-1")).toBe(true);
+      expect(h.workspaces.agents.some((a) => a.name === "acceptance-sta-1")).toBe(true);
     } finally {
       h.stop();
     }
@@ -254,7 +254,7 @@ describe("initial Build handoff", () => {
       await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       seedLineage(h, "STA-1");
-      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      await h.client.setIssueState(issueOf(h, "STA-1").id, ACCEPTANCE);
       // Restart: fresh workspaces, fresh git, fresh decisions, same Linear.
       const workspaces = new FakeWorkspaces();
       const git = new FakeGit();
@@ -273,8 +273,8 @@ describe("initial Build handoff", () => {
       };
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, restarted);
       expect(reconciled.ok).toBe(true);
-      expect(reconciled.text).toContain("Build+Complete → Review+Pending");
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(reconciled.text).toContain("Build+Complete → Acceptance+Pending");
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(lines).toEqual([]);
       expect(receiptBodies(h, "STA-1")).toHaveLength(1);
@@ -289,20 +289,20 @@ describe("initial Build handoff", () => {
       await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       seedLineage(h, "STA-1");
-      await h.client.setIssueState(issueOf(h, "STA-1").id, REVIEW);
+      await h.client.setIssueState(issueOf(h, "STA-1").id, ACCEPTANCE);
       h.workspaces.workspaces = [];
       const reconciled = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(reconciled.ok).toBe(true);
-      expect(reconciled.text).toContain("Build+Complete → Review+Pending");
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(reconciled.text).toContain("Build+Complete → Acceptance+Pending");
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
-      expect(h.workspaces.calls.some(call => call.method === "workspace.report_metadata" && call.params["status"] === "review")).toBe(false);
+      expect(h.workspaces.calls.some(call => call.method === "workspace.report_metadata" && call.params["status"] === "acceptance")).toBe(false);
     } finally {
       h.stop();
     }
   });
 
-  test("a block/unblock round trip without any review still classifies as initial", async () => {
+  test("a block/unblock round trip without any acceptance still classifies as initial", async () => {
     const h = await harness();
     try {
       await startBuild(h, "STA-1");
@@ -317,14 +317,14 @@ describe("initial Build handoff", () => {
 });
 
 describe("correction Builds return without the owner", () => {
-  test("a Review FAIL correction submit lands straight in Review+Pending", async () => {
+  test("a Acceptance FAIL correction submit lands straight in Acceptance+Pending", async () => {
     const h = await harness();
     try {
       await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
-      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(acceptancePayload("fail")))).ok).toBe(true);
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
 
@@ -333,9 +333,9 @@ describe("correction Builds return without the owner", () => {
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
       const corrected = await ticketCommand(h, "STA-1", "submit", JSON.stringify(buildPayload(HEAD2)));
       expect(corrected.ok).toBe(true);
-      expect(corrected.text).toContain("→ Review+Pending");
-      expect(corrected.text).toContain("correction after review-fail");
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(corrected.text).toContain("→ Acceptance+Pending");
+      expect(corrected.text).toContain("correction after acceptance-fail");
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
       expect(receiptBodies(h, "STA-1")).toHaveLength(3);
       expect(latestValidReceipt(issueOf(h, "STA-1").comments)).toMatchObject({
@@ -346,22 +346,22 @@ describe("correction Builds return without the owner", () => {
     }
   });
 
-  test("an owner send-back correction submit lands straight in Review+Pending", async () => {
+  test("an owner send-back correction submit lands straight in Acceptance+Pending", async () => {
     const h = await harness();
     try {
       await startBuild(h, "STA-1");
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
-      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(reviewPayload("pass")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(acceptancePayload("pass")))).ok).toBe(true);
       expect(issueOf(h, "STA-1").labelIds).toEqual([COMPLETE]);
 
-      // The owner sends Review+Complete back to Build; reconcile converges it.
+      // The owner sends Acceptance+Complete back to Build; reconcile converges it.
       seedLineage(h, "STA-1");
       await h.client.setIssueState(issueOf(h, "STA-1").id, BUILD);
       const sentBack = await runCommand({ command: "reconcile", ticket: "STA-1" }, h.ctx);
       expect(sentBack.ok).toBe(true);
-      expect(sentBack.text).toContain("sent back: Review+Complete → Build+Pending");
+      expect(sentBack.text).toContain("sent back: Acceptance+Complete → Build+Pending");
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
 
       // The original Builder corrects at a new checkpoint: no second approval.
@@ -370,9 +370,9 @@ describe("correction Builds return without the owner", () => {
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
       const corrected = await ticketCommand(h, "STA-1", "submit", JSON.stringify(buildPayload(HEAD2)));
       expect(corrected.ok).toBe(true);
-      expect(corrected.text).toContain("→ Review+Pending");
-      expect(corrected.text).toContain("correction after review-pass");
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(corrected.text).toContain("→ Acceptance+Pending");
+      expect(corrected.text).toContain("correction after acceptance-pass");
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
     } finally {
       h.stop();
@@ -406,7 +406,7 @@ describe("submission retries keep their classification", () => {
       await initialSubmit(h, "STA-1");
       await ownerHandoff(h, "STA-1");
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
-      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(reviewPayload("fail")))).ok).toBe(true);
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(acceptancePayload("fail")))).ok).toBe(true);
       h.git.head = HEAD2;
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(true);
       const payload = JSON.stringify(buildPayload(HEAD2));
@@ -415,7 +415,7 @@ describe("submission retries keep their classification", () => {
       expect(repeated.ok).toBe(true);
       expect(repeated.text).toContain("already submitted build");
       expect(receiptBodies(h, "STA-1")).toHaveLength(3);
-      expect(issueOf(h, "STA-1").stateId).toBe(REVIEW);
+      expect(issueOf(h, "STA-1").stateId).toBe(ACCEPTANCE);
       expect(issueOf(h, "STA-1").labelIds).toEqual([PENDING]);
     } finally {
       h.stop();
@@ -454,7 +454,7 @@ describe("protocol vocabulary", () => {
     const h = await harness();
     try {
       expect(Object.keys(h.resolved.stateIds).sort()).toEqual(
-        ["backlog", "build", "canceled", "deliver", "done", "review", "todo"],
+        ["acceptance", "backlog", "build", "canceled", "deliver", "done", "todo"],
       );
       expect(Object.keys(h.resolved.progress.ids).sort()).toEqual(
         ["blocked", "complete", "in_progress", "pending"],
@@ -465,10 +465,10 @@ describe("protocol vocabulary", () => {
   });
 
   test("Acceptance stays black-box, correction-scoped, and never modifies product code", async () => {
-    const review = await Bun.file(new URL("../../../commander/stages/review.md", import.meta.url)).text();
-    expect(review).toContain("Never modify product code");
-    expect(review).toContain("returns to the original\nBuilder");
-    expect(review).toContain("recheck the failed criteria plus a short smoke test");
+    const acceptance = await Bun.file(new URL("../../../commander/stages/acceptance.md", import.meta.url)).text();
+    expect(acceptance).toContain("Never modify product code");
+    expect(acceptance).toContain("returns to the original\nBuilder");
+    expect(acceptance).toContain("recheck the failed criteria plus a short smoke test");
     const rules = await Bun.file(new URL("../../../commander/rules.md", import.meta.url)).text();
     expect(rules).toContain("The Acceptance agent never modifies product code");
     expect(rules).toContain("never fix inside acceptance, never\nopen a second Builder");

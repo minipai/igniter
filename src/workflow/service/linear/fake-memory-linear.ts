@@ -85,7 +85,7 @@ export function standardStates(): WorkflowState[] {
     { id: "st-backlog", name: "Backlog", type: "backlog" },
     { id: "st-todo", name: "Todo", type: "unstarted" },
     { id: "st-build", name: "Build", type: "started" },
-    { id: "st-review", name: "Review", type: "started" },
+    { id: "st-acceptance", name: "Acceptance", type: "started" },
     { id: "st-deliver", name: "Deliver", type: "started" },
     { id: "st-done", name: "Done", type: "completed" },
     { id: "st-canceled", name: "Canceled", type: "canceled" },

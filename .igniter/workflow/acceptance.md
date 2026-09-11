@@ -1,4 +1,4 @@
-# Review
+# Acceptance
 
 Independently test one committed feature through its public product surface.
 This is black-box acceptance, not code review.

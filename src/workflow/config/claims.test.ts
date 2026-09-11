@@ -13,11 +13,11 @@ import {
 } from "./claims";
 import { parseDispatchConfig } from "./config";
 import { LinearClient, requireLinearApiKey, type LinearIssue } from "../service/linear/linear";
-import { addIssue, standardWorld, startFakeLinear, type FakeLinearHandle } from "../service/linear/fake-linear";
+import { addIssue, standardProgressLabels, standardWorld, startFakeLinear, type FakeLinearHandle } from "../service/linear/fake-linear";
 const BACKLOG = "st-backlog";
 const TODO = "st-todo";
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const DELIVER = "st-deliver";
 const DONE = "st-done";
 const PENDING = "label-pending";
@@ -49,7 +49,7 @@ describe("validateStartup", () => {
     try {
       expect(resolved.projectId).toBe("proj-1");
       expect(resolved.teamName).toBe("Starcoder");
-      expect(resolved.stateIds).toMatchObject({ todo: TODO, build: BUILD, review: REVIEW, deliver: DELIVER, done: DONE, backlog: BACKLOG, canceled: "st-canceled" });
+      expect(resolved.stateIds).toMatchObject({ todo: TODO, build: BUILD, acceptance: ACCEPTANCE, deliver: DELIVER, done: DONE, backlog: BACKLOG, canceled: "st-canceled" });
       expect(resolved.progress.ids).toMatchObject({
         pending: PENDING,
         in_progress: IN_PROGRESS,
@@ -64,9 +64,10 @@ describe("validateStartup", () => {
   test("unknown status name fails startup with the team in the message", async () => {
     const { fake, client } = await setup();
     try {
+      fake.world.statesByTeam["team-1"] = fake.world.statesByTeam["team-1"]!.filter((s) => s.name !== "Todo");
       await expect(
-        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder", states: { todo: "Nope" } })),
-      ).rejects.toThrow('status "Nope" (states.todo) does not exist on team "Starcoder"');
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('status "Todo" (the canonical todo status) does not exist on team "Starcoder"');
     } finally {
       fake.stop();
     }
@@ -75,13 +76,11 @@ describe("validateStartup", () => {
   test("a status on the wrong workflow type fails startup", async () => {
     const { fake, client } = await setup();
     try {
+      const todo = fake.world.statesByTeam["team-1"]!.find((s) => s.name === "Todo")!;
+      todo.type = "started";
       await expect(
-        validateStartup(client, parseDispatchConfig({
-          project: "igniter",
-          team: "Starcoder",
-          states: { backlog: "Backlog", todo: "Build", build: "Todo", review: "Review", deliver: "Deliver", done: "Done" },
-        })),
-      ).rejects.toThrow("(states.todo) must be a unstarted-type state");
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('status "Todo" (the canonical todo status) must be a unstarted-type state');
     } finally {
       fake.stop();
     }
@@ -108,13 +107,18 @@ describe("validateStartup", () => {
   test("a missing Progress group or label fails startup", async () => {
     const { fake, client } = await setup();
     try {
+      fake.world.labels = fake.world.labels.filter((l) => l.name !== "Progress");
       await expect(
-        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder", progress: { group: "Nope" } })),
-      ).rejects.toThrow('label group "Nope" (progress.group) was not found');
-      fake.world.labels.push({ id: "label-stray", name: "Stray", teamId: "team-1", parentId: null });
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('label group "Progress" (the canonical Progress group) was not found on team "Starcoder"');
+      // A label outside the group fails too: restore the group, drop Complete.
+      fake.world.labels = [
+        ...standardProgressLabels().filter((l) => l.name !== "Complete"),
+        { id: "label-stray", name: "Stray", teamId: "team-1", parentId: null },
+      ];
       await expect(
-        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder", progress: { complete: "Stray" } })),
-      ).rejects.toThrow('label "Stray" (progress.complete) is not in label group "Progress"');
+        validateStartup(client, parseDispatchConfig({ project: "igniter", team: "Starcoder" })),
+      ).rejects.toThrow('label "Complete" (the canonical complete label) is not in label group "Progress"');
     } finally {
       fake.stop();
     }

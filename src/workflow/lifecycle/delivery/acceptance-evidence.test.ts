@@ -1,4 +1,4 @@
-// Review submit with inline command transcripts (STA-195).
+// Acceptance submit with inline command transcripts (STA-195).
 //
 // Acceptance evidence for CLI/API behavior travels as a structured
 // transcript — command, exit code, stdout/stderr excerpts — instead of a
@@ -21,7 +21,7 @@ import { FakeWorkspaces } from "../../testing/fake-workspaces";
 
 const TODO = "st-todo";
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const PENDING = "label-pending";
 const IN_PROGRESS = "label-in-progress";
 const COMPLETE = "label-complete";
@@ -102,27 +102,27 @@ function buildPayload() {
   };
 }
 
-/** Reach Review+In progress, ready for a review submit: first Build, owner handoff, begin. */
-async function toReview(h: Harness, identifier: string): Promise<void> {
+/** Reach Acceptance+In progress, ready for a acceptance submit: first Build, owner handoff, begin. */
+async function toAcceptance(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect((await runCommand({ command: "begin", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect((await ticketCommand(h, identifier, "submit", JSON.stringify(buildPayload()))).ok).toBe(true);
   expect(issueOf(h, identifier).stateId).toBe(BUILD);
   h.git.ancestors.add(`${HEAD} feature/${identifier.toLowerCase()}`);
-  await h.client.setIssueState(issueOf(h, identifier).id, REVIEW);
+  await h.client.setIssueState(issueOf(h, identifier).id, ACCEPTANCE);
   expect((await runCommand({ command: "reconcile", ticket: identifier }, h.ctx)).ok).toBe(true);
   expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
 }
 
 describe("inline command evidence", () => {
-  test("command PASS without any URL lands in Review+Complete", async () => {
+  test("command PASS without any URL lands in Acceptance+Complete", async () => {
     const h = await harness();
     try {
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const payload = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
@@ -135,7 +135,7 @@ describe("inline command evidence", () => {
       const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload));
       expect(out.ok).toBe(true);
       const issue = issueOf(h, "STA-1");
-      expect(issue.stateId).toBe(REVIEW);
+      expect(issue.stateId).toBe(ACCEPTANCE);
       expect(issue.labelIds).toEqual([COMPLETE]);
       const receipt = issue.comments.at(-1)!;
       expect(receipt.body).toContain("Agent acceptance: PASS");
@@ -152,10 +152,10 @@ describe("inline command evidence", () => {
     const h = await harness();
     try {
       // A failing criterion with exit 0 is still FAIL.
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const failing = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "fail",
         checkpoint: HEAD,
         results: [
@@ -171,10 +171,10 @@ describe("inline command evidence", () => {
       expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("Agent acceptance: FAIL");
 
       // A passing criterion with a nonzero exit is still PASS.
-      await toReview(h, "STA-2");
+      await toAcceptance(h, "STA-2");
       const passing = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
@@ -195,10 +195,10 @@ describe("inline command evidence", () => {
   test("mixed URL and transcript evidence publishes both", async () => {
     const h = await harness();
     try {
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const payload = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
@@ -222,7 +222,7 @@ describe("inline command evidence", () => {
   test("schema errors name the fault and write nothing to Linear", async () => {
     const h = await harness();
     try {
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const cases: { name: string; evidence: unknown; message: string }[] = [
         {
           name: "missing command",
@@ -268,7 +268,7 @@ describe("inline command evidence", () => {
       for (const c of cases) {
         const payload = {
           v: 1,
-          kind: "review",
+          kind: "acceptance",
           verdict: "fail",
           checkpoint: HEAD,
           results: [
@@ -303,10 +303,10 @@ describe("inline command evidence", () => {
   test("published receipt reads back with expected, actual, and transcript", async () => {
     const h = await harness();
     try {
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const payload = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
@@ -337,10 +337,10 @@ describe("inline command evidence", () => {
   test("same submission retry creates no second comment", async () => {
     const h = await harness();
     try {
-      await toReview(h, "STA-1");
+      await toAcceptance(h, "STA-1");
       const payload = {
         v: 1,
-        kind: "review",
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
@@ -353,8 +353,8 @@ describe("inline command evidence", () => {
       const body = JSON.stringify(payload);
       expect((await ticketCommand(h, "STA-1", "submit", body)).ok).toBe(true);
       const count = issueOf(h, "STA-1").comments.length;
-      // Retry the identical submission from Review+In progress: it converges.
-      issueOf(h, "STA-1").stateId = REVIEW;
+      // Retry the identical submission from Acceptance+In progress: it converges.
+      issueOf(h, "STA-1").stateId = ACCEPTANCE;
       issueOf(h, "STA-1").labelIds = [IN_PROGRESS];
       expect((await ticketCommand(h, "STA-1", "submit", body)).ok).toBe(true);
       expect(issueOf(h, "STA-1").comments.length).toBe(count);

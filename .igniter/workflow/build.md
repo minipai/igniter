@@ -26,7 +26,7 @@ failed criteria.
 
 On restart, continue from the existing worktree rather than creating another
 branch or worktree. Do not push; only Deliver updates the remote branch after
-the new checkpoint has passed Review and received owner approval.
+the new checkpoint has passed Acceptance and received owner approval.
 
 Report the checkpoint, check results, one self-acceptance result per criterion,
 the one-pass code-review result and fixes, reproduction steps, evidence

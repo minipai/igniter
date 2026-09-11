@@ -188,7 +188,7 @@ describe("CLI metadata", () => {
     expect(result.stdout).toContain("approve <ticket>");
     expect(result.stdout).toContain("worker restart <ticket>");
     expect(result.stdout).not.toContain("serve");
-    expect(result.stdout).not.toContain("publish-review");
+    expect(result.stdout).not.toContain("publish-acceptance");
   });
 
   test.each(["pause", "resume", "serve", "dev"])("removed %s command is rejected", async (command) => {
@@ -213,7 +213,7 @@ describe("CAC command actions", () => {
       { argv: ["unblock", "STA-1"], request: { command: "unblock", ticket: "STA-1" } },
       { argv: ["cancel", "STA-1", "--reason", "owner decided"], request: { command: "cancel", ticket: "STA-1", reason: "owner decided" } },
       { argv: ["worker", "start", "STA-1", "--role", "build"], request: { command: "worker.start", ticket: "STA-1", role: "build" } },
-      { argv: ["worker", "send", "STA-1", "--role", "review", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "review", text: "check this" } },
+      { argv: ["worker", "send", "STA-1", "--role", "acceptance", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "acceptance", text: "check this" } },
       { argv: ["worker", "stop", "STA-1", "--role", "deliver"], request: { command: "worker.stop", ticket: "STA-1", role: "deliver" } },
       { argv: ["worker", "restart", "STA-1", "--profile", "fallback", "--harness", "codex", "--model", "m", "--effort", "high"], request: { command: "worker.restart", ticket: "STA-1", profile: "fallback", harness: "codex", model: "m", effort: "high" } },
       { argv: ["worker", "answer", "STA-1", "y"], request: { command: "worker.answer", ticket: "STA-1", answer: "y" } },
@@ -266,7 +266,7 @@ describe("CAC validation and help", () => {
   test.each([
     ["begin"], ["approve", "STA-1"], ["fail", "STA-1"], ["submit", "STA-1"],
     ["block", "STA-1"], ["cancel", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
-    ["status", "--bogus"], ["start", "STA-1"], ["start", "STA-1", "--publish-review"],
+    ["status", "--bogus"], ["start", "STA-1", "--publish-acceptance"],
     ["worker", "start", "STA-1", "--role", "other"],
     ["worker", "restart", "STA-1", "--profile", "other"],
     ["worker", "answer", "STA-1", "yes"],

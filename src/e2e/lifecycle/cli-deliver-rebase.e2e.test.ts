@@ -19,7 +19,7 @@ import {
   git,
   mainHead,
   ownerHandoff,
-  reviewPayload,
+  acceptancePayload,
   worktreeHeadOf,
 } from "../support/fake-harness.ts";
 
@@ -58,11 +58,11 @@ async function approve(e2e: E2E, ticket: string, file: string): Promise<string> 
   await ownerHandoff(e2e, ticket);
   expectOk(await e2e.startStage(ticket));
   expectOk(
-    await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }),
+    await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(acceptancePayload(head, "pass")) }),
   );
   const status = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } };
   const approved = expectOk(await e2e.cli(["approve", ticket, "--receipt", status.receipt.id]));
-  expect(approved.stdout).toContain("review+complete → deliver+pending");
+  expect(approved.stdout).toContain("acceptance+complete → deliver+pending");
   return head;
 }
 
@@ -183,7 +183,7 @@ describe("e2e deliver lands a rebased approval", () => {
       expect(receiptCount(e2e, "STA-42")).toBe(receiptsBefore);
       expect(issue.stateId).toBe("st-deliver");
       expect(progressNames(e2e, "STA-42")).toEqual(["In progress"]);
-      expect(latestValidReceipt(issue.comments)?.receipt).toMatchObject({ kind: "review-pass", checkpoint: approved });
+      expect(latestValidReceipt(issue.comments)?.receipt).toMatchObject({ kind: "acceptance-pass", checkpoint: approved });
 
       // Missing landed field: the schema itself refuses.
       const missing = await e2e.cli(["submit", "STA-42", "--input", "-"], {

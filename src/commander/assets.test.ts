@@ -36,12 +36,12 @@ describe("commanderAssetPaths", () => {
     expect(paths.config.endsWith("config.yaml")).toBe(true);
     expect(paths.global.endsWith("global.md")).toBe(true);
     expect(paths.prompts.build.endsWith(join("stages", "build.md"))).toBe(true);
-    expect(paths.prompts.review.endsWith(join("stages", "review.md"))).toBe(true);
+    expect(paths.prompts.acceptance.endsWith(join("stages", "acceptance.md"))).toBe(true);
     expect(paths.prompts.deliver.endsWith(join("stages", "deliver.md"))).toBe(true);
     expect(await Bun.file(paths.rules).text()).toStartWith("# Commander rules");
     expect(await Bun.file(paths.global).text()).toStartWith("# Global Commander instructions");
     expect(await Bun.file(paths.prompts.build).text()).toStartWith("# Build agent");
-    expect(await Bun.file(paths.prompts.review).text()).toStartWith("# Acceptance agent");
+    expect(await Bun.file(paths.prompts.acceptance).text()).toStartWith("# Acceptance agent");
     expect(await Bun.file(paths.prompts.deliver).text()).toStartWith("# Deliver agent");
   });
 
@@ -77,7 +77,7 @@ describe("assertCommanderAssets", () => {
       "config.yaml": "agents: {}\n",
       "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
-      "stages/review.md": "# Acceptance agent\n",
+      "stages/acceptance.md": "# Acceptance agent\n",
       "stages/deliver.md": "# Deliver agent\n",
     });
     const paths = await assertCommanderAssets(dir);
@@ -89,7 +89,7 @@ describe("assertCommanderAssets", () => {
       "rules.md": "# Commander rules\n",
       "config.yaml": "agents: {}\n",
       "stages/build.md": "# Build agent\n",
-      "stages/review.md": "# Acceptance agent\n",
+      "stages/acceptance.md": "# Acceptance agent\n",
       "stages/deliver.md": "# Deliver agent\n",
     });
     await expect(assertCommanderAssets(dir)).rejects.toThrow(join(dir, "global.md"));
@@ -101,7 +101,7 @@ describe("assertCommanderAssets", () => {
       "config.yaml": "agents: {}\n",
       "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
-      "stages/review.md": "# Acceptance agent\n",
+      "stages/acceptance.md": "# Acceptance agent\n",
     });
     const missing = join(dir, "stages", "deliver.md");
     await expect(assertCommanderAssets(dir)).rejects.toThrow(missing);
@@ -118,7 +118,7 @@ describe("assertCommanderAssets", () => {
       "config.yaml": "agents: {}\n",
       "global.md": "# Global Commander instructions\n",
       "stages/build.md": "# Build agent\n",
-      "stages/review.md": "# Acceptance agent\n",
+      "stages/acceptance.md": "# Acceptance agent\n",
       "stages/deliver.md": "",
     });
     await expect(assertCommanderAssets(dir)).rejects.toThrow(join(dir, "stages", "deliver.md"));

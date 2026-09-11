@@ -78,23 +78,23 @@ function workerCli(
   const cli = cac("igniter worker");
 
   cli.command("start <ticket>", "Start the stage worker")
-    .option("--role <role>", "build, review, or deliver")
+    .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerStartCommand);
   cli.command("send <ticket> <...text>", "Send text to the worker")
-    .option("--role <role>", "build, review, or deliver")
+    .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerSendCommand);
   cli.command("restart <ticket>", "Restart with optional profile overrides")
-    .option("--role <role>", "build, review, or deliver")
-    .option("--profile <profile>", "builder, reviewer, deliverer, or fallback")
+    .option("--role <role>", "build, acceptance, or deliver")
+    .option("--profile <profile>", "builder, acceptance, deliverer, or fallback")
     .option("--harness <harness>", "Agent harness")
     .option("--model <model>", "Agent model")
     .option("--effort <effort>", "Reasoning effort")
     .action(actions.workerRestartCommand);
   cli.command("stop <ticket>", "Stop the stage worker")
-    .option("--role <role>", "build, review, or deliver")
+    .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerStopCommand);
   cli.command("answer <ticket> <answer>", "Answer a permission prompt with y or n")
-    .option("--role <role>", "build, review, or deliver")
+    .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerAnswerCommand);
 
   cli.help();

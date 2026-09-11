@@ -55,9 +55,9 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
   const { client, resolved } = ctx;
   const max = resolved.config.maxRunning;
   const inBuild = await client.listIssuesByState(resolved.projectId, resolved.stateIds.build);
-  const inReview = await client.listIssuesByState(resolved.projectId, resolved.stateIds.review);
+  const inAcceptance = await client.listIssuesByState(resolved.projectId, resolved.stateIds.acceptance);
   const inDeliver = await client.listIssuesByState(resolved.projectId, resolved.stateIds.deliver);
-  const listed = [...inBuild, ...inReview, ...inDeliver];
+  const listed = [...inBuild, ...inAcceptance, ...inDeliver];
 
   let snapshot: WorkspaceSnapshot | null = null;
   let herdrNote: string | null = null;
@@ -69,7 +69,7 @@ export async function collectStatus(ctx: CommandContext): Promise<StatusCollecti
   const tokens = snapshot ? tokensByTicket(snapshot) : new Map<string, Record<string, string>>();
   const workerStatus = (identifier: string, stage: string | null): string => {
     if (!snapshot) return "missing";
-    if (stage !== "build" && stage !== "review" && stage !== "deliver") return "missing";
+    if (stage !== "build" && stage !== "acceptance" && stage !== "deliver") return "missing";
     const agent = snapshot.agents.find((candidate) => candidate.name === stageWorkerName(stage, identifier));
     return agent?.agentStatus ?? "missing";
   };

@@ -12,7 +12,7 @@ import {
   expectOk,
   git,
   ownerHandoff,
-  reviewPayload,
+  acceptancePayload,
 } from "../support/fake-harness.ts";
 
 async function withE2E(fn: (e2e: E2E) => Promise<void>): Promise<void> {
@@ -83,7 +83,7 @@ describe("e2e safe submit retries", () => {
     });
   });
 
-  test("old build and Review FAIL payloads cannot rewind a newly started round", async () => {
+  test("old build and Acceptance FAIL payloads cannot rewind a newly started round", async () => {
     await withE2E(async (e2e) => {
       const head = await beginAndCommit(e2e, "STA-220");
       const build = JSON.stringify(buildPayload(head));
@@ -94,14 +94,14 @@ describe("e2e safe submit retries", () => {
       const oldBuild = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: build }));
       expect(oldBuild.stdout).toContain("already submitted build");
       let issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-220")!;
-      expect(issue.stateId).toBe("st-review");
+      expect(issue.stateId).toBe("st-acceptance");
       expect(issue.labelIds).toContain("label-in-progress");
 
-      const failedReview = JSON.stringify(commandEvidencePayload(head, "fail"));
-      expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedReview }));
+      const failedAcceptance = JSON.stringify(commandEvidencePayload(head, "fail"));
+      expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedAcceptance }));
       expectOk(await e2e.startStage("STA-220"));
-      const oldFail = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedReview }));
-      expect(oldFail.stdout).toContain("already submitted review FAIL");
+      const oldFail = expectOk(await e2e.cli(["submit", "STA-220", "--input", "-"], { stdin: failedAcceptance }));
+      expect(oldFail.stdout).toContain("already submitted acceptance FAIL");
       issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-220")!;
       expect(issue.stateId).toBe("st-build");
       expect(issue.labelIds).toContain("label-in-progress");
@@ -171,7 +171,7 @@ describe("e2e safe submit retries", () => {
       }));
       await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.startStage("STA-24"));
-      const payload = JSON.stringify(reviewPayload(head, "pass", "https://example.com/e2e/retry-proof"));
+      const payload = JSON.stringify(acceptancePayload(head, "pass", "https://example.com/e2e/retry-proof"));
       e2e.client.failNextReads("listAttachments", 1, 502, "attachment readback unavailable");
       expectFail(
         await e2e.cli(["submit", "STA-24", "--input", "-"], { stdin: payload }),
@@ -184,7 +184,7 @@ describe("e2e safe submit retries", () => {
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-24")!;
       expect(issue.attachments).toHaveLength(1);
       expect(receiptCount(e2e, "STA-24")).toBe(2);
-      expect(issue.stateId).toBe("st-review");
+      expect(issue.stateId).toBe("st-acceptance");
       expect(issue.labelIds).toContain("label-complete");
     });
   });
@@ -201,7 +201,7 @@ describe("e2e separate Linear reconciliation and worker cleanup", () => {
       await ownerHandoff(e2e, "STA-26");
       expectOk(await e2e.startStage("STA-26"));
       expectOk(await e2e.cli(["submit", "STA-26", "--input", "-"], {
-        stdin: JSON.stringify(reviewPayload(head, "pass")),
+        stdin: JSON.stringify(acceptancePayload(head, "pass")),
       }));
       ownerSetState(e2e.world, "STA-26", "Deliver");
       ownerSetProgress(e2e.world, "STA-26", "Complete");
@@ -226,7 +226,7 @@ describe("e2e separate Linear reconciliation and worker cleanup", () => {
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(buildPayload(head)) }));
       await ownerHandoff(e2e, "STA-29");
       expectOk(await e2e.startStage("STA-29"));
-      expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(reviewPayload(head, "pass")) }));
+      expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(acceptancePayload(head, "pass")) }));
       ownerSetState(e2e.world, "STA-29", "Deliver");
       ownerSetProgress(e2e.world, "STA-29", "Complete");
       expectOk(await e2e.cli(["reconcile", "STA-29"]));

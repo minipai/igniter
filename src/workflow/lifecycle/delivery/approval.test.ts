@@ -18,7 +18,7 @@ async function fixture(stage = "build", receipt = "build") {
     identifier: "STA-244", stateId: `st-${stage}`, labelIds: ["label-complete"], description: criteria,
     comments: [
       { id: "build", body: receiptBlock("build", HEAD, "build-submission") },
-      ...(receipt !== "build" ? [{ id: "pass", body: receiptBlock("review-pass", HEAD, "pass-submission") }] : []),
+      ...(receipt !== "build" ? [{ id: "pass", body: receiptBlock("acceptance-pass", HEAD, "pass-submission") }] : []),
       ...(receipt === "deliver" ? [{ id: "deliver", body: receiptBlock("deliver", HEAD, "deliver-submission", LANDED) }] : []),
     ],
   });
@@ -43,8 +43,8 @@ const approve = (ctx: CommandContext, receipt = "build") => runCommand({ command
 
 describe("receipt-bound approval through the public command entry", () => {
   test.each([
-    ["build", "build", "build", "review"],
-    ["review", "review-pass", "pass", "deliver"],
+    ["build", "build", "build", "acceptance"],
+    ["acceptance", "acceptance-pass", "pass", "deliver"],
     ["deliver", "deliver", "deliver", "done"],
   ])("%s Complete approves exactly one stage", async (stage, kind, receipt, target) => {
     const h = await fixture(stage, kind);
@@ -61,8 +61,8 @@ describe("receipt-bound approval through the public command entry", () => {
       receipt,
       submission: `${receipt === "pass" ? "pass" : receipt}-submission`,
       checkpoint: HEAD,
-      source: stage as "build" | "review" | "deliver",
-      target: target as "review" | "deliver" | "done",
+      source: stage as "build" | "acceptance" | "deliver",
+      target: target as "acceptance" | "deliver" | "done",
     });
     expect(h.workspaces.calls).toEqual([]);
     expect(h.workspaces.snapshotCalls).toBe(0);
@@ -84,7 +84,7 @@ describe("receipt-bound approval through the public command entry", () => {
     expect((await approve(h.ctx)).ok).toBe(true);
     expect((await approve({ ...h.ctx })).ok).toBe(true);
     expect(h.issue.comments.filter((comment) => comment.body.includes("kind: approval"))).toHaveLength(1);
-    expect(h.issue.stateId).toBe("st-review");
+    expect(h.issue.stateId).toBe("st-acceptance");
   });
 
   test.each(["addComment", "setIssueState", "setIssueLabels"] as const)("failed %s resumes safely from a new command context", async (method) => {
@@ -93,7 +93,7 @@ describe("receipt-bound approval through the public command entry", () => {
     expect((await approve(h.ctx)).ok).toBe(false);
     // A later CLI call has only Linear's intent, never an in-memory retry flag.
     expect((await approve({ ...h.ctx, client: new MemoryLinearClient(h.client.world) })).ok).toBe(true);
-    expect(h.issue.stateId).toBe("st-review");
+    expect(h.issue.stateId).toBe("st-acceptance");
     expect(h.issue.labelIds).toEqual(["label-pending"]);
     expect(h.issue.comments.filter((comment) => comment.body.includes("kind: approval"))).toHaveLength(1);
   });
@@ -113,7 +113,7 @@ describe("receipt-bound approval through the public command entry", () => {
     const h = await fixture();
     h.client.failAfter("fetchIssue", 3, fault());
     expect((await approve(h.ctx)).ok).toBe(false);
-    expect(h.issue.stateId).toBe("st-review");
+    expect(h.issue.stateId).toBe("st-acceptance");
     expect(h.issue.labelIds).toEqual(["label-pending"]);
     const restarted = { ...h.ctx, client: new MemoryLinearClient(h.client.world) };
     expect((await approve(restarted)).ok).toBe(true);
@@ -121,16 +121,16 @@ describe("receipt-bound approval through the public command entry", () => {
     expect(h.issue.comments.filter((comment) => comment.body.includes("kind: approval"))).toHaveLength(1);
   });
 
-  test("old Build approval cannot approve a later completed Review", async () => {
+  test("old Build approval cannot approve a later completed Acceptance", async () => {
     const h = await fixture();
     expect((await approve(h.ctx)).ok).toBe(true);
     h.issue.labelIds = ["label-complete"];
-    await h.client.addComment(h.issue.id, receiptBlock("review-pass", HEAD, "review-pass-new"));
+    await h.client.addComment(h.issue.id, receiptBlock("acceptance-pass", HEAD, "acceptance-pass-new"));
     h.client.calls = [];
     const result = await approve(h.ctx);
     expect(result.ok).toBe(false);
     expect(result.text).toContain("stale approval");
-    expect(h.issue.stateId).toBe("st-review");
+    expect(h.issue.stateId).toBe("st-acceptance");
     expect(h.client.calls.every((call) => call.method === "fetchIssue")).toBe(true);
   });
 
@@ -148,11 +148,11 @@ describe("receipt-bound approval through the public command entry", () => {
     const h = await fixture();
     expect((await approve(h.ctx)).ok).toBe(true);
     expect((await runCommand({ command: "begin", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
-    // An owner moved Progress without submitting the new Review receipt.
+    // An owner moved Progress without submitting the new Acceptance receipt.
     h.issue.labelIds = ["label-complete"];
     h.client.calls = [];
     expect((await approve(h.ctx)).ok).toBe(false);
-    expect(h.issue.stateId).toBe("st-review");
+    expect(h.issue.stateId).toBe("st-acceptance");
     expect(h.issue.labelIds).toEqual(["label-complete"]);
     expect(h.client.calls.every((call) => call.method === "fetchIssue")).toBe(true);
   });
@@ -166,14 +166,14 @@ describe("receipt-bound approval through the public command entry", () => {
 
   test("rejects wrong stage, stale checkpoint, invalid PASS and missing receipt", async () => {
     const h = await fixture();
-    h.issue.stateId = "st-review";
+    h.issue.stateId = "st-acceptance";
     expect((await approve(h.ctx)).ok).toBe(false);
     h.issue.stateId = "st-build";
     h.git.ancestors.clear();
     expect((await approve(h.ctx)).ok).toBe(false);
     h.issue.comments = [];
     expect((await approve(h.ctx)).ok).toBe(false);
-    await h.client.addComment(h.issue.id, receiptBlock("review-fail", HEAD, "fail-submission"));
+    await h.client.addComment(h.issue.id, receiptBlock("acceptance-fail", HEAD, "fail-submission"));
     const id = h.issue.comments.at(-1)!.id;
     expect((await approve(h.ctx, id)).ok).toBe(false);
     expect(h.issue.comments.some((comment) => comment.body.includes("kind: approval"))).toBe(false);
@@ -195,11 +195,11 @@ describe("receipt-bound approval through the public command entry", () => {
     ["receipt", "  receipt: build", "  receipt: other"],
     ["submission", "  submission: build-submission", "  submission: other"],
     ["checkpoint", `  checkpoint: ${HEAD}`, "  checkpoint: 1234567"],
-    ["source", "  source: build", "  source: review"],
-    ["target", "  target: review", "  target: deliver"],
+    ["source", "  source: build", "  source: acceptance"],
+    ["target", "  target: acceptance", "  target: deliver"],
   ])("a prior approval with mismatched %s cannot authorize a lost write", async (_field, from, to) => {
     const h = await fixture();
-    const prior = approvalEventBody("STA-244", "build", "build-submission", HEAD, "build", "review").replace(from, to);
+    const prior = approvalEventBody("STA-244", "build", "build-submission", HEAD, "build", "acceptance").replace(from, to);
     h.issue.comments.push({ id: "prior", body: prior, createdAt: "2099-01-01" });
     h.client.failNext("addComment", fault());
     expect((await approve(h.ctx)).ok).toBe(false);

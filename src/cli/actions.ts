@@ -121,14 +121,14 @@ function required(value: unknown, name: string): string {
 
 function workerRole(value: unknown): WorkerRole | undefined {
   if (value === undefined) return undefined;
-  if (value === "build" || value === "review" || value === "deliver") return value;
-  throw new Error("--role must be build, review, or deliver");
+  if (value === "build" || value === "acceptance" || value === "deliver") return value;
+  throw new Error("--role must be build, acceptance, or deliver");
 }
 
 function workerProfile(value: unknown): WorkerProfile | undefined {
   if (value === undefined) return undefined;
-  if (value === "builder" || value === "reviewer" || value === "deliverer" || value === "fallback") return value;
-  throw new Error("--profile must be builder, reviewer, deliverer, or fallback");
+  if (value === "builder" || value === "acceptance" || value === "deliverer" || value === "fallback") return value;
+  throw new Error("--profile must be builder, acceptance, deliverer, or fallback");
 }
 
 function workerAnswer(value: unknown): WorkerAnswer {

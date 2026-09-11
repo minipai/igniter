@@ -15,7 +15,7 @@ ticket, applies its state rules, and talks to Linear, Herdr, and Git.
 - `lifecycle/stage/` selects agent profiles and starts the Commander or a stage
   worker.
 - `lifecycle/delivery/` covers stage handoffs, prompt delivery, acceptance, and
-  review evidence.
+  acceptance evidence.
 - `service/` contains the Linear, Herdr workspace, and Git worktree operations
   that commands use to affect external state.
 - `service/linear/` is the Linear API boundary and its in-memory test

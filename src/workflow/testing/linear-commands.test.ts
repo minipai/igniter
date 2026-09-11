@@ -14,8 +14,8 @@ const build = (checkpoint = HEAD) => ({
   v: 1, kind: "build", checkpoint, checks: ["bun run check"],
   results: [{ criterion: "works", ok: true }], reproduction: "run the deterministic test",
 });
-const review = (verdict: "pass" | "fail") => ({
-  v: 1, kind: "review", checkpoint: HEAD, verdict,
+const acceptance = (verdict: "pass" | "fail") => ({
+  v: 1, kind: "acceptance", checkpoint: HEAD, verdict,
   environment: "deterministic fake", reproduction: "run the deterministic test",
   results: [{ criterion: "works", expected: "works", actual: verdict === "pass" ? "works" : "broken", evidence: "https://example.test/proof", ok: verdict === "pass" }],
 });
@@ -61,10 +61,10 @@ describe("Linear mutations without Worker dependencies", () => {
     noWorkers(h.workspaces);
   });
 
-  test.each(["pass", "fail"] as const)("Review %s submits receipt and transitions without Herdr", async (verdict) => {
-    const h = await fixture("review", [{ id: "build", body: receiptBlock("build", HEAD, "initial") }]);
-    expect((await submit(h.ctx, review(verdict))).ok).toBe(true);
-    expect(h.issue.stateId).toBe(verdict === "pass" ? "st-review" : "st-build");
+  test.each(["pass", "fail"] as const)("Acceptance %s submits receipt and transitions without Herdr", async (verdict) => {
+    const h = await fixture("acceptance", [{ id: "build", body: receiptBlock("build", HEAD, "initial") }]);
+    expect((await submit(h.ctx, acceptance(verdict))).ok).toBe(true);
+    expect(h.issue.stateId).toBe(verdict === "pass" ? "st-acceptance" : "st-build");
     expect(h.issue.labelIds).toEqual([verdict === "pass" ? "label-complete" : "label-pending"]);
     noWorkers(h.workspaces);
   });
@@ -72,7 +72,7 @@ describe("Linear mutations without Worker dependencies", () => {
   test("Deliver submit validates its checkpoint and reaches Complete without worker cleanup", async () => {
     const h = await fixture("deliver", [
       { id: "build", body: receiptBlock("build", HEAD, "initial") },
-      { id: "review", body: receiptBlock("review-pass", HEAD, "passed") },
+      { id: "acceptance", body: receiptBlock("acceptance-pass", HEAD, "passed") },
     ]);
     const result = await submit(h.ctx, { v: 1, kind: "deliver", checkpoint: HEAD, landed: HEAD, lineage: "checkpoint landed", merge_ready: true, owner_actions: ["approve Done"] });
     expect(result.ok).toBe(true);
@@ -201,16 +201,16 @@ describe("Linear mutations without Worker dependencies", () => {
     noWorkers(h.workspaces);
   });
 
-  test.each(["review-fail", "correction-build"])("%s partial status/label failure resumes from receipt evidence alone", async (kind) => {
+  test.each(["acceptance-fail", "correction-build"])("%s partial status/label failure resumes from receipt evidence alone", async (kind) => {
     const correction = kind === "correction-build";
-    const h = await fixture(correction ? "build" : "review", [
+    const h = await fixture(correction ? "build" : "acceptance", [
       { id: "build", body: receiptBlock("build", correction ? PRIOR : HEAD, "initial") },
-      ...(correction ? [{ id: "fail", body: receiptBlock("review-fail", PRIOR, "failed") }] : []),
+      ...(correction ? [{ id: "fail", body: receiptBlock("acceptance-fail", PRIOR, "failed") }] : []),
     ]);
-    const payload = correction ? build() : review("fail");
+    const payload = correction ? build() : acceptance("fail");
     h.client.failNext("setIssueLabels", failure);
     expect((await submit(h.ctx, payload)).ok).toBe(false);
-    expect(h.issue.stateId).toBe(correction ? "st-review" : "st-build");
+    expect(h.issue.stateId).toBe(correction ? "st-acceptance" : "st-build");
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     const restarted = { ...h.ctx, client: new MemoryLinearClient(h.client.world) };
     expect((await submit(restarted, payload)).ok).toBe(true);
@@ -218,13 +218,13 @@ describe("Linear mutations without Worker dependencies", () => {
     noWorkers(h.workspaces);
   });
 
-  test.each(["review-fail", "correction-build"])("stale %s retry cannot rewind a stage explicitly begun after partial failure", async (kind) => {
+  test.each(["acceptance-fail", "correction-build"])("stale %s retry cannot rewind a stage explicitly begun after partial failure", async (kind) => {
     const correction = kind === "correction-build";
-    const h = await fixture(correction ? "build" : "review", [
+    const h = await fixture(correction ? "build" : "acceptance", [
       { id: "build", body: receiptBlock("build", correction ? PRIOR : HEAD, "initial") },
-      ...(correction ? [{ id: "fail", body: receiptBlock("review-fail", PRIOR, "failed") }] : []),
+      ...(correction ? [{ id: "fail", body: receiptBlock("acceptance-fail", PRIOR, "failed") }] : []),
     ]);
-    const payload = correction ? build() : review("fail");
+    const payload = correction ? build() : acceptance("fail");
     h.client.failNext("setIssueLabels", failure);
     expect((await submit(h.ctx, payload)).ok).toBe(false);
     // An explicit reconciliation put the new stage back in Pending before its new start.
@@ -234,7 +234,7 @@ describe("Linear mutations without Worker dependencies", () => {
     const result = await submit(restarted, payload);
     expect(result.ok).toBe(true);
     expect(result.text).toContain("already submitted");
-    expect(h.issue.stateId).toBe(correction ? "st-review" : "st-build");
+    expect(h.issue.stateId).toBe(correction ? "st-acceptance" : "st-build");
     expect(h.issue.labelIds).toEqual(["label-in-progress"]);
     expect(restarted.client.calls.every((call) => call.method === "fetchIssue")).toBe(true);
     noWorkers(h.workspaces);

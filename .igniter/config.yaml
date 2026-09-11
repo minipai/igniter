@@ -1,6 +1,11 @@
 # igniter's own factory config (dogfood)
 # Read by Igniter commands. `LINEAR_API_KEY`
 # comes from the environment only.
+#
+# The lifecycle and Progress vocabulary are Igniter protocol constants:
+# Backlog → Todo → Build → Acceptance → Deliver → Done, with Progress
+# Pending | In progress | Complete | Blocked. Stage prompts are bundled and
+# cannot be replaced; `runbooks` adds optional project-specific instructions.
 
 project: igniter
 team: Starcoder
@@ -9,49 +14,16 @@ team: Starcoder
 # Blocked tickets keep their workspace but do not count against the cap.
 max_running: 3
 
-# Project workflow. Supplying `stages` replaces all three bundled prompts;
-# every prompt path is relative to the repository root.
-stages:
-  build:
-    prompt: .igniter/workflow/build.md
-    agent: builder
-  review:
-    prompt: .igniter/workflow/review.md
-    agent: reviewer
-  deliver:
-    prompt: .igniter/workflow/deliver.md
-    agent: deliverer
-
-# Linear status display names: igniter's vocabulary on the left, whatever
-# this Linear workspace calls it on the right. Dispatch validates all seven
-# at startup, including their workflow types (backlog, unstarted, three
-# started, completed, canceled).
-states:
-  backlog: Backlog
-  todo: Todo
-  build: Build
-  review: Review
-  deliver: Deliver
-  done: Done
-  canceled: Canceled
-
-# Progress label group: the group name plus its four labels, shared across
-# all stages. Dispatch validates the group and every label's membership at
-# startup. Todo, Build, Review, and Deliver carry exactly one; Backlog and
-# Done carry none.
-progress:
-  group: Progress
-  pending: Pending
-  in_progress: In progress
-  complete: Complete
-  blocked: Blocked
+# Branch a delivery lands on.
+target_branch: main
 
 # Optional: `herdr --remote <value> --session factory` target for README.
 # herdr_remote: art@192.168.88.8
 
 # Agent overrides may set any profile field (commander, builder,
-# builder.fallback, reviewer, deliverer: harness, model, effort).
-# Omitted profiles inherit src/commander/config.yaml.
+# builder.fallback, acceptance, deliverer: harness, model, effort).
+# Omitted profiles inherit src/commander/config.yaml. Stage → primary agent
+# mapping is fixed: Build → builder, Acceptance → acceptance, Deliver → deliverer.
 agents:
   builder:
     harness: opencode
@@ -59,6 +31,16 @@ agents:
     # DeepSeek V4 Flash defaults to high, its recommended effort for daily
     # agent work. OpenCode's interactive TUI has no --variant launch option.
 
-  reviewer:
+  acceptance:
     harness: claude
     model: claude-sonnet-5
+    effort: high
+
+# Optional project runbooks. Each entry is optional; omit the whole map to
+# use only the bundled stage protocol prompts and repository instructions.
+# Paths are repo-relative, must exist and be non-empty, and may not escape
+# the repository through `..` or a symlink.
+runbooks:
+  build: .igniter/workflow/build.md
+  acceptance: .igniter/workflow/acceptance.md
+  deliver: .igniter/workflow/deliver.md

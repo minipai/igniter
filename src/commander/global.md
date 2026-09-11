@@ -70,16 +70,16 @@ There is no resident commander-ticket agent and no resident pane.
    the worker's actual path. Read status back and confirm the receipt. Stop
    the previous role explicitly when no longer useful; submit does not stop it.
 7. At first Build+Complete, wait for the owner's approval. At
-   Review+Complete PASS, wait for delivery approval. After approval, run
+   Acceptance+Complete PASS, wait for delivery approval. After approval, run
    `igniter approve <ticket> --receipt <id>`, then status, worker start,
    confirmed delivery, and begin. After Deliver+Complete, confirm landing with
    the owner, approve the Deliver receipt, then explicitly stop workers for safe
    Done cleanup. Approval never starts the next worker.
-8. Review FAIL returns to Build+Pending. Use status, worker start, confirmed
+8. Acceptance FAIL returns to Build+Pending. Use status, worker start, confirmed
    delivery, begin, and worker send for the original Build role. Send only
    reproducible failed criteria; never fix inside acceptance. Its correction
-   submit returns to Review+Pending with no new owner step. An owner send-back
-   from Review+Complete follows the same correction path after reconcile.
+   submit returns to Acceptance+Pending with no new owner step. An owner send-back
+   from Acceptance+Complete follows the same correction path after reconcile.
 
 After each submitted stage, patrol status again. Continue eligible assigned
 work until every ticket is at an owner gate, Blocked on an external reason,

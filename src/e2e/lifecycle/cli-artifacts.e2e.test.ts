@@ -15,7 +15,7 @@ import {
   expectOk,
   git,
   ownerHandoff,
-  reviewPayload,
+  acceptancePayload,
   worktreeHeadOf,
 } from "../support/fake-harness.ts";
 
@@ -33,7 +33,7 @@ test("each stage's JSON artifact is refused without writes until complete, then 
     const head = worktreeHeadOf(e2e.repoDir, ticket);
     const stages = [
       { kind: "build", role: "builder", marker: "BUILD_HANDOFF_COMPLETE", payload: buildPayload(head), missing: "checks" },
-      { kind: "review", role: "reviewer", marker: "ACCEPTANCE_COMPLETE", payload: reviewPayload(head, "pass"), missing: "environment" },
+      { kind: "acceptance", role: "acceptance", marker: "ACCEPTANCE_COMPLETE", payload: acceptancePayload(head, "pass"), missing: "environment" },
       { kind: "deliver", role: "deliverer", marker: "DELIVERY_COMPLETE", payload: deliverPayload(head), missing: "owner_actions" },
     ] as const;
 
@@ -68,7 +68,7 @@ test("each stage's JSON artifact is refused without writes until complete, then 
           error: 'misses 1 acceptance criterion: "works"',
         });
       }
-      if (stage.kind === "review") {
+      if (stage.kind === "acceptance") {
         invalid.push({
           bytes: JSON.stringify({ ...stage.payload, results: [{ ...stage.payload.results[0], evidence: "" }] }),
           error: "PASS verdict needs every criterion ok with evidence",
@@ -101,7 +101,7 @@ test("each stage's JSON artifact is refused without writes until complete, then 
       expect(issue.stateId).toBe(`st-${stage.kind}`);
       expect(issue.labelIds).toEqual(["label-complete"]);
       expect(latestValidReceipt(issue.comments)?.receipt.checkpoint).toBe(head);
-      if (stage.kind === "review") expect(issue.attachments).toHaveLength(1);
+      if (stage.kind === "acceptance") expect(issue.attachments).toHaveLength(1);
       if (stage.kind === "deliver") expect(issue.comments.at(-1)?.body).toContain(stage.payload.owner_actions[0]);
 
       const submitted = structuredClone(issue);
@@ -115,7 +115,7 @@ test("each stage's JSON artifact is refused without writes until complete, then 
       if (stage.kind !== "deliver") {
         await ownerHandoff(e2e, ticket);
         expectOk(await e2e.startStage(ticket));
-        if (stage.kind === "review") {
+        if (stage.kind === "acceptance") {
           git(["merge", "feature/sta-239", "--no-ff", "-m", "land STA-239"], e2e.repoDir);
         }
       }

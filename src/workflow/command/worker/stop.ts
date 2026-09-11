@@ -31,7 +31,7 @@ async function cleanupDone(
   }
   if (view.workspace) {
     const workers = view.snapshot.agents.filter((agent) => agent.workspaceId === view.workspace?.workspaceId &&
-      (["build", "review", "deliver"] as const).some((stage) =>
+      (["build", "acceptance", "deliver"] as const).some((stage) =>
         agent.name === workerAgentName(stage, view.ticket)));
     for (const worker of workers) {
       if (!ctx.workspaces.stopAgent) throw new Error("worker stop is not configured");

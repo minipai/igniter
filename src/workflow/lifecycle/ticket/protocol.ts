@@ -10,15 +10,15 @@
 // submission identity plus read-back is what converges a retry instead of
 // duplicating. `Complete` is never shown before its receipt reads back.
 //
-// Status vocabulary: backlog, todo, build, review, deliver, done, canceled.
+// Status vocabulary: backlog, todo, build, acceptance, deliver, done, canceled.
 // Progress vocabulary: pending, in_progress, complete, blocked.
-// Todo, Build, Review, Deliver carry exactly one Progress label; Backlog,
+// Todo, Build, Acceptance, Deliver carry exactly one Progress label; Backlog,
 // Done, and Canceled carry none. Status says which stage the work is in;
 // Progress says how far that stage has come.
 //
 // Every machine-readable record this module writes to a Linear comment is
 // one visible, versioned YAML fenced block after a short human-readable
-// line: `igniter_receipt` for build/review/deliver receipts (below), and
+// line: `igniter_receipt` for build/acceptance/deliver receipts (below), and
 // `igniter_event` (./event.ts) for begin, approval, blocked, failed,
 // canceled, and incomplete-state (STA-254). No hidden `<!-- igniter:... -->`
 // HTML marker or inline JSON is written by either. History from before this
@@ -49,15 +49,15 @@ import {
 } from "./event.ts";
 import { parseRecord, recordBlock, RecordParseError, strictFields } from "./record.ts";
 
-export type ProtocolStatus = "backlog" | "todo" | "build" | "review" | "deliver" | "done" | "canceled";
+export type ProtocolStatus = "backlog" | "todo" | "build" | "acceptance" | "deliver" | "done" | "canceled";
 export type ProtocolProgress = "pending" | "in_progress" | "complete" | "blocked";
 
-export const STATUSES: ProtocolStatus[] = ["backlog", "todo", "build", "review", "deliver", "done", "canceled"];
+export const STATUSES: ProtocolStatus[] = ["backlog", "todo", "build", "acceptance", "deliver", "done", "canceled"];
 export const PROGRESSES: ProtocolProgress[] = ["pending", "in_progress", "complete", "blocked"];
 
 /** Active stages carry exactly one Progress label. */
 export function statusNeedsProgress(status: ProtocolStatus): boolean {
-  return status === "todo" || status === "build" || status === "review" || status === "deliver";
+  return status === "todo" || status === "build" || status === "acceptance" || status === "deliver";
 }
 
 export interface ProtocolDeps {
@@ -217,7 +217,7 @@ export function mergedDeliveryState(
   if (progresses.length !== 1) return null;
   const latest = latestValidReceipt(full.comments);
   const resumable =
-    (latest?.receipt.kind === "review-pass" && progresses[0] === "in_progress") ||
+    (latest?.receipt.kind === "acceptance-pass" && progresses[0] === "in_progress") ||
     (latest?.receipt.kind === "deliver" &&
       (progresses[0] === "in_progress" || progresses[0] === "complete"));
   if (!resumable) return null;
@@ -235,7 +235,7 @@ export function mergedDeliveryState(
 export const RECEIPT_SOURCE = "igniter";
 export const RECEIPT_METADATA_VERSION = 1;
 
-export type ReceiptKind = "build" | "review-pass" | "review-fail" | "deliver";
+export type ReceiptKind = "build" | "acceptance-pass" | "acceptance-fail" | "deliver";
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -251,7 +251,7 @@ export function submissionId(payload: unknown): string {
   return createHash("sha256").update(canonicalJson(payload)).digest("hex").slice(0, 16);
 }
 
-const RECEIPT_KINDS: ReceiptKind[] = ["build", "review-pass", "review-fail", "deliver"];
+const RECEIPT_KINDS: ReceiptKind[] = ["build", "acceptance-pass", "acceptance-fail", "deliver"];
 
 /**
  * The machine-readable receipt tail of every receipt comment: one fenced
@@ -294,7 +294,7 @@ export function parseReceiptBlock(body: string): ParsedReceipt | null {
   );
   const kind = fields["kind"]!;
   if (!(RECEIPT_KINDS as readonly string[]).includes(kind)) {
-    throw new RecordParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, review-pass, review-fail, or deliver`);
+    throw new RecordParseError(`refused: unknown receipt kind ${JSON.stringify(kind)}; expected build, acceptance-pass, acceptance-fail, or deliver`);
   }
   const checkpoint = fields["checkpoint"]!;
   const landed = fields["landed"];
@@ -408,25 +408,25 @@ export interface CommandEvidence {
   stderr: string;
 }
 
-export type ReviewEvidence = string | CommandEvidence;
+export type AcceptanceEvidence = string | CommandEvidence;
 
 /** Per-criterion transcript budget: over this, submit an attachment or URL instead. */
 export const MAX_COMMAND_EVIDENCE_CHARS = 4000;
 
-export interface ReviewResult {
+export interface AcceptanceResult {
   criterion: string;
   expected: string;
   actual: string;
-  evidence: ReviewEvidence;
+  evidence: AcceptanceEvidence;
   ok: boolean;
 }
 
-export interface ReviewSubmit {
+export interface AcceptanceSubmit {
   v: 1;
-  kind: "review";
+  kind: "acceptance";
   verdict: "pass" | "fail";
   checkpoint: string;
-  results: ReviewResult[];
+  results: AcceptanceResult[];
   environment: string;
   reproduction: string;
 }
@@ -434,7 +434,7 @@ export interface ReviewSubmit {
 export interface DeliverSubmit {
   v: 1;
   kind: "deliver";
-  /** The approved checkpoint: must match the review-pass receipt. */
+  /** The approved checkpoint: must match the acceptance-pass receipt. */
   checkpoint: string;
   /** The landed commit: must exist and read back from the local target branch. May equal the checkpoint. */
   landed: string;
@@ -509,7 +509,7 @@ export function parseBuildSubmit(raw: unknown, criteria: string[]): BuildSubmit 
 }
 
 /** True when a result carries reproducible evidence: a URL or a transcript. */
-export function hasReviewEvidence(evidence: ReviewEvidence): boolean {
+export function hasAcceptanceEvidence(evidence: AcceptanceEvidence): boolean {
   if (typeof evidence === "string") return evidence !== "";
   return true;
 }
@@ -520,59 +520,59 @@ export function hasReviewEvidence(evidence: ReviewEvidence): boolean {
  * The verdict always comes from the Acceptance agent's `ok` flags: igniter
  * never derives it from an exit code.
  */
-export function parseReviewEvidence(raw: unknown, criterion: string): ReviewEvidence {
+export function parseAcceptanceEvidence(raw: unknown, criterion: string): AcceptanceEvidence {
   if (typeof raw === "string") {
     const evidence = raw.trim();
     if (evidence !== "" && !absoluteHttpUrl(evidence)) {
       throw new ProtocolError(
-        `refused: review evidence must be an absolute http or https URL or a command transcript {"kind":"command",...}; criterion "${criterion}" has ${JSON.stringify(evidence)?.slice(0, 120)}`,
+        `refused: acceptance evidence must be an absolute http or https URL or a command transcript {"kind":"command",...}; criterion "${criterion}" has ${JSON.stringify(evidence)?.slice(0, 120)}`,
       );
     }
     return evidence;
   }
   if (isRecord(raw) && raw["kind"] === "command") {
     if (!nonEmpty(raw["command"])) {
-      throw new ProtocolError(`refused: review evidence for criterion "${criterion}" needs a non-empty "command"`);
+      throw new ProtocolError(`refused: acceptance evidence for criterion "${criterion}" needs a non-empty "command"`);
     }
     if (typeof raw["exitCode"] !== "number" || !Number.isInteger(raw["exitCode"])) {
-      throw new ProtocolError(`refused: review evidence for criterion "${criterion}" needs an integer "exitCode"`);
+      throw new ProtocolError(`refused: acceptance evidence for criterion "${criterion}" needs an integer "exitCode"`);
     }
     if (typeof raw["stdout"] !== "string" || typeof raw["stderr"] !== "string") {
       throw new ProtocolError(
-        `refused: review evidence for criterion "${criterion}" needs "stdout" and "stderr" strings`,
+        `refused: acceptance evidence for criterion "${criterion}" needs "stdout" and "stderr" strings`,
       );
     }
     const stdout = raw["stdout"] as string;
     const stderr = raw["stderr"] as string;
     if (stdout.trim() === "" && stderr.trim() === "") {
       throw new ProtocolError(
-        `refused: review evidence for criterion "${criterion}" needs non-empty "stdout" or "stderr" output`,
+        `refused: acceptance evidence for criterion "${criterion}" needs non-empty "stdout" or "stderr" output`,
       );
     }
     const command = (raw["command"] as string).trim();
     const size = command.length + stdout.length + stderr.length;
     if (size > MAX_COMMAND_EVIDENCE_CHARS) {
       throw new ProtocolError(
-        `refused: review evidence for criterion "${criterion}" exceeds ${MAX_COMMAND_EVIDENCE_CHARS} chars (got ${size}); publish an attachment or external artifact URL instead, never truncate failure output`,
+        `refused: acceptance evidence for criterion "${criterion}" exceeds ${MAX_COMMAND_EVIDENCE_CHARS} chars (got ${size}); publish an attachment or external artifact URL instead, never truncate failure output`,
       );
     }
     return { kind: "command", command, exitCode: raw["exitCode"] as number, stdout, stderr };
   }
   throw new ProtocolError(
-    `refused: review evidence for criterion "${criterion}" must be an absolute http or https URL or a command transcript {"kind":"command","command","exitCode","stdout","stderr"}`,
+    `refused: acceptance evidence for criterion "${criterion}" must be an absolute http or https URL or a command transcript {"kind":"command","command","exitCode","stdout","stderr"}`,
   );
 }
 
-export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmit {
-  if (!isRecord(raw) || raw["v"] !== 1 || raw["kind"] !== "review") {
-    throw new ProtocolError(`refused: review submit needs {"v":1,"kind":"review",...}; got ${JSON.stringify(raw)?.slice(0, 120)}`);
+export function parseAcceptanceSubmit(raw: unknown, criteria: string[]): AcceptanceSubmit {
+  if (!isRecord(raw) || raw["v"] !== 1 || raw["kind"] !== "acceptance") {
+    throw new ProtocolError(`refused: acceptance submit needs {"v":1,"kind":"acceptance",...}; got ${JSON.stringify(raw)?.slice(0, 120)}`);
   }
   if (raw["verdict"] !== "pass" && raw["verdict"] !== "fail") {
-    throw new ProtocolError(`refused: review submit needs "verdict": "pass" or "fail"`);
+    throw new ProtocolError(`refused: acceptance submit needs "verdict": "pass" or "fail"`);
   }
-  if (!nonEmpty(raw["checkpoint"])) throw new ProtocolError(`refused: review submit needs a "checkpoint"`);
+  if (!nonEmpty(raw["checkpoint"])) throw new ProtocolError(`refused: acceptance submit needs a "checkpoint"`);
   if (!Array.isArray(raw["results"]) || raw["results"].length === 0) {
-    throw new ProtocolError(`refused: review submit needs a non-empty "results" list, one per criterion`);
+    throw new ProtocolError(`refused: acceptance submit needs a non-empty "results" list, one per criterion`);
   }
   const results = raw["results"].map((entry: unknown) => {
     if (
@@ -584,7 +584,7 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
       !("evidence" in entry)
     ) {
       throw new ProtocolError(
-        `refused: every review result needs {"criterion", "expected", "actual", "evidence", "ok"}`,
+        `refused: every acceptance result needs {"criterion", "expected", "actual", "evidence", "ok"}`,
       );
     }
     const criterion = (entry["criterion"] as string).trim();
@@ -592,16 +592,16 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
       criterion,
       expected: (entry["expected"] as string).trim(),
       actual: (entry["actual"] as string).trim(),
-      evidence: parseReviewEvidence(entry["evidence"], criterion),
+      evidence: parseAcceptanceEvidence(entry["evidence"], criterion),
       ok: entry["ok"] as boolean,
     };
   });
-  checkCoverage("review", criteria, results.map((r) => r.criterion));
-  if (!nonEmpty(raw["environment"])) throw new ProtocolError(`refused: review submit needs "environment"`);
-  if (!nonEmpty(raw["reproduction"])) throw new ProtocolError(`refused: review submit needs "reproduction" steps`);
+  checkCoverage("acceptance", criteria, results.map((r) => r.criterion));
+  if (!nonEmpty(raw["environment"])) throw new ProtocolError(`refused: acceptance submit needs "environment"`);
+  if (!nonEmpty(raw["reproduction"])) throw new ProtocolError(`refused: acceptance submit needs "reproduction" steps`);
   const verdict = raw["verdict"] as "pass" | "fail";
   if (verdict === "pass") {
-    const bad = results.filter((r) => !r.ok || !hasReviewEvidence(r.evidence));
+    const bad = results.filter((r) => !r.ok || !hasAcceptanceEvidence(r.evidence));
     if (bad.length > 0) {
       throw new ProtocolError(
         `refused: a PASS verdict needs every criterion ok with evidence; failing: ${bad.map((r) => `"${r.criterion}"`).join(", ")}`,
@@ -612,7 +612,7 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
     if (failing.length === 0) {
       throw new ProtocolError(`refused: a FAIL verdict needs at least one criterion with "ok": false`);
     }
-    const noEvidence = failing.filter((r) => !hasReviewEvidence(r.evidence));
+    const noEvidence = failing.filter((r) => !hasAcceptanceEvidence(r.evidence));
     if (noEvidence.length > 0) {
       throw new ProtocolError(
         `refused: every failing criterion needs reproducible "evidence"; missing: ${noEvidence.map((r) => `"${r.criterion}"`).join(", ")}`,
@@ -621,7 +621,7 @@ export function parseReviewSubmit(raw: unknown, criteria: string[]): ReviewSubmi
   }
   return {
     v: 1,
-    kind: "review",
+    kind: "acceptance",
     verdict,
     checkpoint: (raw["checkpoint"] as string).trim(),
     results,
@@ -677,7 +677,7 @@ export function buildReceiptBody(payload: BuildSubmit, submission: string): stri
 }
 
 /** One receipt line per evidence shape; transcripts keep command, exit, and output. */
-export function formatReviewEvidence(evidence: ReviewEvidence): string[] {
+export function formatAcceptanceEvidence(evidence: AcceptanceEvidence): string[] {
   if (typeof evidence === "string") return [`  Evidence: ${evidence}`];
   return [
     `  Evidence: command \`${evidence.command}\` (exit ${evidence.exitCode})`,
@@ -686,7 +686,7 @@ export function formatReviewEvidence(evidence: ReviewEvidence): string[] {
   ];
 }
 
-export function reviewReceiptBody(payload: ReviewSubmit, submission: string): string {
+export function acceptanceReceiptBody(payload: AcceptanceSubmit, submission: string): string {
   const verdict = payload.verdict === "pass" ? "PASS" : "FAIL";
   const lines = [
     `Agent acceptance: ${verdict}`,
@@ -698,13 +698,13 @@ export function reviewReceiptBody(payload: ReviewSubmit, submission: string): st
       `- [${r.ok ? "x" : " "}] ${r.criterion}`,
       `  Expected: ${r.expected}`,
       `  Actual: ${r.actual}`,
-      ...formatReviewEvidence(r.evidence),
+      ...formatAcceptanceEvidence(r.evidence),
     ]),
     ``,
     `Reproduction:`,
     payload.reproduction,
     ``,
-    receiptBlock(payload.verdict === "pass" ? "review-pass" : "review-fail", payload.checkpoint, submission),
+    receiptBlock(payload.verdict === "pass" ? "acceptance-pass" : "acceptance-fail", payload.checkpoint, submission),
   ];
   return lines.join("\n") + "\n";
 }
@@ -797,7 +797,7 @@ export async function publishEvidence(
     const metadata = {
       v: RECEIPT_METADATA_VERSION,
       source: RECEIPT_SOURCE,
-      kind: "review-evidence",
+      kind: "acceptance-evidence",
       verdict,
       checkpoint,
       submission,
@@ -958,10 +958,10 @@ export function submitSchemaFor(status: ProtocolStatus, checkpoint: string | nul
       reproduction: "<steps to reproduce your self-acceptance>",
     };
   }
-  if (status === "review") {
+  if (status === "acceptance") {
     return {
       v: 1,
-      kind: "review",
+      kind: "acceptance",
       verdict: "pass|fail",
       checkpoint: at,
       results: [
@@ -1007,7 +1007,7 @@ function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { n
   if (status === "build" && progress === "complete") {
     return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>" };
   }
-  if (status === "review" && progress === "complete") {
+  if (status === "acceptance" && progress === "complete") {
     return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>; owner may send back to Build" };
   }
   if (status === "deliver" && progress === "complete") {
@@ -1158,11 +1158,11 @@ export async function submitMutation(
     const payload = parseBuildSubmit(raw, state.criteria);
     return submitBuild(deps, full, payload);
   }
-  if (state.status === "review") {
-    if (!isRecord(raw) || raw["kind"] !== "review") {
-      throw new ProtocolError(`refused: this ticket is in Review; submit {"v":1,"kind":"review",...}`);
+  if (state.status === "acceptance") {
+    if (!isRecord(raw) || raw["kind"] !== "acceptance") {
+      throw new ProtocolError(`refused: this ticket is in Acceptance; submit {"v":1,"kind":"acceptance",...}`);
     }
-    const payload = parseReviewSubmit(raw, state.criteria);
+    const payload = parseAcceptanceSubmit(raw, state.criteria);
     const bound = latestReceiptOf(full.comments, "build");
     if (!bound) {
       throw new ProtocolError(
@@ -1177,17 +1177,17 @@ export async function submitMutation(
       );
     }
     checkNotSuperseded(full, payload.checkpoint);
-    return submitReview(deps, full, payload);
+    return submitAcceptance(deps, full, payload);
   }
   if (state.status === "deliver") {
     if (!isRecord(raw) || raw["kind"] !== "deliver") {
       throw new ProtocolError(`refused: this ticket is in Deliver; submit {"v":1,"kind":"deliver",...}`);
     }
     const payload = parseDeliverSubmit(raw);
-    const bound = latestReceiptOf(full.comments, "review-pass");
+    const bound = latestReceiptOf(full.comments, "acceptance-pass");
     if (!bound) {
       throw new ProtocolError(
-        `refused: submit names checkpoint ${payload.checkpoint} but Linear holds no review-pass receipt; ` +
+        `refused: submit names checkpoint ${payload.checkpoint} but Linear holds no acceptance-pass receipt; ` +
           `the owner approves in Linear first`,
       );
     }
@@ -1203,7 +1203,7 @@ export async function submitMutation(
       : submitDeliver(deps, full, payload);
   }
   throw new ProtocolError(
-    `refused: submit applies to Build, Review, or Deliver; ${full.identifier} is ${state.status}`,
+    `refused: submit applies to Build, Acceptance, or Deliver; ${full.identifier} is ${state.status}`,
   );
 }
 
@@ -1217,7 +1217,7 @@ async function resumeWrittenTransition(
   if (!isRecord(raw)) return null;
   // Complete/Pending already reached the target: acknowledge the receipt below.
   if (state.progress !== "in_progress") return null;
-  if (raw["kind"] === "build" && state.status === "review" && state.progress === "in_progress") {
+  if (raw["kind"] === "build" && state.status === "acceptance" && state.progress === "in_progress") {
     if (!latestReceiptOf(full.comments, "build")) return null;
     const payload = parseBuildSubmit(raw, state.criteria);
     const submission = submissionId({ ticket: full.identifier, ...payload });
@@ -1225,20 +1225,20 @@ async function resumeWrittenTransition(
     if (!receipt?.id) return null;
     if (!partialSubmissionMarked(full, submission)) return null;
     const prior = latestValidReceiptExcluding(full.comments, submission);
-    if (!prior || (prior.receipt.kind !== "review-fail" && prior.receipt.kind !== "review-pass")) return null;
-    await moveStatus(deps, full, "review", "pending");
-    return `resumed build ${payload.checkpoint} → Review+Pending (receipt ${receipt.id})`;
+    if (!prior || (prior.receipt.kind !== "acceptance-fail" && prior.receipt.kind !== "acceptance-pass")) return null;
+    await moveStatus(deps, full, "acceptance", "pending");
+    return `resumed build ${payload.checkpoint} → Acceptance+Pending (receipt ${receipt.id})`;
   }
-  if (raw["kind"] === "review" && state.status === "build" && state.progress === "in_progress") {
-    if (!latestReceiptOf(full.comments, "review-fail")) return null;
-    const payload = parseReviewSubmit(raw, state.criteria);
+  if (raw["kind"] === "acceptance" && state.status === "build" && state.progress === "in_progress") {
+    if (!latestReceiptOf(full.comments, "acceptance-fail")) return null;
+    const payload = parseAcceptanceSubmit(raw, state.criteria);
     if (payload.verdict !== "fail") return null;
     const submission = submissionId({ ticket: full.identifier, ...payload });
-    const receipt = findReceipt(full.comments, "review-fail", submission);
+    const receipt = findReceipt(full.comments, "acceptance-fail", submission);
     if (!receipt?.id) return null;
     if (!partialSubmissionMarked(full, submission)) return null;
     await moveStatus(deps, full, "build", "pending");
-    return `resumed review FAIL ${payload.checkpoint} → Build+Pending (receipt ${receipt.id})`;
+    return `resumed acceptance FAIL ${payload.checkpoint} → Build+Pending (receipt ${receipt.id})`;
   }
   return null;
 }
@@ -1273,13 +1273,13 @@ function completedSubmission(
         return `already submitted build ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
-    if (raw["kind"] === "review") {
-      const payload = parseReviewSubmit(raw, state.criteria);
-      const kind: ReceiptKind = payload.verdict === "pass" ? "review-pass" : "review-fail";
+    if (raw["kind"] === "acceptance") {
+      const payload = parseAcceptanceSubmit(raw, state.criteria);
+      const kind: ReceiptKind = payload.verdict === "pass" ? "acceptance-pass" : "acceptance-fail";
       const submission = submissionId({ ticket: full.identifier, ...payload });
       const receipt = findReceipt(full.comments, kind, submission);
-      if (receipt?.id && (!(state.status === "review" && state.progress === "in_progress") || canAcknowledge(submission))) {
-        return `already submitted review ${payload.verdict.toUpperCase()} ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
+      if (receipt?.id && (!(state.status === "acceptance" && state.progress === "in_progress") || canAcknowledge(submission))) {
+        return `already submitted acceptance ${payload.verdict.toUpperCase()} ${payload.checkpoint}; Linear is ${state.status}+${state.progress ?? "no progress"} (receipt ${receipt.id})`;
       }
     }
     if (raw["kind"] === "deliver") {
@@ -1345,24 +1345,24 @@ async function submitBuild(
   // Initial vs correction reads the receipt history before this
   // submission, excluding the submission itself so a retry classifies
   // exactly like its first attempt. Only Linear history decides; workspace
-  // metadata never authorizes the target. No prior review receipt means
+  // metadata never authorizes the target. No prior acceptance receipt means
   // the first Build: it stops at Build+Complete for owner acceptance.
-  // A newest review-fail receipt means an Acceptance correction; a
-  // newest review-pass receipt means an owner send-back correction (the
+  // A newest acceptance-fail receipt means an Acceptance correction; a
+  // newest acceptance-pass receipt means an owner send-back correction (the
   // ticket could only return to Build+In progress through the send-back
-  // reconcile): both return straight to Review+Pending.
+  // reconcile): both return straight to Acceptance+Pending.
   const prior = latestValidReceiptExcluding(full.comments, submission);
   const correctionKind =
-    prior !== null && (prior.receipt.kind === "review-fail" || prior.receipt.kind === "review-pass")
+    prior !== null && (prior.receipt.kind === "acceptance-fail" || prior.receipt.kind === "acceptance-pass")
       ? prior.receipt.kind
       : null;
   const body = buildReceiptBody(payload, submission);
   const commentId = await publishReceipt(deps, full.id, "build", submission, body);
   await verifyReceipt(deps, full.id, "build", submission);
   if (correctionKind !== null) {
-    await moveStatus(deps, full, "review", "pending");
+    await moveStatus(deps, full, "acceptance", "pending");
     const text =
-      `submitted build ${payload.checkpoint} → Review+Pending ` +
+      `submitted build ${payload.checkpoint} → Acceptance+Pending ` +
       `(correction after ${correctionKind} receipt ${prior!.id ?? prior!.receipt.submission}; receipt ${commentId})`;
     await deps.decisions.record(full.identifier, text);
     return text;
@@ -1375,10 +1375,10 @@ async function submitBuild(
   return text;
 }
 
-async function submitReview(
+async function submitAcceptance(
   deps: ProtocolDeps,
   full: FullIssue,
-  payload: ReviewSubmit,
+  payload: AcceptanceSubmit,
 ): Promise<string> {
   const head = await worktreeHead(deps, full.identifier);
   if (payload.checkpoint !== head) {
@@ -1396,18 +1396,18 @@ async function submitReview(
     ),
   ];
   await publishEvidence(deps, full.id, payload.checkpoint, submission, payload.verdict, urls);
-  const kind: ReceiptKind = payload.verdict === "pass" ? "review-pass" : "review-fail";
-  const body = reviewReceiptBody(payload, submission);
+  const kind: ReceiptKind = payload.verdict === "pass" ? "acceptance-pass" : "acceptance-fail";
+  const body = acceptanceReceiptBody(payload, submission);
   const commentId = await publishReceipt(deps, full.id, kind, submission, body);
   await verifyReceipt(deps, full.id, kind, submission);
   if (payload.verdict === "pass") {
-    await moveStatus(deps, full, "review", "complete");
-    const text = `submitted review PASS ${payload.checkpoint} → Review+Complete (receipt ${commentId})`;
+    await moveStatus(deps, full, "acceptance", "complete");
+    const text = `submitted acceptance PASS ${payload.checkpoint} → Acceptance+Complete (receipt ${commentId})`;
     await deps.decisions.record(full.identifier, text);
     return text;
   }
   await moveStatus(deps, full, "build", "pending");
-  const text = `submitted review FAIL ${payload.checkpoint} → Build+Pending (receipt ${commentId})`;
+  const text = `submitted acceptance FAIL ${payload.checkpoint} → Build+Pending (receipt ${commentId})`;
   await deps.decisions.record(full.identifier, text);
   return text;
 }
@@ -1417,12 +1417,12 @@ async function submitDeliver(
   full: FullIssue,
   payload: DeliverSubmit,
 ): Promise<string> {
-  // The approved checkpoint binds the review-pass receipt; the worktree HEAD
+  // The approved checkpoint binds the acceptance-pass receipt; the worktree HEAD
   // is intentionally not compared. Deliver owns the rebase, so a rebased
   // branch legitimately heads a new SHA while the approval still binds the
   // old one. Only a new code change — a new checkpoint needing a new build
   // submit and acceptance — invalidates the approval, and that returns
-  // through the normal build/review path, never through an automatic
+  // through the normal build/acceptance path, never through an automatic
   // content-equivalence proof here.
   if (!/^[0-9a-f]{7,64}$/.test(payload.landed)) {
     throw new ProtocolError(
@@ -1495,7 +1495,7 @@ export async function blockMutation(
 ): Promise<void> {
   if (!statusNeedsProgress(state.status) || (state.progress !== "pending" && state.progress !== "in_progress")) {
     throw new ProtocolError(
-      `refused: block needs Todo, Build, Review, or Deliver + Pending or In progress; ` +
+      `refused: block needs Todo, Build, Acceptance, or Deliver + Pending or In progress; ` +
         `${full.identifier} is ${state.status}+${state.progress ?? "no progress"}`,
     );
   }
@@ -1659,7 +1659,7 @@ async function alreadyCanceled(deps: ProtocolDeps, full: FullIssue): Promise<Com
 // ---------------------------------------------------------------------------
 // Incomplete active state (STA-190)
 //
-// An owner move or a half-written label update can leave Build, Review, or
+// An owner move or a half-written label update can leave Build, Acceptance, or
 // Deliver with zero or several Progress labels. That state is incomplete:
 // dispatch starts no stage agent on it, guesses no checkpoint or completion,
 // and never picks one of several carried labels. The ticket-targeted
@@ -1682,19 +1682,19 @@ async function alreadyCanceled(deps: ProtocolDeps, full: FullIssue): Promise<Com
 export type IncompleteKind = "missing-progress" | "multiple-progress";
 
 export interface IncompleteDiagnosis {
-  status: "build" | "review" | "deliver";
+  status: "build" | "acceptance" | "deliver";
   kind: IncompleteKind;
   progresses: ProtocolProgress[];
 }
 
 /**
  * The incomplete active state of a fully read issue, or null when the
- * ticket is not in scope (not Build/Review/Deliver, or exactly one
+ * ticket is not in scope (not Build/Acceptance/Deliver, or exactly one
  * Progress). Todo keeps its own normalization; Backlog/Done carry none.
  */
 export function diagnoseIncompleteState(resolved: ResolvedDispatch, full: FullIssue): IncompleteDiagnosis | null {
   const status = statusOf(resolved, full.state.id);
-  if (status !== "build" && status !== "review" && status !== "deliver") return null;
+  if (status !== "build" && status !== "acceptance" && status !== "deliver") return null;
   const progresses = (full.labels ?? [])
     .map((l) => progressOf(resolved, l.id))
     .filter((p): p is ProtocolProgress => p !== undefined);
@@ -1737,33 +1737,33 @@ type IncompleteParkReason = "no-receipt" | "stale-checkpoint" | "kind-mismatch" 
  * or null when no receipt proves exactly one outcome. The owner's status
  * is trusted (repairs never move stage); only the Progress is derived:
  *
- * - build receipt: initial Build proves Complete, unless a prior review
- *   receipt marks it a correction that belongs in Review (stage conflict);
- *   in Review it proves Pending; in Deliver it proves nothing.
- * - review-pass: Review proves Complete, Deliver proves Pending (approval),
+ * - build receipt: initial Build proves Complete, unless a prior acceptance
+ *   receipt marks it a correction that belongs in Acceptance (stage conflict);
+ *   in Acceptance it proves Pending; in Deliver it proves nothing.
+ * - acceptance-pass: Acceptance proves Complete, Deliver proves Pending (approval),
  *   Build proves Pending (send-back).
- * - review-fail: Build proves Pending; Review/Deliver prove nothing (a
+ * - acceptance-fail: Build proves Pending; Acceptance/Deliver prove nothing (a
  *   failure belongs in Build).
  * - deliver: Deliver proves Complete; anywhere else proves nothing.
  */
 function repairTargetFor(
-  status: "build" | "review" | "deliver",
+  status: "build" | "acceptance" | "deliver",
   latestKind: ReceiptKind,
   priorKind: ReceiptKind | null,
 ): ProtocolProgress | null {
   if (status === "build") {
     if (latestKind === "build") {
-      return priorKind === "review-pass" || priorKind === "review-fail" ? null : "complete";
+      return priorKind === "acceptance-pass" || priorKind === "acceptance-fail" ? null : "complete";
     }
-    if (latestKind === "review-pass" || latestKind === "review-fail") return "pending";
+    if (latestKind === "acceptance-pass" || latestKind === "acceptance-fail") return "pending";
     return null;
   }
-  if (status === "review") {
+  if (status === "acceptance") {
     if (latestKind === "build") return "pending";
-    if (latestKind === "review-pass") return "complete";
+    if (latestKind === "acceptance-pass") return "complete";
     return null;
   }
-  if (latestKind === "review-pass") return "pending";
+  if (latestKind === "acceptance-pass") return "pending";
   if (latestKind === "deliver") return "complete";
   return null;
 }
@@ -1786,7 +1786,7 @@ function parkReasonText(
     return `${stage} names checkpoint ${latest.receipt.checkpoint} (${latest.receipt.kind} receipt ${latest.receipt.submission}) but it is not in the ticket branch lineage; the receipt is stale`;
   }
   if (reason === "stage-conflict" && latest && prior) {
-    return `${stage} holds a correction build receipt (${latest.receipt.submission} binds ${latest.receipt.checkpoint} after ${prior.receipt.kind}); it belongs in Review+Pending, not ${stage} — the stage needs an owner move, not a label guess`;
+    return `${stage} holds a correction build receipt (${latest.receipt.submission} binds ${latest.receipt.checkpoint} after ${prior.receipt.kind}); it belongs in Acceptance+Pending, not ${stage} — the stage needs an owner move, not a label guess`;
   }
   if (latest) {
     return `${stage} with ${latest.receipt.kind} receipt ${latest.receipt.submission} proves no single Progress here; only its owning stage converges from it`;
@@ -1919,7 +1919,7 @@ export async function convergeIncompleteState(
 
 /**
  * The park reason for a fresh snapshot. Stale beats stage-conflict: a
- * correction receipt the branch no longer contains misdirects as a Review
+ * correction receipt the branch no longer contains misdirects as an Acceptance
  * handoff when the checkpoint itself is unprovable.
  */
 async function parkReasonFor(
@@ -1934,7 +1934,7 @@ async function parkReasonFor(
   if (!(await checkpointInLineage(deps, identifier, latest.receipt.checkpoint))) return "stale-checkpoint";
   if (
     latest.receipt.kind === "build" && diagnosis.status === "build"
-    && (prior?.receipt.kind === "review-pass" || prior?.receipt.kind === "review-fail")
+    && (prior?.receipt.kind === "acceptance-pass" || prior?.receipt.kind === "acceptance-fail")
   ) {
     return "stage-conflict";
   }
@@ -2061,7 +2061,7 @@ export async function normalizeOwnerMove(
   // or the same-stage Blocked park below — never by picking one of
   // several carried labels, never by guessing. Other statuses keep the
   // plain refusal: Todo normalizes elsewhere, Backlog/Done carry none.
-  if (linearStatus === "build" || linearStatus === "review" || linearStatus === "deliver") {
+  if (linearStatus === "build" || linearStatus === "acceptance" || linearStatus === "deliver") {
     const incomplete = diagnoseIncompleteState(resolved, full);
     if (incomplete) {
       return convergeIncompleteState(deps, full, incomplete);
@@ -2118,37 +2118,37 @@ export async function normalizeOwnerMove(
     );
   }
 
-  if (linearStatus === "review") {
-    if (kind === "review-pass") return quiet(); // Waiting for the owner to approve or send back.
+  if (linearStatus === "acceptance") {
+    if (kind === "acceptance-pass") return quiet(); // Waiting for the owner to approve or send back.
     if (kind === "build") {
-      return inheritInto(deps, reread, latest, "review", "approved: Build+Complete → Review+Pending");
+      return inheritInto(deps, reread, latest, "acceptance", "approved: Build+Complete → Acceptance+Pending");
     }
     return fail(
-      `${full.identifier}: Review+Complete but the newest receipt is ${kind}, not build or review-pass; ` +
-        `only a completed Build handoff or passing review belongs here, refusing`,
+      `${full.identifier}: Acceptance+Complete but the newest receipt is ${kind}, not build or acceptance-pass; ` +
+        `only a completed Build handoff or passing acceptance belongs here, refusing`,
     );
   }
   if (linearStatus === "deliver") {
     if (kind === "deliver") return quiet(); // Waiting for the owner to confirm the landing.
-    if (kind === "review-pass") {
-      return inheritInto(deps, reread, latest, "deliver", "approved: Review+Complete → Deliver+Pending");
+    if (kind === "acceptance-pass") {
+      return inheritInto(deps, reread, latest, "deliver", "approved: Acceptance+Complete → Deliver+Pending");
     }
     return fail(
       `${full.identifier}: Deliver+Complete but the newest receipt is ${kind}; ` +
-        `only a review-pass approval converges here, refusing`,
+        `only an acceptance-pass approval converges here, refusing`,
     );
   }
   if (linearStatus === "build") {
     // An initial Build+Complete bound to its build receipt waits for the
     // owner's acceptance: only the owner moves it to
-    // Review. Reconcile keeps it still — no transition, no line, no
+    // Acceptance. Reconcile keeps it still — no transition, no line, no
     // worker start — however often it runs.
     if (kind === "build") return quiet();
-    if (kind === "review-pass" || kind === "review-fail") {
-      return inheritInto(deps, reread, latest, "build", "sent back: Review+Complete → Build+Pending");
+    if (kind === "acceptance-pass" || kind === "acceptance-fail") {
+      return inheritInto(deps, reread, latest, "build", "sent back: Acceptance+Complete → Build+Pending");
     }
     return fail(
-      `${full.identifier}: Build+Complete but the newest receipt is ${kind}, not a build or review receipt; ` +
+      `${full.identifier}: Build+Complete but the newest receipt is ${kind}, not a build or acceptance receipt; ` +
         `refusing to treat the inherited state as progress`,
     );
   }

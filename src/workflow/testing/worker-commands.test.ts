@@ -336,7 +336,7 @@ describe("worker command boundary", () => {
   test("same-ticket multiple roles require explicit targeting for send, answer, restart and stop", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
-    h.issue.stateId = "st-review";
+    h.issue.stateId = "st-acceptance";
     h.issue.labelIds = ["label-pending"];
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     const requests: WorkerRequest[] = [
@@ -352,9 +352,9 @@ describe("worker command boundary", () => {
     }
     expect((await workerCommand({ command: "worker.send", ticket: "STA-244", role: "build", text: "keep work" }, h.ctx)).ok).toBe(true);
     expect(h.workspaces.promptsFor("builder-sta-244").at(-1)).toBe("keep work");
-    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", role: "review", answer: "n" }, h.ctx)).ok).toBe(true);
+    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", role: "acceptance", answer: "n" }, h.ctx)).ok).toBe(true);
     expect((await workerCommand({ command: "worker.stop", ticket: "STA-244", role: "build" }, h.ctx)).ok).toBe(true);
-    expect(h.workspaces.agents.map((a) => a.name)).toEqual(["reviewer-sta-244"]);
+    expect(h.workspaces.agents.map((a) => a.name)).toEqual(["acceptance-sta-244"]);
     readsOnly(h.client);
   });
 

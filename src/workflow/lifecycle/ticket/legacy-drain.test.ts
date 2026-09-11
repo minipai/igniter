@@ -19,16 +19,16 @@ describe("begin boundary drains legacy history", () => {
   test("a legacy begin marker after the bound receipt still blocks a stale retry", () => {
     const full = issueWith([
       { body: receiptBlock("build", CHECKPOINT, "build-sub") },
-      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "review", after: "build-sub" })} -->\nStage started: review; preceding receipt build-sub.` },
+      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "acceptance", after: "build-sub" })} -->\nStage started: acceptance; preceding receipt build-sub.` },
     ]);
     expect(stageStartedAfterReceipt(full, "build-sub")).toBe(true);
-    expect(stageStartedAfterReceipt(full, "build-sub", "review")).toBe(true);
+    expect(stageStartedAfterReceipt(full, "build-sub", "acceptance")).toBe(true);
     expect(stageStartedAfterReceipt(full, "build-sub", "deliver")).toBe(false);
   });
 
   test("a legacy begin bound to a later receipt does not establish the boundary", () => {
     const full = issueWith([
-      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "review", after: "build-sub" })} -->\nStage started: review; preceding receipt build-sub.` },
+      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "acceptance", after: "build-sub" })} -->\nStage started: acceptance; preceding receipt build-sub.` },
       { body: receiptBlock("build", CHECKPOINT, "build-sub") },
     ]);
     expect(stageStartedAfterReceipt(full, "build-sub")).toBe(false);
@@ -36,7 +36,7 @@ describe("begin boundary drains legacy history", () => {
 
   test("a YAML begin bound to a later receipt does not establish the boundary", () => {
     const full = issueWith([
-      { body: "Stage started: review.\n\n```yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: review\n  after: build-sub\n```" },
+      { body: "Stage started: acceptance.\n\n```yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: acceptance\n  after: build-sub\n```" },
       { body: receiptBlock("build", CHECKPOINT, "build-sub") },
     ]);
     expect(stageStartedAfterReceipt(full, "build-sub")).toBe(false);
@@ -56,7 +56,7 @@ describe("begin boundary drains legacy history", () => {
     // must never substitute for the explicit field.
     const full = issueWith([
       { body: receiptBlock("build", CHECKPOINT, "build-sub") },
-      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "review", after: "some-other-sub" })} -->\nStage started: review; preceding receipt some-other-sub.` },
+      { body: `<!-- igniter:begin ${JSON.stringify({ v: 1, ticket: "STA-1", stage: "acceptance", after: "some-other-sub" })} -->\nStage started: acceptance; preceding receipt some-other-sub.` },
     ]);
     expect(stageStartedAfterReceipt(full, "build-sub")).toBe(false);
   });
@@ -64,15 +64,15 @@ describe("begin boundary drains legacy history", () => {
   test("a YAML begin whose after names a different receipt never establishes the boundary", () => {
     const full = issueWith([
       { body: receiptBlock("build", CHECKPOINT, "build-sub") },
-      { body: `Stage started: review.\n\n\`\`\`yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: review\n  after: some-other-sub\n\`\`\`` },
+      { body: `Stage started: acceptance.\n\n\`\`\`yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: acceptance\n  after: some-other-sub\n\`\`\`` },
     ]);
     expect(stageStartedAfterReceipt(full, "build-sub")).toBe(false);
-    expect(stageStartedAfterReceipt(full, "build-sub", "review")).toBe(false);
+    expect(stageStartedAfterReceipt(full, "build-sub", "acceptance")).toBe(false);
   });
 
   test("mixed history: a new YAML begin after a legacy-recorded receipt still establishes the boundary", () => {
     const full = issueWith([
-      { body: receiptBlock("review-pass", CHECKPOINT, "pass-sub") },
+      { body: receiptBlock("acceptance-pass", CHECKPOINT, "pass-sub") },
       { body: `Stage started: deliver; preceding receipt pass-sub.\n\n\`\`\`yaml\nigniter_event:\n  version: 1\n  kind: begin\n  ticket: STA-1\n  stage: deliver\n  after: pass-sub\n\`\`\`` },
     ]);
     expect(stageStartedAfterReceipt(full, "pass-sub", "deliver")).toBe(true);
@@ -82,11 +82,11 @@ describe("begin boundary drains legacy history", () => {
 describe("approval identity drains legacy history", () => {
   test("a legacy approval marker is found by submission for retry dedupe", () => {
     const legacy = `<!-- igniter:approval ${JSON.stringify({
-      v: 1, ticket: "STA-1", receipt: "receipt-1", submission: "build-sub", checkpoint: CHECKPOINT, source: "build", target: "review",
-    })} -->\nApproved build+complete → review+pending; receipt receipt-1, checkpoint ${CHECKPOINT}.`;
+      v: 1, ticket: "STA-1", receipt: "receipt-1", submission: "build-sub", checkpoint: CHECKPOINT, source: "build", target: "acceptance",
+    })} -->\nApproved build+complete → acceptance+pending; receipt receipt-1, checkpoint ${CHECKPOINT}.`;
     const parsed = parseApprovalEvent(legacy);
     expect(parsed).toEqual({
-      ticket: "STA-1", receipt: "receipt-1", submission: "build-sub", checkpoint: CHECKPOINT, source: "build", target: "review",
+      ticket: "STA-1", receipt: "receipt-1", submission: "build-sub", checkpoint: CHECKPOINT, source: "build", target: "acceptance",
     });
   });
 

@@ -38,7 +38,7 @@ export function commanderAssetPaths(dir: string = commanderAssetDir()): Commande
     global: join(dir, "global.md"),
     prompts: {
       build: join(dir, "stages", "build.md"),
-      review: join(dir, "stages", "review.md"),
+      acceptance: join(dir, "stages", "acceptance.md"),
       deliver: join(dir, "stages", "deliver.md"),
     },
   };

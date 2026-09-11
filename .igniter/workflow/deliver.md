@@ -12,7 +12,7 @@ stop after opening the pull request.
 - Resolve a rebase conflict here only when the resolution preserves the
   accepted behavior while reconciling it with current `main`, then rerun the
   checks. If a conflict or failed check needs a product-behavior change,
-  report the blocker so the ticket returns to Build and Review.
+  report the blocker so the ticket returns to Build and Acceptance.
 - Push only the ticket branch. Never push directly to `main`.
 
 ## Pull request and CI
@@ -30,7 +30,7 @@ stop after opening the pull request.
   failed job logs instead of merely reporting a red status.
 - Retry a confirmed transient or infrastructure failure safely. If fixing a
   failure changes product behavior, stop: the new checkpoint must complete
-  Build and Review before Deliver pushes it to the pull request.
+  Build and Acceptance before Deliver pushes it to the pull request.
 - If `main` advances before merge, rebase onto the new `origin/main`, push with
   `--force-with-lease`, and watch the replacement Check.
 
