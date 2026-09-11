@@ -311,13 +311,14 @@ describe("stage start", () => {
   });
 });
 
-describe("in-progress recovery", () => {
-  function seedActive(h: Harness): void {
+describe("in-progress start", () => {
+  function seedActive(h: Harness, withWorker = true): void {
     addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
     h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
+    if (withWorker) h.workspaces.seedAgent("STA-1", "builder-sta-1", "builder");
   }
 
-  test("an input-buffer recovery prompt fails without touching Linear", async () => {
+  test("an input-buffer prompt on a same-machine In-progress retry fails without touching Linear", async () => {
     const h = await harness();
     try {
       seedActive(h);
@@ -334,14 +335,16 @@ describe("in-progress recovery", () => {
     }
   });
 
-  test("a consumed recovery rebuilds the worker with Linear kept", async () => {
+  test("a missing In-progress worker is refused without adopting the ticket", async () => {
     const h = await harness();
     try {
-      seedActive(h);
+      seedActive(h, false);
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
-      expect(out.ok).toBe(true);
-      expect(out.text).toContain("confirmed");
-      expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("In progress");
+      expect(out.text).toContain("does not adopt");
+      expect(h.workspaces.agents).toHaveLength(0);
+      expect(h.workspaces.calls).toHaveLength(0);
       expect(h.world.issues[0]!.stateId).toBe(BUILD);
       expect(h.world.issues[0]!.labelIds).toEqual([IN_PROGRESS]);
     } finally {

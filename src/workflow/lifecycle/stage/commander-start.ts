@@ -37,7 +37,12 @@ export function buildCommanderLaunchPrompt(input: CommanderLaunchInput): string 
       `Begin with \`igniter status ${input.assignment.identifier} --json\`.\n`
     );
   }
-  return context + `Begin with \`igniter status --json\`.\n`;
+  return (
+    context +
+    `Begin with \`igniter status --json\`.\n` +
+    `No ticket is assigned: an active or In-progress ticket in that queue is visibility only, ` +
+    `not your assignment, and a missing local worker never makes it yours.\n`
+  );
 }
 
 /** The configured interactive Commander command for the calling terminal. */

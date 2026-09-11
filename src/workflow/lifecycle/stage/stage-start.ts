@@ -255,6 +255,16 @@ export interface StageStartResult {
   confirmed?: boolean;
 }
 
+export interface StageStartOptions {
+  stage?: CommanderStage;
+  /**
+   * An explicit `worker restart` may rebuild a worker on an In-progress
+   * ticket. Plain `worker start` never may: adoption of an In-progress ticket
+   * with no local worker is refused.
+   */
+  rebuilding?: boolean;
+}
+
 /** True when the identifier looks like a ticket (`STA-123`). */
 export function isTicketArg(value: string | undefined): boolean {
   return typeof value === "string" && /^[A-Za-z]{2,}-\d+$/.test(value);
@@ -267,6 +277,58 @@ function stageAgentProfile(config: DispatchConfig, stage: CommanderStage) {
 
 function workerEnded(status: string): boolean {
   return /^(done|ended|exited|failed|gone|stopped)$/i.test(status.trim());
+}
+
+/** Where an In-progress ticket's expected local worker stands on this machine. */
+type LocalWorkerState = "present" | "missing" | "no-workspace" | "unreachable";
+
+/**
+ * Classify the ticket's expected local stage worker. In-progress means some
+ * machine started the stage; only a live worker in this ticket's workspace
+ * proves that machine is this one. An unreadable Herdr is not proof, so it
+ * returns `unreachable` and the caller refuses rather than adopting.
+ */
+async function localStageWorker(
+  deps: StageStartDeps,
+  identifier: string,
+  stage: CommanderStage,
+): Promise<LocalWorkerState> {
+  let snapshot: WorkspaceSnapshot;
+  try {
+    snapshot = await deps.workspaces.snapshot();
+  } catch {
+    return "unreachable";
+  }
+  const workspace = workspaceForTicket(snapshot, identifier);
+  if (!workspace) return "no-workspace";
+  const worker = workerAgentName(stage, identifier);
+  const present = snapshot.agents.some(
+    (agent) =>
+      agent.name === worker &&
+      agent.workspaceId === workspace.workspaceId &&
+      !workerEnded(agent.agentStatus),
+  );
+  return present ? "present" : "missing";
+}
+
+/** Why an In-progress ticket is not adopted, and the sanctioned way forward. */
+function adoptionRefusal(identifier: string, stage: CommanderStage, local: LocalWorkerState): string {
+  const worker = workerAgentName(stage, identifier);
+  const lead = `worker start refused: ${identifier} is In progress, but `;
+  if (local === "unreachable") {
+    return lead +
+      `Herdr is unreachable so no local ${worker} worker can be confirmed; ` +
+      `Igniter does not adopt an In-progress ticket from Linear or a missing local worker`;
+  }
+  if (local === "no-workspace") {
+    return lead +
+      `no local workspace or ${worker} worker exists; Igniter does not adopt an In-progress ticket ` +
+      `owned by another machine. Reconcile with the owner before starting local work`;
+  }
+  return lead +
+    `its local workspace has no ${worker} worker; Igniter does not adopt an In-progress ticket ` +
+    `from Linear or a missing local worker. Use \`igniter worker restart ${identifier} --role ${stage}\` ` +
+    `for an explicit local rebuild`;
 }
 
 /**
@@ -367,7 +429,7 @@ export async function startStageTicket(
   deps: StageStartDeps,
   full: FullIssue,
   state: AuthoritativeState,
-  options: { stage?: CommanderStage } = {},
+  options: StageStartOptions = {},
 ): Promise<StageStartResult> {
   const stage = options.stage ?? stageForStatus(state.status);
   if (!stage || (state.progress !== "pending" && state.progress !== "in_progress" && !(state.status === "todo" && state.progress === null))) {
@@ -375,6 +437,15 @@ export async function startStageTicket(
   }
   if (stage !== stageForStatus(state.status)) {
     return { ok: false, text: `worker start refused: --role ${stage} does not match the current ${state.status} stage` };
+  }
+  // Queue visibility is not assignment. In progress means a stage already
+  // started somewhere; adopt it only when this machine still runs its worker.
+  // Never infer ownership from Linear state or a missing local worker.
+  if (state.progress === "in_progress" && !options.rebuilding) {
+    const local = await localStageWorker(deps, full.identifier, stage);
+    if (local !== "present") {
+      return { ok: false, text: adoptionRefusal(full.identifier, stage, local) };
+    }
   }
   try {
     const ensured = await ensureStageWorkspace(deps, full.identifier);

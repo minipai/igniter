@@ -24,7 +24,7 @@ Repository-specific engineering rules come from the target repository.
 
 - **Global Commander:** owns every run as Igniter's singleton: queue patrol,
   worker starts through `worker start`, stage recording through `begin`, report validation, receipts through
-  ticket-targeted submit, owner gates, and recovery.
+  ticket-targeted submit, owner gates, and delivery.
   The only process allowed to move its Igniter and Linear state.
 - **Build agent:** implements, checks, self-accepts, and commits the feature
   according to the selected repository workflow.
@@ -106,13 +106,16 @@ workspace with an explicit ticket. Workers never run Igniter commands,
 call Linear directly or through MCP, or publish receipts.
 
 - `igniter status --json` patrols the queue and active tickets.
-- `igniter status <ticket> --json` is the first action of every run,
-  retry, and recovery. It returns the ticket, criteria, status, Progress,
+- `igniter status <ticket> --json` is the first action of every run and
+  retry. It returns the ticket, criteria, status, Progress,
   checkpoint, latest receipt, legal next commands, and current submit
   schema, with no ticket workspace context.
 - `igniter start [<ticket>]` starts the configured Commander directly in the
   calling terminal and, with a ticket, assigns it immediately. It never opens a
-  Herdr workspace, tab, or pane for the Commander.
+  Herdr workspace, tab, or pane for the Commander. Assignment is always
+  explicit: queue visibility is not assignment, a fresh start is not a restart,
+  and a missing local worker is not a globally orphaned ticket. Without a
+  ticket, startup only patrols the queue; it adopts no In-progress ticket.
 - `igniter begin <ticket>` only validates and records the current stage start:
   Todo becomes Build and Pending becomes In progress. It never prepares a
   worktree, creates a worker, sends a prompt, or confirms worker delivery.
@@ -175,12 +178,14 @@ recovery boundaries, but never writes that format again.
 
 ## Feature branch
 
-`igniter worker start <ticket>` creates the ticket worktree and `feature/<ticket>` branch before the
-run. Work there; do not create another branch or worktree.
+`igniter worker start <ticket>` prepares the ticket worktree and
+`feature/<ticket>` branch for a Pending stage. Work there; do not create
+another branch or worktree.
 
-On recovery, inspect `git diff` and the branch log, then continue from
-`igniter status <ticket> --json`. Never reset, clean, discard, or overwrite unrelated
-work. If the worktree prevents safe progress, block and tell the owner.
+On a retry, inspect `git diff` and the branch log, then continue from
+`igniter status <ticket> --json`. Never reset, clean, discard, or overwrite
+unrelated work. If the worktree prevents safe progress, block and tell the
+owner.
 
 ## Worker execution
 
@@ -191,6 +196,11 @@ and retain the returned role, effective model, worker identity, and result path
 before running `igniter begin <ticket>`. Worker creation or undelivered prompts
 must never be followed by begin. Retry worker start after fixing the cause;
 reuse the same role's identity and work order rather than creating duplicates.
+
+`worker start` prepares a Pending stage. On an In-progress ticket it only reuses
+the local stage worker that already exists, and refuses with no side effect when
+that worker is absent: Linear state and a missing local worker never authorize
+adoption. Use `igniter worker restart <ticket>` for an explicit local rebuild.
 
 Worker commands may read ticket context but never write Linear:
 
@@ -425,13 +435,3 @@ or unmerged work; cleanup must retain the workspace if git safety checks fail.
 Report the implementation, branch, checkpoint and corrections, each worker's
 result, model switches, stage receipts and submission identities, checks,
 published evidence, owner state, and push or merge state.
-
-## Session recovery
-
-Restart the foreground Commander with CLI `igniter start` after a session
-loss. Then patrol with `igniter status --json`, read each active ticket with
-`igniter status <ticket> --json`, and rebuild any missing stage worker with
-`igniter worker start <ticket>`. Confirm delivery before `igniter begin <ticket>`
-if the stage is Pending. The same worker name, the same work order, and the
-same receipt identity converge the retry: never a second worker, work order,
-or receipt.

@@ -332,15 +332,22 @@ describe("explicit worker start and begin", () => {
     }
   });
 
-  test("begin refuses without Pending; an In progress orphan recovers its worker with Linear kept", async () => {
+  test("begin refuses without Pending; an In progress ticket with no local worker is never adopted", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       addIssue(h.world, { identifier: "STA-2", stateId: BUILD, priority: 1, description: CRITERIA, labelIds: [IN_PROGRESS] });
       expect((await runCommand({ command: "begin", ticket: "STA-1" }, h.ctx)).ok).toBe(false);
-      const recovered = await runCommand({ command: "worker.start", ticket: "STA-2" }, h.ctx);
-      expect(recovered.ok).toBe(true); // recovery, not claim
-      expect(recovered.text).toContain("confirmed");
+      // Linear says In progress, but this machine has no workspace or worker:
+      // the ticket belongs to another machine, not to this session.
+      const refused = await runCommand({ command: "worker.start", ticket: "STA-2" }, h.ctx);
+      expect(refused.ok).toBe(false);
+      expect(refused.text).toContain("In progress");
+      expect(refused.text).toContain("does not adopt");
+      expect(h.workspaces.workspaces).toHaveLength(0);
+      expect(h.workspaces.agents).toHaveLength(0);
+      expect(h.workspaces.calls).toHaveLength(0);
+      expect(h.git.commands).toHaveLength(0);
       expect(issueOf(h, "STA-1").stateId).toBe(TODO);
       expect(issueOf(h, "STA-2").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-2").labelIds).toEqual([IN_PROGRESS]);
@@ -537,7 +544,7 @@ describe("begin", () => {
     }
   });
 
-  test("Deliver recovery keeps the approved checkpoint after the worktree was rebased", async () => {
+  test("an In-progress Deliver retry keeps the approved checkpoint after the worktree was rebased", async () => {
     const h = await harness();
     try {
       addIssue(h.world, {
@@ -553,12 +560,15 @@ describe("begin", () => {
         createdAt: "2026-09-04T00:00:00.000001Z",
       });
       h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1" });
+      // A same-machine retry reuses the live worker instead of adopting a
+      // ticket from Linear state alone.
+      h.workspaces.seedAgent("STA-1", "deliverer-sta-1", "deliver");
       const rebased = "bbbbbbbbbbbbbbbb";
       h.git.head = rebased;
 
-      const recovered = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
-      expect(recovered.ok).toBe(true);
-      expect(recovered.text).toContain("confirmed");
+      const retried = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
+      expect(retried.ok).toBe(true);
+      expect(retried.text).toContain("confirmed");
       const order = h.workspaces.promptsFor("deliverer-sta-1").at(-1)!;
       expect(order).toContain(`Checkpoint to work from: \`${HEAD}\``);
       expect(order).not.toContain(`Checkpoint to work from: \`${rebased}\``);

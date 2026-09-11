@@ -60,20 +60,33 @@ describe("e2e begin worker recovery", () => {
     });
   });
 
-  test("a live In-progress worker is not duplicated; a missing worker is rebuilt with the current order", async () => {
+  test("a live In-progress worker is reused, never duplicated", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-32");
       expectOk(await e2e.startStage("STA-32"));
       expectOk(await e2e.cli(["worker", "start", "STA-32"]));
       expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-32")).toHaveLength(1);
-
-      const at = e2e.workspaces.agents.findIndex((agent) => agent.name === "builder-sta-32");
-      e2e.workspaces.agents.splice(at, 1);
-      const recovered = expectOk(await e2e.cli(["worker", "start", "STA-32"]));
-      expect(recovered.stdout).toContain("work order confirmed");
-      expect(e2e.workspaces.agents.filter((agent) => agent.name === "builder-sta-32")).toHaveLength(1);
-      expect(e2e.workspaces.promptsFor("builder-sta-32")[0]).toContain("STA-32");
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-32")!;
+      expect(issue.stateId).toBe("st-build");
+      expect(issue.labelIds).toEqual(["label-in-progress"]);
+    });
+  });
+
+  test("a missing In-progress worker is refused with no local side effects", async () => {
+    await withE2E({}, async (e2e) => {
+      addTodo(e2e, "STA-33");
+      expectOk(await e2e.startStage("STA-33"));
+      const workspace = e2e.workspaces.workspaces.find((candidate) => candidate.label === "STA-33")!;
+      const panesBefore = workspace.panes.length;
+      // Linear says In progress, but this machine no longer runs the worker:
+      // another machine may own the ticket, so state alone must not adopt it.
+      e2e.workspaces.agents = e2e.workspaces.agents.filter((agent) => agent.name !== "builder-sta-33");
+      e2e.workspaces.calls = [];
+      expectFail(await e2e.cli(["worker", "start", "STA-33"]), "does not adopt");
+      expect(e2e.workspaces.calls).toEqual([]);
+      expect(e2e.workspaces.workspaces).toHaveLength(1);
+      expect(workspace.panes).toHaveLength(panesBefore);
+      const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-33")!;
       expect(issue.stateId).toBe("st-build");
       expect(issue.labelIds).toEqual(["label-in-progress"]);
     });
