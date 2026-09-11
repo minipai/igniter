@@ -46,18 +46,7 @@ path to delivery.
 
 ## The workflow
 
-```mermaid
-flowchart LR
-  Ticket[Linear ticket] --> Build
-  Build --> BuildApproval[Your Build approval]
-  BuildApproval --> Acceptance[Independent acceptance]
-  Acceptance -->|Needs fixes| Correction[Correction Build]
-  Correction --> Acceptance
-  Acceptance -->|Pass| Approval[Your approval]
-  Approval --> Deliver[Repository landing procedure]
-  Deliver --> LandingApproval[Confirm landing]
-  LandingApproval --> Done[Linear Done]
-```
+![Igniter workflow: Build, independent Acceptance, and Deliver, with owner approvals and a return to Build when fixes are needed.](docs/workflow.svg)
 
 The Commander works from the project root. Build, Acceptance, and Deliver
 workers work inside ticket worktrees and report back to it. The Commander
