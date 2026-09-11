@@ -22,7 +22,7 @@ import { canceledEventBody, cancelIdentity, parseCanceledEvent } from "../lifecy
 const BACKLOG = "st-backlog";
 const TODO = "st-todo";
 const BUILD = "st-build";
-const REVIEW = "st-review";
+const ACCEPTANCE = "st-acceptance";
 const DELIVER = "st-deliver";
 const DONE = "st-done";
 const CANCELED = "st-canceled";
@@ -90,8 +90,8 @@ describe("owner-authorized cancel", () => {
     ["Build+In progress", BUILD, [IN_PROGRESS], "build", "in_progress"],
     ["Build+Complete", BUILD, [COMPLETE], "build", "complete"],
     ["Build+Blocked", BUILD, [BLOCKED], "build", "blocked"],
-    ["Review+Pending", REVIEW, [PENDING], "review", "pending"],
-    ["Review+Complete", REVIEW, [COMPLETE], "review", "complete"],
+    ["Acceptance+Pending", ACCEPTANCE, [PENDING], "acceptance", "pending"],
+    ["Acceptance+Complete", ACCEPTANCE, [COMPLETE], "acceptance", "complete"],
     ["Deliver+In progress", DELIVER, [IN_PROGRESS], "deliver", "in_progress"],
     ["Deliver+Complete", DELIVER, [COMPLETE], "deliver", "complete"],
   ] as const)("cancels %s, clears Progress, and keeps unrelated labels", async (_name, stateId, labels, from, progress) => {
@@ -258,7 +258,7 @@ describe("owner-authorized cancel", () => {
     let reads = 0;
     h.client.fetchIssue = async (id) => {
       reads += 1;
-      if (reads === 2) issueOf(h).stateId = REVIEW;
+      if (reads === 2) issueOf(h).stateId = ACCEPTANCE;
       return fetch(id);
     };
     const out = await cancel(h.ctx);
