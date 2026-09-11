@@ -34,8 +34,8 @@ One ticket. A team of agents. A traceable path to delivery.
 - **The right agent for each role.** Configure Codex, Claude Code, or OpenCode
   per role, with model selection, supported reasoning effort, and a stronger
   Builder fallback for difficult work.
-- **Work that can resume.** Ticket state lives in Linear. Stage recovery and
-  idempotent submissions let the Commander pick up interrupted work while
+- **Work that can resume.** Ticket state lives in Linear. Idempotent retries and
+  an explicit `worker restart` let the Commander pick up interrupted work while
   preserving the existing worktree and recorded results.
 - **You own the release.** Review the evidence before approving delivery.
   Delivery opens a pull request, follows CI through automatic merge, and leaves

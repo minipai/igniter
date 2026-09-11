@@ -116,11 +116,37 @@ describe("Commander delivery protocol", () => {
     for (const text of [commonRules, global]) {
       expect(text).not.toMatch(/igniter (?:pause|resume|restart|answer)\b/);
       expect(text).not.toContain("begin <ticket>` launches");
-      expect(text).toContain("--receipt <id>");
-      for (const action of ["start", "send", "restart", "stop", "answer"]) {
-        expect(text).toContain(`igniter worker ${action} <ticket>`);
-      }
     }
+    // rules.md is the single owner of command semantics; global.md does not
+    // repeat the command list.
+    expect(commonRules).toContain("--receipt <id>");
+    for (const action of ["start", "send", "restart", "stop", "answer"]) {
+      expect(commonRules).toContain(`igniter worker ${action} <ticket>`);
+    }
+    for (const action of ["send", "restart", "stop", "answer"]) {
+      expect(global).not.toContain(`igniter worker ${action} <ticket>`);
+    }
+  });
+
+  test("removes implicit session recovery and states the assignment boundaries", async () => {
+    const global = await Bun.file(new URL("./global.md", import.meta.url)).text();
+    for (const document of [commonRules, global]) {
+      expect(document).not.toContain("## Recovery");
+      expect(document).not.toContain("## Session recovery");
+      expect(document).not.toMatch(/rebuild (?:any )?missing (?:stage )?worker/i);
+    }
+    expect(commonRules).not.toContain("missing stage worker");
+    // Queue visibility is not assignment, a fresh start is not a restart, and
+    // a missing local worker is not a globally orphaned ticket.
+    expect(global).toContain("queue visibility is not assignment");
+    expect(global).toContain("A fresh start is not a restart");
+    expect(global).toContain("A missing local worker is not a globally orphaned ticket");
+    expect(global).toContain("no implicit session recovery");
+    expect(global).toContain("refuses to adopt an In-progress ticket");
+    expect(commonRules).toContain("queue visibility is not assignment");
+    expect(commonRules).toContain("a fresh start is not a restart");
+    expect(commonRules).toContain("a missing local worker is not a globally orphaned ticket");
+    expect(commonRules).toContain("adopts no In-progress ticket");
   });
 
   test("uses independent black-box acceptance instead of code review", () => {
@@ -144,25 +170,25 @@ describe("Commander delivery protocol", () => {
 
   test("reviews worker artifacts without rewriting their submission payload", async () => {
     const global = await Bun.file(new URL("./global.md", import.meta.url)).text();
+    // Collection framing lives in both documents; the contract lives only in
+    // rules.md, which global.md names as its owner.
     for (const document of [commonRules, global]) {
       expect(document).toContain("`submit.json`");
       expect(document).toContain("`result.md`");
-      expect(document).toContain("same canonical source as status");
-      expect(document).toContain("code-review");
-      expect(document).toContain("unresolved concerns");
       expect(document).toContain("`owner_actions`");
       expect(document).toContain('igniter submit <ticket> --input - < "/absolute/scratch/submit.json"');
       expect(document).toContain("unchanged");
       expect(document).toContain("same worker");
-      expect(document).toContain("do not prove");
       expect(document).not.toContain("converts the report to JSON");
     }
+    expect(commonRules).toContain("same canonical source as status");
+    expect(commonRules).toContain("code-review");
+    expect(commonRules).toContain("unresolved concerns");
+    expect(commonRules).toContain("do not prove");
     expect(commonRules).toContain("marker as the final line of `result.md`");
     expect(commonRules).toContain("absent, unfinished, malformed, schema-invalid, or stale artifact");
     expect(commonRules).toContain("Never supply missing results yourself");
-    expect(global).toContain("Both files are required");
-    expect(global).toContain("Missing files or markers");
-    expect(global).toContain("parse errors, schema omissions, and checkpoint mismatches");
+    expect(global).toContain("The rules own the artifact contract");
   });
 
   test("keeps workflow-specific artifacts out of the bundled stages", () => {

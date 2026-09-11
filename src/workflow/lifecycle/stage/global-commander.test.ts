@@ -104,6 +104,8 @@ describe("foreground lifecycle", () => {
         'model_reasoning_effort="medium"',
       ]);
       expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
+      expect(launch.command.at(-1)).toContain("not your assignment");
+      expect(launch.command.at(-1)).toContain("missing local worker never makes it yours");
       expect(launch.command.at(-1)).toContain(commanderAssetPaths().global);
       expect(launch.command.at(-1)).toContain("follow the configured project delivery instructions");
       expect(launch.command.at(-1)).not.toContain("deliveries land on local");

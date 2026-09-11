@@ -55,6 +55,6 @@ export async function restartWorker(
     ),
     ...(stage === "build" ? { builder: null } : {}),
   });
-  const result = await startStageTicket(ctx, view.full, state, { stage });
+  const result = await startStageTicket(ctx, view.full, state, { stage, rebuilding: true });
   return { ...result, data: result };
 }

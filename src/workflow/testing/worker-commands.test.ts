@@ -60,6 +60,74 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
+  test("an In-progress ticket with no local worker is refused without adopting it", async () => {
+    const h = await setup("st-build", ["label-in-progress"]);
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain("In progress");
+    expect(out.text).toContain("does not adopt");
+    // No workspace, worktree, tab, agent, scratch, or prompt was created.
+    expect(h.workspaces.calls).toHaveLength(0);
+    expect(h.workspaces.workspaces).toHaveLength(0);
+    expect(h.workspaces.agents).toHaveLength(0);
+    expect(h.git.commands).toHaveLength(0);
+    expect(h.issue.labelIds).toEqual(["label-in-progress"]);
+    readsOnly(h.client);
+  });
+
+  test("an explicit restart rebuilds an In-progress worker that start refuses to adopt", async () => {
+    const h = await setup("st-build", ["label-in-progress"]);
+    h.workspaces.seedWorkspace("STA-244", { ticket: "STA-244" });
+    // The workspace exists but its worker is gone: plain start refuses.
+    expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
+    // The explicit restart is the sanctioned local rebuild and recreates it.
+    const out = await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx);
+    expect(out.ok).toBe(true);
+    expect(h.workspaces.agents.filter((agent) => agent.name === "builder-sta-244")).toHaveLength(1);
+    expect(h.issue.labelIds).toEqual(["label-in-progress"]);
+    readsOnly(h.client);
+  });
+
+  test("an unreachable Herdr refuses In-progress adoption fail-closed", async () => {
+    const h = await setup("st-build", ["label-in-progress"]);
+    h.workspaces.failNext("snapshot");
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain("Herdr is unreachable");
+    expect(h.workspaces.workspaces).toHaveLength(0);
+    expect(h.workspaces.agents).toHaveLength(0);
+    expect(h.git.commands).toHaveLength(0);
+    readsOnly(h.client);
+  });
+
+  test("an In-progress worker in another workspace does not authorize adoption", async () => {
+    const h = await setup("st-build", ["label-in-progress"]);
+    const ticketWorkspace = h.workspaces.seedWorkspace("STA-244", { ticket: "STA-244" });
+    const other = h.workspaces.seedWorkspace("OTHER", {});
+    h.workspaces.seedAgent("OTHER", "builder-sta-244", "builder");
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain("does not adopt");
+    expect(h.workspaces.agents.filter((agent) => agent.workspaceId === ticketWorkspace.workspaceId)).toHaveLength(0);
+    expect(other.panes).toHaveLength(1);
+    readsOnly(h.client);
+  });
+
+  test("an ended local worker on an In-progress ticket is not silently rebuilt by start", async () => {
+    const h = await setup("st-build", ["label-in-progress"]);
+    const workspace = h.workspaces.seedWorkspace("STA-244", { ticket: "STA-244" });
+    h.workspaces.seedAgent("STA-244", "builder-sta-244", "builder", { agentStatus: "done" });
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain("does not adopt");
+    // The ended worker is left untouched: no tab, agent, worktree, or scratch change.
+    expect(h.workspaces.calls).toHaveLength(0);
+    expect(workspace.panes).toHaveLength(1);
+    expect(h.workspaces.agents).toHaveLength(1);
+    expect(h.git.commands).toHaveLength(0);
+    readsOnly(h.client);
+  });
+
   test("start failure leaves Linear untouched and retries reuse the prepared tab", async () => {
     const h = await setup();
     h.workspaces.failNext("agent.start");
