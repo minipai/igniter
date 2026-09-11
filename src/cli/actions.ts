@@ -23,8 +23,8 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
     await run({ command: "status", ticket, json: options.json });
   }
 
-  async function startCommand(ticket: string | undefined): Promise<void> {
-    await run({ command: "start", ticket });
+  async function startCommand(): Promise<void> {
+    await run({ command: "start" });
   }
 
   async function beginCommand(ticket: string): Promise<void> {

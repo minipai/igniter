@@ -27,7 +27,7 @@ export function runCommand(command: CommandRequest, ctx: CommandContext): Promis
     case "status":
       return statusCommand(command.ticket, command.json === true, ctx);
     case "start":
-      return startCommand(command.ticket, ctx);
+      return startCommand(ctx);
     case "begin":
       return beginCommand(command.ticket, ctx);
     case "reconcile":

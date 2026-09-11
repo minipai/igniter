@@ -204,7 +204,6 @@ describe("CAC command actions", () => {
       { argv: ["status"], request: { command: "status" } },
       { argv: ["status", "STA-1", "--json"], request: { command: "status", ticket: "STA-1", json: true } },
       { argv: ["start"], request: { command: "start" } },
-      { argv: ["start", "STA-1"], request: { command: "start", ticket: "STA-1" } },
       { argv: ["begin", "STA-1"], request: { command: "begin", ticket: "STA-1" } },
       { argv: ["reconcile", "STA-1"], request: { command: "reconcile", ticket: "STA-1" } },
       { argv: ["approve", "STA-1", "--receipt", "r-1"], request: { command: "approve", ticket: "STA-1", receipt: "r-1" } },
@@ -249,7 +248,7 @@ describe("CAC validation and help", () => {
   test.each([
     { args: ["--help"], usage: "igniter <command>", option: "--version" },
     { args: ["status", "--help"], usage: "igniter status [ticket]", option: "--json" },
-    { args: ["start", "--help"], usage: "igniter start [ticket]", option: "--help" },
+    { args: ["start", "--help"], usage: "igniter start", option: "--help" },
     { args: ["approve", "--help"], usage: "igniter approve <ticket>", option: "--receipt <id>" },
     { args: ["submit", "--help"], usage: "igniter submit <ticket>", option: "--input <source>" },
     { args: ["worker", "--help"], usage: "igniter worker <command>", option: "restart <ticket>" },
@@ -265,7 +264,7 @@ describe("CAC validation and help", () => {
   test.each([
     ["begin"], ["approve", "STA-1"], ["fail", "STA-1"], ["submit", "STA-1"],
     ["block", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
-    ["status", "--bogus"], ["start", "STA-1", "--publish-review"],
+    ["status", "--bogus"], ["start", "STA-1"], ["start", "STA-1", "--publish-review"],
     ["worker", "start", "STA-1", "--role", "other"],
     ["worker", "restart", "STA-1", "--profile", "other"],
     ["worker", "answer", "STA-1", "yes"],

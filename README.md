@@ -12,10 +12,13 @@ test the result. Deliver agents land the approved change. You set the direction
 and decide when it ships.
 
 ```bash
-igniter start ENG-123
+igniter start
 ```
 
-One ticket. A team of agents. A traceable path to delivery.
+The Global Commander runs from the project root, patrols the queue with
+`igniter status --json`, and drives each ticket through explicit
+ticket-targeted commands. One ticket at a time: a team of agents, a traceable
+path to delivery.
 
 ## Built for the whole job
 
@@ -131,18 +134,12 @@ From that project's root directory, with `LINEAR_API_KEY` in the environment:
 igniter start
 ```
 
-Or assign a specific ticket immediately:
-
-```bash
-igniter start ENG-123
-```
-
-`start` opens the configured Commander in the current terminal.
-
-### Customize the workflow
-
-Projects may replace all three stage prompts through the `stages` map in
-`.igniter/config.yaml`; otherwise the short bundled prompts apply.
+`igniter start` is the human entry point that opens the configured Commander in
+the current terminal. It takes no ticket: the Commander reads the queue with
+`igniter status --json` and advances each ticket through the explicit
+ticket-targeted commands. Projects may replace all three
+stage prompts through the `stages` map in `.igniter/config.yaml`; otherwise the
+short bundled prompts apply.
 
 ```yaml
 stages:
@@ -169,8 +166,66 @@ Rebuilding a worker requires an explicit `worker restart` and an existing local
 ticket workspace. Starting a new Commander does not automatically adopt tickets
 from an earlier session or another machine.
 
-See [Workflow operations](docs/workflow.md) for stage commands, reports and
-approval, worker recovery, Linear records, and cleanup.
+Existing scripts should migrate these removed entry points:
+
+| Removed entry | Replacement |
+| --- | --- |
+| `igniter state --json` | `igniter status <ticket> --json` |
+| Bare `begin`, `submit`, `block`, `unblock` with Herdr workspace context | The same command with an explicit `<ticket>`; keep `--input -` or `--reason TEXT` |
+| Background Commander start | CLI `igniter start` in the calling terminal |
+| `status --json` fields `lastPollAt` and per-ticket `commander` | Commands refresh state on demand; read the current stage `worker` field |
+| Automatic owner-move recovery | `igniter reconcile <ticket>`, then explicit worker commands as needed |
+
+Workers write `submit.json` in their own scratch using the submit shape embedded
+in their work order from the canonical contract. Their sibling `result.md`
+contains the completion marker and only additional findings or risks. The
+Commander reviews both files, checks the checkpoint and evidence, and submits
+the JSON unchanged with
+`igniter submit ENG-123 --input - < "/absolute/scratch/submit.json"`.
+Missing, unfinished, malformed, or stale artifacts return to the same worker
+for correction; a valid schema never substitutes for content review. The first Build
+waits at Build + Complete for your approval. Your explicit approval
+allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
+from status, to move to Review + Pending. A PASS Review receipt similarly
+permits Deliver + Pending; a valid completed Deliver receipt permits Done.
+There is no `--to`: the completed stage determines the transition. Retrying
+with the same receipt ID cannot approve a later stage. Ordinary sync or
+continuation never grants approval. A correction Build returns automatically
+to Review + Pending under the existing handoff rules.
+
+Every machine-readable Linear lifecycle record — receipts, stage-start
+(`begin`), owner approval, blocked, failed, and the incomplete-state
+diagnosis — is a single visible, versioned `igniter_receipt` or
+`igniter_event` YAML fenced block after a short human-readable summary line.
+Dispatch never writes a hidden `<!-- igniter:... -->` HTML marker or inline
+JSON comment anymore; a strict parser rejects an unknown version, an unknown
+or duplicate field, a missing required field, or more than one block per
+comment, and a rejection never authorizes a state transition. Comments from
+before this contract still carry the old hidden markers; dispatch reads
+those read-only so an in-progress ticket never loses its begin, approval, or
+recovery boundary, but never writes that format again.
+
+After each approved transition, the Commander starts the next worker, confirms
+delivery, and records begin. `worker start` owns worktree/scratch setup, stable
+per-role identities, tabs, effective model, and confirmed initial work-order
+delivery. It returns the role, model, worker identity, and result path. Use
+`worker send`, `worker restart --model MODEL` (or `--profile fallback`),
+`worker stop`, and `worker answer ... y|n` for worker operations. Use
+`--role build|review|deliver` when targeting an earlier role or when several
+workers exist. Worker commands may read ticket context but never write Linear.
+A restart really replaces the selected worker and preserves existing work.
+
+`block`/`unblock`, `fail`, and `reconcile` operate Linear without hidden worker
+side effects. The Commander explicitly stops workers after handoffs and Done;
+Done cleanup keeps dirty, untracked, or unmerged work and pre-existing user tabs.
+An externally integrated Done still requires the Deliver report and explicit
+worker cleanup. Receipt/checkpoint validation and Git safety continue to apply
+at every handoff.
+
+This repository's Deliver prompt lives at `.igniter/workflow/deliver.md`. It
+rebases onto remote `main`, pushes, opens a pull request, and watches required
+checks through GitHub's native auto-merge. A rebase changing only the SHA keeps
+the approval; a product change needed to fix CI returns to Build and acceptance.
 
 ## Development
 
