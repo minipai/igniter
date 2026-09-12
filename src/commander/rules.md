@@ -72,7 +72,8 @@ Project instructions can define:
 - **Checks:** mandatory tests, lint, typecheck, and build commands. By default,
   use every required check in AGENTS.md or equivalent repository instructions.
 - **Acceptance:** `browser`, `api`, or `cli` and the durable evidence
-  destination. The default is browser evidence on the Linear issue.
+  destination. The default is Markdown evidence in the Linear acceptance
+  receipt; the Commander attaches any supplementary files explicitly.
 - **Risk areas:** paths or keywords that require an owner decision before
   acceptance. The default is none.
 - **Conventions:** repository branch, commit, review, and landing rules. Use
@@ -353,7 +354,7 @@ the same canonical source as status; workers need no Igniter or Linear access.
   steps, and evidence required by the repository workflow in JSON; code-review
   findings and unresolved concerns in `result.md` when not covered by JSON.
 - **Acceptance — `ACCEPTANCE_COMPLETE`:** checkpoint and one result per criterion
-  with expected, actual, evidence, and environment details in JSON.
+  with expected, actual, Markdown evidence, and environment details in JSON.
 - **Deliver — `DELIVERY_COMPLETE`:** checkpoint, landed target-branch commit,
   commit lineage, merge result, and remaining owner steps in JSON's
   `owner_actions`.
@@ -411,8 +412,9 @@ stops. However small a fix looks, send it to the original Build agent with
 only the reproducible failed criteria — never fix inside acceptance, never
 open a second Builder.
 
-On PASS, validate and publish its evidence, read the destination back, then
-submit the Acceptance report. Keep owner acceptance pending.
+On PASS, validate its Markdown evidence, submit the Acceptance report, and
+read the receipt back. The receipt carries the evidence; the Commander attaches
+any supplementary files explicitly. Keep owner acceptance pending.
 
 On FAIL, submit the Acceptance report so the ticket returns to Build + Pending,
 stop the Acceptance worker explicitly, then use status, worker start, confirmed
@@ -493,4 +495,4 @@ or unmerged work; cleanup must retain the workspace if git safety checks fail.
 
 Report the implementation, branch, checkpoint and corrections, each worker's
 result, model switches, stage receipts and submission identities, checks,
-published evidence, owner state, and push or merge state.
+Markdown evidence, owner state, and push or merge state.

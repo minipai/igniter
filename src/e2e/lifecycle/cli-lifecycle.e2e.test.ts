@@ -96,9 +96,11 @@ describe("e2e full lifecycle to Done", () => {
       expect(pass.stdout).toContain(`submitted acceptance PASS ${head} → Acceptance+Complete`);
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(progressNames(issue.labels)).toEqual(["Complete", "Feature"]);
-      const evidence = await e2e.client.listAttachments("STA-10");
-      expect(evidence.filter((a) => a.url === "https://example.com/e2e/evidence-1")).toHaveLength(1);
-      expect(evidence[0]?.metadata).toMatchObject({ kind: "acceptance-evidence", verdict: "pass" });
+      // Markdown evidence lands in the receipt, not as an auto-attached file.
+      expect(await e2e.client.listAttachments("STA-10")).toHaveLength(0);
+      const receipt = issue.comments.at(-1)?.body ?? "";
+      expect(receipt).toContain("**Evidence**");
+      expect(receipt).toContain("evidence-1.png");
 
       // Acceptance PASS waits for the owner: reconcile converges nothing.
       const gate = expectOk(await e2e.cli(["reconcile", "STA-10"]));

@@ -3,7 +3,7 @@
 // Linear status and Progress are the authoritative state; Herdr workspace
 // metadata never authorizes their mutations. Every mutation follows one order:
 //
-//   validate -> publish receipt/evidence -> readback -> metadata identity
+//   validate -> publish receipt -> readback -> metadata identity
 //   -> status/label -> final readback
 //
 // There is no transaction between Linear and Herdr, so the order plus the
@@ -232,9 +232,6 @@ export function mergedDeliveryState(
 // Receipts and submission identity
 // ---------------------------------------------------------------------------
 
-export const RECEIPT_SOURCE = "igniter";
-export const RECEIPT_METADATA_VERSION = 1;
-
 export type ReceiptKind = "build" | "acceptance-pass" | "acceptance-fail" | "deliver";
 
 function canonicalJson(value: unknown): string {
@@ -400,24 +397,17 @@ export interface BuildSubmit {
   reproduction: string;
 }
 
-export interface CommandEvidence {
-  kind: "command";
-  command: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-export type AcceptanceEvidence = string | CommandEvidence;
-
-/** Per-criterion transcript budget: over this, submit an attachment or URL instead. */
-export const MAX_COMMAND_EVIDENCE_CHARS = 4000;
-
 export interface AcceptanceResult {
   criterion: string;
   expected: string;
   actual: string;
-  evidence: AcceptanceEvidence;
+  /**
+   * Free-form Markdown evidence: a fenced command transcript, images, video
+   * or ordinary links, or a combination within one criterion. Igniter stores
+   * and renders it verbatim; it never derives the verdict from it and never
+   * treats an arbitrary Markdown string as an attachment URL.
+   */
+  evidence: string;
   ok: boolean;
 }
 
@@ -449,15 +439,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
-}
-
-function absoluteHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
-  } catch {
-    return false;
-  }
 }
 
 function checkCoverage(kind: string, criteria: string[], names: string[]): void {
@@ -508,58 +489,22 @@ export function parseBuildSubmit(raw: unknown, criteria: string[]): BuildSubmit 
   };
 }
 
-/** True when a result carries reproducible evidence: a URL or a transcript. */
-export function hasAcceptanceEvidence(evidence: AcceptanceEvidence): boolean {
-  if (typeof evidence === "string") return evidence !== "";
-  return true;
+/** True when a result carries evidence: anything but an empty Markdown string. */
+export function hasAcceptanceEvidence(evidence: string): boolean {
+  return evidence !== "";
 }
 
 /**
- * URL evidence stays a trimmed string; command evidence is a
- * `{"kind":"command","command","exitCode","stdout","stderr"}` transcript.
- * The verdict always comes from the Acceptance agent's `ok` flags: igniter
- * never derives it from an exit code.
+ * Acceptance evidence is one Markdown string: a command transcript, an image,
+ * a video or ordinary link, or a combination within one criterion. Igniter
+ * keeps it verbatim and changes none of it. The verdict always comes from the
+ * Acceptance agent's `ok` flags, never from parsing this Markdown.
  */
-export function parseAcceptanceEvidence(raw: unknown, criterion: string): AcceptanceEvidence {
-  if (typeof raw === "string") {
-    const evidence = raw.trim();
-    if (evidence !== "" && !absoluteHttpUrl(evidence)) {
-      throw new ProtocolError(
-        `refused: acceptance evidence must be an absolute http or https URL or a command transcript {"kind":"command",...}; criterion "${criterion}" has ${JSON.stringify(evidence)?.slice(0, 120)}`,
-      );
-    }
-    return evidence;
-  }
-  if (isRecord(raw) && raw["kind"] === "command") {
-    if (!nonEmpty(raw["command"])) {
-      throw new ProtocolError(`refused: acceptance evidence for criterion "${criterion}" needs a non-empty "command"`);
-    }
-    if (typeof raw["exitCode"] !== "number" || !Number.isInteger(raw["exitCode"])) {
-      throw new ProtocolError(`refused: acceptance evidence for criterion "${criterion}" needs an integer "exitCode"`);
-    }
-    if (typeof raw["stdout"] !== "string" || typeof raw["stderr"] !== "string") {
-      throw new ProtocolError(
-        `refused: acceptance evidence for criterion "${criterion}" needs "stdout" and "stderr" strings`,
-      );
-    }
-    const stdout = raw["stdout"] as string;
-    const stderr = raw["stderr"] as string;
-    if (stdout.trim() === "" && stderr.trim() === "") {
-      throw new ProtocolError(
-        `refused: acceptance evidence for criterion "${criterion}" needs non-empty "stdout" or "stderr" output`,
-      );
-    }
-    const command = (raw["command"] as string).trim();
-    const size = command.length + stdout.length + stderr.length;
-    if (size > MAX_COMMAND_EVIDENCE_CHARS) {
-      throw new ProtocolError(
-        `refused: acceptance evidence for criterion "${criterion}" exceeds ${MAX_COMMAND_EVIDENCE_CHARS} chars (got ${size}); publish an attachment or external artifact URL instead, never truncate failure output`,
-      );
-    }
-    return { kind: "command", command, exitCode: raw["exitCode"] as number, stdout, stderr };
-  }
+export function parseAcceptanceEvidence(raw: unknown, criterion: string): string {
+  if (typeof raw === "string") return raw.trim();
   throw new ProtocolError(
-    `refused: acceptance evidence for criterion "${criterion}" must be an absolute http or https URL or a command transcript {"kind":"command","command","exitCode","stdout","stderr"}`,
+    `refused: acceptance evidence for criterion "${criterion}" must be a Markdown string ` +
+      `(a command transcript, image, or link)`,
   );
 }
 
@@ -658,6 +603,16 @@ export function parseDeliverSubmit(raw: unknown): DeliverSubmit {
 // only caches the same identity for display)
 // ---------------------------------------------------------------------------
 
+/** Indent a block of Markdown so it stays inside its two-space list item. */
+function indentLines(text: string): string[] {
+  return text.split("\n").map((line) => (line === "" ? "" : `  ${line}`));
+}
+
+/** One result block as list item + paragraphs, each item separated by a blank line. */
+function resultBlocks(blocks: string[][]): string[] {
+  return blocks.flatMap((block, index) => (index === 0 ? block : ["", ...block]));
+}
+
 export function buildReceiptBody(payload: BuildSubmit, submission: string): string {
   const lines = [
     `# Build receipt`,
@@ -666,7 +621,12 @@ export function buildReceiptBody(payload: BuildSubmit, submission: string): stri
     `Checks: ${payload.checks.map((c) => `\`${c}\``).join(", ")}`,
     ``,
     `Self-acceptance (not an independent approval):`,
-    ...payload.results.map((r) => `- [${r.ok ? "x" : " "}] ${r.criterion}${r.note ? ` — ${r.note}` : ""}`),
+    ...resultBlocks(
+      payload.results.map((r) => [
+        `- [${r.ok ? "x" : " "}] ${r.criterion}`,
+        ...(r.note ? ["", `  **Self-check notes**`, "", ...indentLines(r.note)] : []),
+      ]),
+    ),
     ``,
     `Reproduction:`,
     payload.reproduction,
@@ -674,16 +634,6 @@ export function buildReceiptBody(payload: BuildSubmit, submission: string): stri
     receiptBlock("build", payload.checkpoint, submission),
   ];
   return lines.join("\n") + "\n";
-}
-
-/** One receipt line per evidence shape; transcripts keep command, exit, and output. */
-export function formatAcceptanceEvidence(evidence: AcceptanceEvidence): string[] {
-  if (typeof evidence === "string") return [`  Evidence: ${evidence}`];
-  return [
-    `  Evidence: command \`${evidence.command}\` (exit ${evidence.exitCode})`,
-    `    stdout: ${evidence.stdout}`,
-    `    stderr: ${evidence.stderr}`,
-  ];
 }
 
 export function acceptanceReceiptBody(payload: AcceptanceSubmit, submission: string): string {
@@ -694,12 +644,23 @@ export function acceptanceReceiptBody(payload: AcceptanceSubmit, submission: str
     `Checkpoint: \`${payload.checkpoint}\``,
     `Environment: ${payload.environment}`,
     ``,
-    ...payload.results.flatMap((r) => [
-      `- [${r.ok ? "x" : " "}] ${r.criterion}`,
-      `  Expected: ${r.expected}`,
-      `  Actual: ${r.actual}`,
-      ...formatAcceptanceEvidence(r.evidence),
-    ]),
+    ...resultBlocks(
+      payload.results.map((r) => [
+        `- [${r.ok ? "x" : " "}] ${r.criterion}`,
+        ``,
+        `  **Expected**`,
+        ``,
+        ...indentLines(r.expected),
+        ``,
+        `  **Actual**`,
+        ``,
+        ...indentLines(r.actual),
+        ``,
+        `  **Evidence**`,
+        ``,
+        ...indentLines(r.evidence),
+      ]),
+    ),
     ``,
     `Reproduction:`,
     payload.reproduction,
@@ -778,48 +739,6 @@ export async function verifyReceipt(
   if (!findReceipt(full.comments, kind, submission)) {
     throw new ProtocolError(`receipt ${submission} did not read back from Linear; retry the command`);
   }
-}
-
-/**
- * Publish one evidence attachment per url (idempotent on (issue, url)),
- * then verify every url reads back.
- */
-export async function publishEvidence(
-  deps: ProtocolDeps,
-  issueId: string,
-  checkpoint: string,
-  submission: string,
-  verdict: "pass" | "fail",
-  urls: string[],
-): Promise<string[]> {
-  const ids: string[] = [];
-  for (const url of urls) {
-    const metadata = {
-      v: RECEIPT_METADATA_VERSION,
-      source: RECEIPT_SOURCE,
-      kind: "acceptance-evidence",
-      verdict,
-      checkpoint,
-      submission,
-    };
-    try {
-      ids.push(
-        await deps.client.createAttachment({ issueId, url, title: `evidence ${submission}`, metadata }),
-      );
-    } catch (error) {
-      if (!isTransientLinearError(error)) throw error;
-      const listed = await deps.client.listAttachments(issueId);
-      const adopted = listed.find((a) => a.url === url);
-      if (!adopted) throw error;
-      ids.push(adopted.id);
-    }
-  }
-  const listed = await deps.client.listAttachments(issueId);
-  const missing = urls.filter((url) => !listed.some((a) => a.url === url));
-  if (missing.length > 0) {
-    throw new ProtocolError(`evidence did not read back from Linear (${missing.join(", ")}); retry the command`);
-  }
-  return ids;
 }
 
 /**
@@ -969,7 +888,7 @@ export function submitSchemaFor(status: ProtocolStatus, checkpoint: string | nul
           criterion: "<criterion>",
           expected: "",
           actual: "",
-          evidence: '<absolute http(s) URL> or {"kind":"command","command":"<ran>","exitCode":0,"stdout":"<excerpt>","stderr":""}',
+          evidence: "<Markdown: a fenced command transcript, an image, a link, or a combination>",
           ok: true,
         },
       ],
@@ -1388,14 +1307,6 @@ async function submitAcceptance(
     );
   }
   const submission = submissionId({ ticket: full.identifier, ...payload });
-  const urls = [
-    ...new Set(
-      payload.results
-        .map((r) => (typeof r.evidence === "string" ? r.evidence : ""))
-        .filter((u) => u !== ""),
-    ),
-  ];
-  await publishEvidence(deps, full.id, payload.checkpoint, submission, payload.verdict, urls);
   const kind: ReceiptKind = payload.verdict === "pass" ? "acceptance-pass" : "acceptance-fail";
   const body = acceptanceReceiptBody(payload, submission);
   const commentId = await publishReceipt(deps, full.id, kind, submission, body);

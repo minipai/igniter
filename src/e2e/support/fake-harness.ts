@@ -296,7 +296,7 @@ export function buildPayload(head: string) {
 export function acceptancePayload(
   head: string,
   verdict: "pass" | "fail",
-  evidenceUrl = "https://example.com/e2e/evidence-1",
+  evidence = "![e2e evidence](https://example.com/e2e/evidence-1.png)",
 ) {
   return {
     v: 1,
@@ -308,7 +308,7 @@ export function acceptancePayload(
         criterion: "works",
         expected: "works",
         actual: verdict === "pass" ? "works" : "broken",
-        evidence: evidenceUrl,
+        evidence,
         ok: verdict === "pass",
       },
     ],
@@ -328,13 +328,13 @@ export function commandEvidencePayload(head: string, verdict: "pass" | "fail") {
         criterion: "works",
         expected: "works",
         actual: verdict === "pass" ? "works" : "broken",
-        evidence: {
-          kind: "command",
-          command: "bun run check",
-          exitCode: verdict === "pass" ? 0 : 1,
-          stdout: verdict === "pass" ? "all green" : "1 failing",
-          stderr: "",
-        },
+        evidence: [
+          "```text",
+          "$ bun run check",
+          verdict === "pass" ? "all green" : "1 failing",
+          `Exit code: ${verdict === "pass" ? 0 : 1}`,
+          "```",
+        ].join("\n"),
         ok: verdict === "pass",
       },
     ],
