@@ -16,6 +16,31 @@ smoke test and the CLI end-to-end suite. Run the black-box suite alone with:
 bun run test:e2e
 ```
 
+## Publishing
+
+Releases follow a version PR, manual merge, and tag push. From a clean checkout,
+with Git and GitHub CLI authentication configured:
+
+```bash
+bun run release <version>
+```
+
+Use a stable version such as `0.4.0`. The command branches from the latest
+`origin/main`, updates `package.json`, runs `bun run check`, commits the version, pushes the release
+branch, and opens a PR with auto-merge disabled. Review the PR and merge it
+manually after CI passes. Then run:
+
+```bash
+bun run release:publish <PR-number>
+```
+
+This verifies the merged release PR and version, then pushes `v<version>` at
+that PR's merge commit, even if `main` has advanced. An existing tag is rejected.
+The tag triggers `.github/workflows/publish.yml`, which checks the tag against
+the package version, installs dependencies with Bun, runs `bun run check`, and
+publishes the source package to npm. No build step is needed. Merging the PR
+alone does not publish.
+
 ## CLI end-to-end boundaries
 
 The end-to-end suite launches a real CLI subprocess for every command and

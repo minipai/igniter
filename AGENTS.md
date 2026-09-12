@@ -1,6 +1,6 @@
 ## Tooling
 
-- Runtime and package manager is Bun only (`bun install`, `bun run`, `bun test`). Never pnpm or npm.
+- Runtime and package manager is Bun only (`bun install`, `bun run`, `bun test`). Never pnpm. The only npm exception is `.github/workflows/publish.yml`: installing the npm CLI and publishing with OIDC.
 - All versions in `package.json` are locked exactly — never `^` or `~`.
 - Run `bun run check` before committing: typecheck + bun test.
 
