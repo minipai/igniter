@@ -77,12 +77,16 @@ recovery boundary, but never writes that format again.
 
 After each approved transition, the Commander starts the next worker, confirms
 delivery, and records begin. `worker start` owns worktree/scratch setup, stable
-per-role identities, tabs, effective model, and confirmed initial work-order
-delivery. It returns the role, model, worker identity, and result path. Use
-`worker send`, `worker restart --model MODEL` (or `--profile fallback`),
+per-role identities, tabs, effective profile, and confirmed initial work-order
+delivery. It returns the role, selected agent, merged harness/model/effort,
+worker identity, and result path. Pass `--agent <name>` to select a named
+candidate before the worker starts; without it a new run uses the stage default
+and a retry keeps the run's recorded selection. Use
+`worker send`, `worker restart --agent NAME` (or `--model MODEL`),
 `worker stop`, and `worker answer ... y|n` for worker operations. Use
 `--role build|acceptance|deliver` when targeting an earlier role or when several
-workers exist.
+workers exist. A restart without a new `--agent` keeps the run's recorded
+selection.
 `worker start` and `worker restart` require the current stage to be Pending or
 In progress; a Todo ticket without a Progress label may also start Build.
 `worker send`, `worker stop`, and `worker answer` can target an earlier role.

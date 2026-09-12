@@ -134,63 +134,78 @@ describe("parseDispatchConfig", () => {
   test("loads bundled agent profiles and applies repository overrides", () => {
     const defaults = parseDispatchConfig({ project: "x" }).commander;
     expect(defaults.agents.commander).toEqual({ harness: "codex", model: "gpt-6-astra", effort: "medium" });
-    expect(defaults.agents.builder).toEqual({
-      harness: "codex",
-      model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
-    });
+    expect(defaults.agents.builder).toEqual({ harness: "codex", model: "gpt-5.6-terra" });
     expect(defaults.agents.acceptance).toEqual({ harness: "codex", model: "gpt-5.6-sol", effort: "high" });
     expect(defaults.agents.deliverer).toEqual({ harness: "codex", model: "gpt-5.6-luna", effort: "high" });
+    // The bundled named candidates carry no effort and no special meaning.
+    expect(defaults.agents.builder_backup).toEqual({ harness: "codex", model: "gpt-5.6-luna" });
+    expect(defaults.agents.builder_expert).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
 
     const overridden = parseDispatchConfig({
       project: "x",
       agents: {
         commander: { model: "custom/commander" },
-        builder: { harness: "codex", model: "gpt-5.6-sol", fallback: { model: "fallback/model" } },
+        builder: { harness: "codex", model: "gpt-5.6-sol" },
+        builder_expert: { model: "expert/model" },
         acceptance: { model: "acceptance/model" },
         deliverer: { harness: "claude", effort: "low" },
+        builder_daily: { harness: "opencode", model: "opencode/daily" },
       },
     }).commander;
     // A single-field override inherits every other bundled field.
     expect(overridden.agents.commander).toEqual({ harness: "codex", model: "custom/commander", effort: "medium" });
-    expect(overridden.agents.builder.harness).toBe("codex");
-    expect(overridden.agents.builder.model).toBe("gpt-5.6-sol");
-    expect(overridden.agents.builder.fallback.model).toBe("fallback/model");
-    expect(overridden.agents.builder.fallback.effort).toBe("high");
+    expect(overridden.agents.builder).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
+    expect(overridden.agents.builder_expert).toEqual({ harness: "codex", model: "expert/model" });
     expect(overridden.agents.acceptance.model).toBe("acceptance/model");
     expect(overridden.agents.deliverer).toEqual({ harness: "claude", model: "gpt-5.6-luna", effort: "low" });
+    // A new name becomes a complete named candidate.
+    expect(overridden.agents.builder_daily).toEqual({ harness: "opencode", model: "opencode/daily" });
     expect(DEFAULT_COMMANDER_CONFIG.agents.builder.harness).toBe("codex");
   });
 
   test("rejects invalid agent overrides", () => {
     expect(() => parseDispatchConfig({
       project: "x",
-      agents: { tester: { harness: "codex" } },
-    })).toThrow('unknown agent "tester" (known: commander, builder, acceptance, deliverer)');
+      agents: { builder_daily: { harness: "codex" } },
+    })).toThrow('agents."builder_daily" is a new agent and requires harness and model');
     expect(() => parseDispatchConfig({
       project: "x",
       agents: { builder: { harness: "" } },
     })).toThrow('"harness"');
     expect(() => parseDispatchConfig({
       project: "x",
-      agents: { acceptance: { fallback: { model: "x" } } },
-    })).toThrow('unknown agents."acceptance" setting "fallback"');
+      agents: { builder: { fallback: { model: "x" } } },
+    })).toThrow('unknown agents."builder" setting "fallback"');
     expect(() => parseDispatchConfig({
       project: "x",
-      agents: { deliverer: { fallback: { model: "x" } } },
-    })).toThrow('unknown agents."deliverer" setting "fallback"');
+      agents: { acceptance: { fallback: { model: "x" } } },
+    })).toThrow('unknown agents."acceptance" setting "fallback"');
     expect(() => parseDispatchConfig({
       project: "x",
       agents: { commander: { effort: "" } },
     })).toThrow('"effort"');
     expect(() => parseDispatchConfig({
       project: "x",
-      agents: { builder: { fallback: { speed: "fast" } } },
-    })).toThrow('unknown agents."builder"."fallback" setting "speed"');
+      agents: { builder: { speed: "fast" } },
+    })).toThrow('unknown agents."builder" setting "speed"');
     expect(() => parseDispatchConfig({
       project: "x",
       models: { builder: "old/model" },
     })).toThrow('"models" was replaced by "agents"');
+  });
+
+  test("rejects reserved and inherited agent names", () => {
+    expect(() => parseDispatchConfig({
+      project: "x",
+      agents: JSON.parse('{"__proto__":{"harness":"codex","model":"x"}}'),
+    })).toThrow('agents."__proto__" is a reserved agent name');
+    expect(() => parseDispatchConfig({
+      project: "x",
+      agents: { constructor: { harness: "codex", model: "x" } },
+    })).toThrow('agents."constructor" is a reserved agent name');
+    // No inherited name leaked into the prototype.
+    expect(({} as Record<string, unknown>)["harness"]).toBeUndefined();
+    expect(({} as Record<string, unknown>)["model"]).toBeUndefined();
   });
 
   test("project is required", () => {
@@ -346,12 +361,10 @@ describe("findProjectRoot", () => {
 test("omitted agents fall back to the bundled profiles", () => {
   expect(parseDispatchConfig({ project: "x" }).commander.agents).toEqual({
     commander: { harness: "codex", model: "gpt-6-astra", effort: "medium" },
-    builder: {
-      harness: "codex",
-      model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
-    },
+    builder: { harness: "codex", model: "gpt-5.6-terra" },
     acceptance: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     deliverer: { harness: "codex", model: "gpt-5.6-luna", effort: "high" },
+    builder_backup: { harness: "codex", model: "gpt-5.6-luna" },
+    builder_expert: { harness: "codex", model: "gpt-5.6-sol" },
   });
 });

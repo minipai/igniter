@@ -10,6 +10,7 @@ import {
   launchFor,
   launchProblems,
   recordStageProfiles,
+  selectStageAgent,
 } from "./agents";
 import { parseDispatchConfig, STAGE_AGENTS } from "../../config/config";
 
@@ -17,8 +18,15 @@ describe("stage mapping", () => {
   test("Build runs on builder, Acceptance on acceptance, Deliver on deliverer", () => {
     expect(STAGE_AGENTS).toEqual({ build: "builder", acceptance: "acceptance", deliver: "deliverer" });
     const commander = parseDispatchConfig({ project: "x" }).commander;
-    // The mapping is fixed by STAGE_AGENTS; each profile exists and is distinct.
-    expect(Object.keys(commander.agents).sort()).toEqual(["acceptance", "builder", "commander", "deliverer"]);
+    // The mapping is fixed by STAGE_AGENTS; each role exists and is distinct.
+    expect(Object.keys(commander.agents).sort()).toEqual([
+      "acceptance",
+      "builder",
+      "builder_backup",
+      "builder_expert",
+      "commander",
+      "deliverer",
+    ]);
     expect(STAGE_AGENTS.deliver).not.toBe("builder");
     expect(commander.agents.deliverer).toEqual({
       harness: "codex",
@@ -168,23 +176,73 @@ describe("launchProblems", () => {
       project: "x",
       agents: {
         deliverer: { harness: "opencode", model: "opencode/model", effort: "high" },
-        builder: { fallback: { effort: "turbo" } },
+        builder_backup: { effort: "turbo" },
       },
     });
     const problems = launchProblems(config);
     expect(problems).toHaveLength(2);
-    expect(problems[0]).toContain('agents."builder.fallback"');
-    expect(problems[0]).toContain('unsupported effort "turbo"');
-    expect(problems[1]).toContain('agents."deliverer"');
-    expect(problems[1]).toContain('unsupported effort "high" for harness "opencode"');
+    expect(problems[0]).toContain('agents."deliverer"');
+    expect(problems[0]).toContain('unsupported effort "high" for harness "opencode"');
+    expect(problems[1]).toContain('agents."builder_backup"');
+    expect(problems[1]).toContain('unsupported effort "turbo"');
+  });
+});
+
+describe("selectStageAgent", () => {
+  test("an unspecified stage uses the recorded selection or the default", () => {
+    const config = parseDispatchConfig({ project: "x" }).commander;
+    expect(selectStageAgent(config, {}, "build")).toEqual({
+      name: "builder",
+      profile: { harness: "codex", model: "gpt-5.6-terra" },
+    });
+    // A run that selected a candidate keeps that frozen profile on retry.
+    const tokens = {
+      agent_builder: "builder_expert",
+      profile_builder: JSON.stringify({ harness: "codex", model: "gpt-5.6-sol" }),
+    };
+    expect(selectStageAgent(config, tokens, "build")).toEqual({
+      name: "builder_expert",
+      profile: { harness: "codex", model: "gpt-5.6-sol" },
+    });
+  });
+
+  test("an explicit candidate wins and keeps the stage role separate", () => {
+    const config = parseDispatchConfig({
+      project: "x",
+      agents: { builder_expert: { harness: "codex", model: "expert/model", effort: "low" } },
+    }).commander;
+    expect(selectStageAgent(config, {}, "build", "builder_expert")).toEqual({
+      name: "builder_expert",
+      profile: { harness: "codex", model: "expert/model", effort: "low" },
+    });
+    // The name carries no special behavior: it works for any stage role.
+    expect(selectStageAgent(config, {}, "acceptance", "builder_expert").name).toBe("builder_expert");
+    expect(STAGE_AGENTS.acceptance).toBe("acceptance");
+  });
+
+  test("an unknown explicit candidate is refused naming the known agents", () => {
+    const config = parseDispatchConfig({ project: "x" }).commander;
+    expect(() => selectStageAgent(config, {}, "build", "builder_experts")).toThrow(
+      'unknown agent "builder_experts"',
+    );
+    expect(() => selectStageAgent(config, {}, "build", "builder_experts")).toThrow(
+      "builder_backup",
+    );
+    // An inherited object member is not a candidate.
+    expect(() => selectStageAgent(config, {}, "build", "toString")).toThrow(
+      'unknown agent "toString"',
+    );
   });
 });
 
 describe("run-recorded stage profiles", () => {
-  test("the claim snapshot freezes every stage-agent profile in three tokens", () => {
+  test("the claim snapshot freezes every stage-agent profile and selection", () => {
     const config = parseDispatchConfig({ project: "x" });
     const recorded = recordStageProfiles(config);
     expect(Object.keys(recorded).sort()).toEqual([
+      "agent_acceptance",
+      "agent_builder",
+      "agent_deliverer",
       "profile_acceptance",
       "profile_builder",
       "profile_deliverer",
@@ -192,7 +250,6 @@ describe("run-recorded stage profiles", () => {
     expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
       harness: "codex",
       model: "gpt-5.6-terra",
-      fallback: { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
     });
     expect(JSON.parse(recorded["profile_acceptance"]!)).toEqual({
       harness: "codex",
@@ -204,6 +261,9 @@ describe("run-recorded stage profiles", () => {
       model: "gpt-5.6-luna",
       effort: "high",
     });
+    expect(recorded["agent_builder"]).toBe("builder");
+    expect(recorded["agent_acceptance"]).toBe("acceptance");
+    expect(recorded["agent_deliverer"]).toBe("deliverer");
     // The freeze round-trips back to the configured profiles.
     expect(commanderConfigForRun(config.commander, recorded).agents).toEqual(config.commander.agents);
   });
@@ -238,7 +298,6 @@ describe("run-recorded stage profiles", () => {
       model: "gpt-5.6-terra",
     });
     expect(rerun.agents.builder.effort).toBeUndefined();
-    expect(rerun.agents.builder.fallback.effort).toBe("high");
     expect(rerun.agents.acceptance.model).toBe("gpt-5.6-sol");
     expect(rerun.agents.deliverer.harness).toBe("codex");
   });

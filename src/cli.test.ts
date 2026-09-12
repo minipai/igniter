@@ -213,9 +213,10 @@ describe("CAC command actions", () => {
       { argv: ["unblock", "STA-1"], request: { command: "unblock", ticket: "STA-1" } },
       { argv: ["cancel", "STA-1", "--reason", "owner decided"], request: { command: "cancel", ticket: "STA-1", reason: "owner decided" } },
       { argv: ["worker", "start", "STA-1", "--role", "build"], request: { command: "worker.start", ticket: "STA-1", role: "build" } },
+      { argv: ["worker", "start", "STA-1", "--agent", "builder_expert"], request: { command: "worker.start", ticket: "STA-1", agent: "builder_expert" } },
       { argv: ["worker", "send", "STA-1", "--role", "acceptance", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "acceptance", text: "check this" } },
       { argv: ["worker", "stop", "STA-1", "--role", "deliver"], request: { command: "worker.stop", ticket: "STA-1", role: "deliver" } },
-      { argv: ["worker", "restart", "STA-1", "--profile", "fallback", "--harness", "codex", "--model", "m", "--effort", "high"], request: { command: "worker.restart", ticket: "STA-1", profile: "fallback", harness: "codex", model: "m", effort: "high" } },
+      { argv: ["worker", "restart", "STA-1", "--agent", "builder_expert", "--harness", "codex", "--model", "m", "--effort", "high"], request: { command: "worker.restart", ticket: "STA-1", agent: "builder_expert", harness: "codex", model: "m", effort: "high" } },
       { argv: ["worker", "answer", "STA-1", "y"], request: { command: "worker.answer", ticket: "STA-1", answer: "y" } },
     ];
 
@@ -281,7 +282,6 @@ describe("CAC validation and help", () => {
     ["block", "STA-1"], ["cancel", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
     ["status", "--bogus"], ["start", "STA-1", "--publish-acceptance"],
     ["worker", "start", "STA-1", "--role", "other"],
-    ["worker", "restart", "STA-1", "--profile", "other"],
     ["worker", "answer", "STA-1", "yes"],
     ["approve", "STA-1", "--receipt", "r-1"],
   ].map((argv) => ({ argv })))("invalid syntax never runs a command: $argv", async ({ argv }) => {

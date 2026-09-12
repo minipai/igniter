@@ -5,7 +5,7 @@ import { lstat, rename } from "node:fs/promises";
 import type { CommanderStage, DispatchConfig } from "../../config/config.ts";
 import { STAGE_AGENTS } from "../../config/config.ts";
 import { commanderAssetPaths, type CommanderAssetPaths } from "../../../commander/assets.ts";
-import { launchFor } from "./agents.ts";
+import { launchFor, selectStageAgent, selectedAgentToken } from "./agents.ts";
 import type { LinearClientLike } from "../../service/linear/linear.ts";
 import {
   latestReceiptOf,
@@ -89,6 +89,8 @@ export interface StageWorkOrderInput {
   promptPath: string;
   /** Optional absolute project runbook path for this stage, when configured. */
   runbook?: string;
+  /** The selected candidate name; the stage role is separate. */
+  agent: string;
   harness: string;
   model: string;
   effort?: string;
@@ -143,7 +145,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `\n` +
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
     `${worktreeInstruction(input)}\n` +
-    `Agent profile for this stage: harness \`${input.harness}\`; model \`${input.model}\`${effort}.\n` +
+    `Agent profile for this stage: \`${input.agent}\` — harness \`${input.harness}\`; model \`${input.model}\`${effort}.\n` +
     `Your own scratch dir is \`${scratch}\`; ` +
     `write your submit JSON to \`${submitPath}\` and your completion report to \`${input.resultPath}\`.\n` +
     `\n` +
@@ -257,7 +259,11 @@ export interface StageStartResult {
   worker?: string;
   stage?: CommanderStage;
   role?: CommanderStage;
+  /** The selected candidate name, distinct from the stage role. */
+  agent?: string;
+  harness?: string;
   model?: string;
+  effort?: string;
   resultPath?: string;
   confirmed?: boolean;
 }
@@ -270,6 +276,8 @@ export interface StageStartOptions {
    * with no local worker is refused.
    */
   rebuilding?: boolean;
+  /** An explicit named candidate selected before the worker starts. */
+  agent?: string;
 }
 
 /** True when the identifier looks like a ticket (`STA-123`). */
@@ -455,14 +463,28 @@ export async function startStageTicket(
     }
   }
   try {
+    const config = deps.config ?? deps.resolved.config;
+    const role = STAGE_AGENTS[stage];
+    // Validate an explicit candidate's name and launch profile before any
+    // workspace, worktree, or worker exists.
+    const explicit = options.agent !== undefined
+      ? selectStageAgent(config.commander, {}, stage, options.agent)
+      : undefined;
+    if (explicit) launchFor(explicit.profile);
     const ensured = await ensureStageWorkspace(deps, full.identifier);
     const workspaceId = ensured.workspaceId;
+    if (explicit) {
+      // An explicit selection overrides the run-recorded profile and name so
+      // this run's retries keep the chosen candidate.
+      await deps.workspaces.reportMetadata(workspaceId, {
+        [`profile_${role}`]: JSON.stringify(explicit.profile),
+        [selectedAgentToken(stage)]: explicit.name,
+      });
+    }
     const snapshot = await deps.workspaces.snapshot();
     const tokens = snapshot.workspaces.find((w) => w.workspaceId === workspaceId)?.tokens ?? {};
-    const { commanderConfigForRun } = await import("./agents.ts");
-    const config = deps.config ?? deps.resolved.config;
-    const effective = commanderConfigForRun(config.commander, tokens);
-    const profile = effective.agents[STAGE_AGENTS[stage]];
+    const selected = selectStageAgent(config.commander, tokens, stage);
+    const profile = selected.profile;
     const worker = workerAgentName(stage, full.identifier);
     const resultPath = resultPathFor(deps.repoRoot, full.identifier, stage);
     const receipt = latestValidReceipt(full.comments);
@@ -488,7 +510,7 @@ export async function startStageTicket(
         criteria: state.criteria, worktreePath: ensured.worktreePath, branch: ensured.branch,
         checkpoint, resultPath, stage,
         promptPath: promptPathForStage(deps.assets ?? commanderAssetPaths(), stage),
-        harness: profile.harness, model: profile.model,
+        agent: selected.name, harness: profile.harness, model: profile.model,
         ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
         ...(config.delivery !== undefined ? { delivery: config.delivery } : {}),
         ...(config.runbooks[stage] !== undefined ? { runbook: config.runbooks[stage] } : {}),
@@ -506,9 +528,15 @@ export async function startStageTicket(
       }, order, deps.promptDelivery);
       await saveWorkOrder(recordPath, { run, order, confirmedPane: live.paneId, confirmedSession: delivered.observed.session });
     }
+    const effortText = profile.effort !== undefined ? `; effort ${profile.effort}` : "";
     return {
-      ok: true, text: `${full.identifier}: ${stage} worker ${worker}; model ${profile.model}; work order confirmed; result → ${resultPath}`,
-      workspaceId, worker, stage, role: stage, model: profile.model, resultPath, confirmed: true,
+      ok: true,
+      text: `${full.identifier}: ${stage} worker ${worker}; agent ${selected.name} (${profile.harness}); ` +
+        `model ${profile.model}${effortText}; work order confirmed; result → ${resultPath}`,
+      workspaceId, worker, stage, role: stage, agent: selected.name,
+      harness: profile.harness, model: profile.model,
+      ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+      resultPath, confirmed: true,
     };
   } catch (error) {
     return { ok: false, text: `worker start failed: ${(error as Error).message}; Linear unchanged` };

@@ -7,9 +7,11 @@ const commanderConfig = Bun.YAML.parse(
 ) as {
   agents: {
     commander: { harness: string; model: string; effort?: string };
-    builder: { harness: string; model: string; effort?: string; fallback: { harness: string; model: string; effort?: string } };
+    builder: { harness: string; model: string; effort?: string };
     acceptance: { harness: string; model: string; effort?: string };
     deliverer: { harness: string; model: string; effort?: string };
+    builder_backup: { harness: string; model: string; effort?: string };
+    builder_expert: { harness: string; model: string; effort?: string };
   };
 };
 const stageNames = ["build", "acceptance", "deliver"] as const;
@@ -64,10 +66,14 @@ describe("Commander delivery protocol", () => {
     expect(commanderConfig.agents.deliverer.harness).toBe("codex");
     expect(commanderConfig.agents.deliverer.model).toBe("gpt-5.6-luna");
     expect(commanderConfig.agents.deliverer.effort).toBe("high");
-    expect(commanderConfig.agents.builder.fallback.harness).toBe("codex");
-    expect(commanderConfig.agents.builder.fallback.model).toBe("gpt-5.6-sol");
-    expect(commanderConfig.agents.builder.fallback.effort).toBe("high");
-    expect(commonRules).toContain("builder.fallback");
+    expect(commanderConfig.agents.builder_backup.harness).toBe("codex");
+    expect(commanderConfig.agents.builder_backup.model).toBe("gpt-5.6-luna");
+    expect(commanderConfig.agents.builder_backup.effort).toBeUndefined();
+    expect(commanderConfig.agents.builder_expert.harness).toBe("codex");
+    expect(commanderConfig.agents.builder_expert.model).toBe("gpt-5.6-sol");
+    expect(commanderConfig.agents.builder_expert.effort).toBeUndefined();
+    expect(commonRules).toContain("builder_backup");
+    expect(commonRules).toContain("named candidate");
     expect(stageRules[0]).toStartWith("# Build agent");
     expect(stageRules[1]).toStartWith("# Acceptance agent");
     expect(stageRules[2]).toStartWith("# Deliver agent");

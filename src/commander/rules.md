@@ -84,14 +84,17 @@ runs Build, independent Acceptance, and Deliver in that order. Projects cannot
 add, skip, or reorder stages.
 
 Bundled agent profiles contain harness, model, and optional effort;
-`.igniter/config.yaml` may override any field, and omitted fields inherit
-the bundled default. Each stage selects one profile: Build runs on
-`builder`, Acceptance on `acceptance`, Deliver on `deliverer`. `acceptance` is
-a wiring name, not permission to perform code review, and
-`builder.fallback` is the stronger Build profile. `effort` is
-cross-harness reasoning/thinking effort: the launch translates it into the
-harness's native option, and a harness with no such option refuses the
-configuration instead of ignoring it.
+`.igniter/config.yaml` may override any field of a same-named profile, inherit
+the omitted fields, and add new named candidates. Each stage has a default
+agent: Build runs on `builder`, Acceptance on `acceptance`, and
+Deliver on `deliverer`. The Commander may select another named candidate for a
+run with `worker start <ticket> --agent <name>` before the worker starts;
+`builder_backup` and `builder_expert` are bundled candidates. The candidate
+name carries no special program behavior, no automatic fallback, and no
+candidate ordering. `acceptance` is a wiring name, not permission to perform
+code review. `effort` is cross-harness reasoning/thinking effort: the launch
+translates it into the harness's native option, and a harness with no such
+option refuses the configuration instead of ignoring it.
 
 When no additional project instruction file exists, proceed with the stage
 prompt and repository instructions.
@@ -234,9 +237,12 @@ owner.
 
 Run `igniter worker start <ticket>` after reading status. It owns worktree and
 scratch setup, stable per-role worker identity, create/reuse, tab/title setup,
-and delivery of the initial work order. Require its confirmed delivery result
-and retain the returned role, effective model, worker identity, and result path
-before running `igniter begin <ticket>`. Worker creation or undelivered prompts
+and delivery of the initial work order. Pass `--agent <name>` to select a named
+candidate before the worker starts; without it a new run uses the stage default
+and a retry keeps the run's recorded selection.
+Require its confirmed delivery result and retain the returned role, selected
+agent, effective harness/model/effort, worker identity, and result path before
+running `igniter begin <ticket>`. Worker creation or undelivered prompts
 must never be followed by begin. Retry worker start after fixing the cause;
 reuse the same role's identity and work order rather than creating duplicates.
 
@@ -249,10 +255,12 @@ Worker commands may read ticket context but never write Linear:
 
 - `igniter worker send <ticket> --role build|acceptance|deliver TEXT` sends work to
   the explicitly selected role. Never guess when several roles exist.
-- `igniter worker restart <ticket> --role build|acceptance|deliver --model MODEL`
-  (or `--profile builder|acceptance|deliverer|fallback`, with `--harness` and
-  `--effort` when needed) rebuilds the selected worker using the effective profile/model. It preserves
-  worktree changes and checkpoint; tell the replacement to inspect the diff.
+- `igniter worker restart <ticket> --role build|acceptance|deliver --agent NAME`
+  (or `--model MODEL`, with `--harness` and `--effort` when needed) rebuilds the
+  selected worker using the named candidate and its merged profile. Without a
+  new `--agent`, it keeps the run's recorded selection instead of reverting to
+  the stage default. It preserves worktree changes and checkpoint; tell the
+  replacement to inspect the diff.
 - `igniter worker stop <ticket> --role build|acceptance|deliver` stops only that
   workflow worker; use it explicitly after a handoff, block, failure, or Done.
 - `igniter worker answer <ticket> --role build|acceptance|deliver y|n` answers a
@@ -292,8 +300,9 @@ Use `builder-<ticket>` for Build, `acceptance-<ticket>` for Acceptance, and
 the current board; that does not prevent the worker from running.
 
 Before opening a worker, verify that the configured harness exists in Herdr and
-that its configured model id is available. Use `builder.fallback` for complex
-or repeatedly failing Build work.
+that its configured model id is available. Use `builder_backup` or
+`builder_expert` when the project workflow calls for a stronger Build
+candidate; the Commander records the choice and a short reason.
 
 If a required worker cannot be created or its model is unavailable, block the
 ticket with the concrete reason.
@@ -467,8 +476,9 @@ There are no round, token, or review budgets.
 - **Time:** use bounded waits; inspect the pane before declaring a stall.
 - **Progress:** block when the same observable failure survives two relevant
   corrections, or two corrections produce no relevant behavior or diff change.
-- **Quota:** restart Build on its paid channel, then `builder.fallback`. Preserve
-  the worktree and checkpoint. Block if no configured model is available.
+- **Quota:** restart Build on its paid channel, then another named candidate such
+  as `builder_backup`. Preserve the worktree and checkpoint. Block if no
+  configured model is available.
 - **Approvals:** never answer outside the pre-authorized scope; block and hand
   the current dialog to the owner.
 

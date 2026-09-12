@@ -21,9 +21,12 @@ target_branch: main
 # herdr_remote: art@192.168.88.8
 
 # Agent overrides may set any profile field (commander, builder,
-# builder.fallback, acceptance, deliverer: harness, model, effort).
-# Omitted profiles inherit src/commander/config.yaml. Stage → primary agent
-# mapping is fixed: Build → builder, Acceptance → acceptance, Deliver → deliverer.
+# acceptance, deliverer, or any named candidate: harness, model, effort).
+# A same-named profile merges field by field over the bundled default;
+# a new name must be a complete harness + model profile. Stage defaults are
+# fixed: Build → builder, Acceptance → acceptance, Deliver → deliverer.
+# The Commander may select another named candidate per stage, e.g.
+# `igniter worker start <ticket> --agent builder_expert`.
 agents:
   builder:
     harness: opencode

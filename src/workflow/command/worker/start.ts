@@ -13,6 +13,9 @@ export async function startWorker(request: ExtractCommand<"worker.start">, ctx: 
     throw new Error(`ticket ${ticket} is not in project ${ctx.resolved.config.project}`);
   }
   const state = bareTodoState(ctx.resolved, full) ?? deriveState(ctx.resolved, full);
-  const result = await startStageTicket(ctx, full, state, request.role ? { stage: request.role as CommanderStage } : {});
+  const result = await startStageTicket(ctx, full, state, {
+    ...(request.role ? { stage: request.role as CommanderStage } : {}),
+    ...(request.agent !== undefined ? { agent: request.agent } : {}),
+  });
   return { ...result, data: result };
 }
