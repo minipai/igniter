@@ -9,16 +9,18 @@ Build, Acceptance, and Deliver agents through Herdr.
 - **Isolated work.** Each ticket gets a Git worktree and a team of agents.
 - **Independent acceptance.** A separate agent tests the public UI, CLI, or API
   against your criteria without seeing the source, diff, or Build plan.
-- **Your choice of agents.** Configure Codex, Claude Code, or OpenCode per role.
+- **Your choice of agents.** Configure named Codex, Claude Code, or OpenCode
+  profiles for the Commander to choose from.
 - **Approval before delivery.** Review the evidence and decide when a change lands.
 
 ## The workflow
 
 ![Igniter workflow: Build, independent Acceptance, and Deliver, with owner approvals and a return to Build when fixes are needed.](docs/workflow.svg)
 
-You approve the first Build, authorize delivery after Acceptance passes, and
-confirm landing before Done. When Acceptance finds issues, Build fixes them
-and returns directly to Acceptance. Deployment requires your authorization.
+You approve the first Build and authorize delivery after Acceptance passes.
+Delivery follows your repository's instructions. When Acceptance finds issues,
+Build fixes them and returns directly to Acceptance. Deployment requires your
+authorization.
 
 Linear holds ticket state; Herdr hosts the agents. Igniter connects them
 directly, with no background service.
@@ -104,6 +106,32 @@ igniter start
 This opens the Commander in your terminal. If it is already open from project
 setup, continue in that session.
 
+### Configure agents
+
+Define profiles under `agents` in `.igniter/config.yaml`. Each profile selects
+a `harness`, a `model`, and optionally an `effort`:
+
+```yaml
+agents:
+  builder:
+    model: gpt-5.6-sol
+  builder_backup:
+    model: gpt-5.6-luna
+  specialist:
+    harness: codex
+    model: gpt-5.6-sol
+```
+
+Profiles with the same name merge field by field with the
+[bundled defaults](src/commander/config.yaml); omitted fields are inherited.
+A new profile name must specify both `harness` and `model`.
+
+`commander` configures the Commander. `builder`, `acceptance`, and `deliverer`
+are the defaults for their stages. Additional names, including the bundled
+`builder_backup` and `builder_expert`, are candidates the Commander can select
+with `igniter worker start ENG-123 --agent specialist`. There is no automatic
+fallback or priority implied by a profile's name.
+
 ### Assign a ticket
 
 Create a ticket in your configured Linear project with acceptance criteria,
@@ -116,8 +144,8 @@ Start ENG-123.
 
 Replace `ENG-123` with your ticket ID. The Commander reads the ticket, prepares
 a worktree, and starts the Build agent. Review its evidence when it asks for
-your Build approval; after Acceptance passes, approve delivery, then confirm
-landing.
+your Build approval; after Acceptance passes, approve delivery according to
+your repository's instructions.
 
 ## Documentation
 
@@ -127,7 +155,6 @@ landing.
   instructions for Build, Acceptance, and Deliver.
 - [Agent defaults](src/commander/config.yaml) — harness, model, and reasoning
   settings that projects can override under `agents` in `.igniter/config.yaml`.
-- [Development](docs/development.md) — test commands, isolation, and coverage.
 
 ## Development
 
