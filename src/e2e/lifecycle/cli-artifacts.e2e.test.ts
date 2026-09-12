@@ -101,7 +101,8 @@ test("each stage's JSON artifact is refused without writes until complete, then 
       expect(issue.stateId).toBe(`st-${stage.kind}`);
       expect(issue.labelIds).toEqual(["label-complete"]);
       expect(latestValidReceipt(issue.comments)?.receipt.checkpoint).toBe(head);
-      if (stage.kind === "acceptance") expect(issue.attachments).toHaveLength(1);
+      // Markdown evidence stays in the receipt; Igniter adds no attachment.
+      if (stage.kind === "acceptance") expect(issue.attachments).toHaveLength(0);
       if (stage.kind === "deliver") expect(issue.comments.at(-1)?.body).toContain(stage.payload.owner_actions[0]);
 
       const submitted = structuredClone(issue);

@@ -25,3 +25,25 @@ Builder conclusion. Do not inspect source files, git history, or diffs.
 Never modify product code
 or the worktree. Every correction returns to the original
 Builder; on retry, recheck the failed criteria plus a short smoke test.
+
+## Evidence
+
+Evidence is one Markdown string per criterion, so a single criterion can carry
+a fenced command transcript, images, video or ordinary links, or a combination.
+Igniter renders that string as Markdown inside the receipt; it never parses the
+Markdown, infers an evidence kind, or treats the string as an attachment URL.
+State PASS or FAIL yourself: neither rendered text nor an exit code decides the
+verdict.
+
+A command transcript is one readable Markdown form. Include the actual command,
+the relevant output, and the exit code in fenced blocks; omit empty output
+sections and unrelated logs, and say explicitly when output is truncated. Keep
+excerpts sufficient to establish expected versus actual behavior, and redact
+credentials and secrets.
+
+Supplementary screenshots, recordings, and files are the Commander's or
+owner's responsibility: present links or images in the Markdown evidence and
+let the Commander attach extra files to the Linear issue. Do not rely on
+Igniter to extract links from the evidence.
+
+The project runbook owns its environment, recording, and upload steps.

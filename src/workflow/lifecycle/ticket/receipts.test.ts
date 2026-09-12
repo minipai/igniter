@@ -38,9 +38,9 @@ function acceptancePayload(verdict: "pass" | "fail") {
     results: [
       {
         criterion: "works",
-        expected: "works",
-        actual: "works",
-        evidence: "https://example.test/works",
+        expected: "cli prints ok",
+        actual: "cli printed ok",
+        evidence: "```text\n$ mycli run\nok\nExit code: 0\n```\n\n![shot](https://example.test/shot.png)",
         ok: true,
       },
     ],
@@ -115,6 +115,53 @@ describe("receipt publisher", () => {
       landed: CHECKPOINT,
       submission: SUBMISSION,
     });
+  });
+});
+
+describe("receipt Markdown layout", () => {
+  test("an optional Build note sits in its own paragraph under Self-check notes", () => {
+    const withNote = buildReceiptBody(
+      {
+        v: 1,
+        kind: "build",
+        checkpoint: CHECKPOINT,
+        checks: ["bun run check"],
+        results: [
+          { criterion: "works", ok: true, note: "first line\n\nsecond paragraph" },
+          { criterion: "shines", ok: true },
+        ],
+        reproduction: "run bun run check",
+      },
+      SUBMISSION,
+    );
+    expect(withNote).toContain("- [x] works\n\n  **Self-check notes**\n\n  first line\n\n  second paragraph");
+    // A result without a note has no empty heading.
+    expect(withNote).toContain("- [x] shines");
+    expect(withNote.match(/\*\*Self-check notes\*\*/g)).toHaveLength(1);
+
+    const withoutNote = buildReceiptBody(
+      {
+        v: 1,
+        kind: "build",
+        checkpoint: CHECKPOINT,
+        checks: ["bun run check"],
+        results: [{ criterion: "works", ok: true }],
+        reproduction: "run bun run check",
+      },
+      SUBMISSION,
+    );
+    expect(withoutNote).not.toContain("Self-check notes");
+  });
+
+  test("Acceptance renders Expected, Actual and Evidence as separate English headings", () => {
+    const body = acceptanceReceiptBody(acceptancePayload("pass"), SUBMISSION);
+    for (const heading of ["**Expected**", "**Actual**", "**Evidence**"]) {
+      expect(body).toContain(heading);
+    }
+    expect(body).not.toContain("Command:");
+    // The fenced transcript and the image stay inside the criterion's list item.
+    expect(body).toContain("  ```text\n  $ mycli run\n  ok\n  Exit code: 0\n  ```");
+    expect(body).toContain("  ![shot](https://example.test/shot.png)");
   });
 });
 

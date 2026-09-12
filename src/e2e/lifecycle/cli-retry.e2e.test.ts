@@ -163,7 +163,7 @@ describe("e2e safe submit retries", () => {
     });
   });
 
-  test("evidence readback failure retries without duplicate attachment or receipt", async () => {
+  test("Markdown evidence needs no attachment and a receipt write retry creates no duplicate", async () => {
     await withE2E(async (e2e) => {
       const head = await beginAndCommit(e2e, "STA-24");
       expectOk(await e2e.cli(["submit", "STA-24", "--input", "-"], {
@@ -171,21 +171,18 @@ describe("e2e safe submit retries", () => {
       }));
       await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.startStage("STA-24"));
-      const payload = JSON.stringify(acceptancePayload(head, "pass", "https://example.com/e2e/retry-proof"));
-      e2e.client.failNextReads("listAttachments", 1, 502, "attachment readback unavailable");
-      expectFail(
-        await e2e.cli(["submit", "STA-24", "--input", "-"], { stdin: payload }),
-        "attachment readback unavailable",
-      );
-      expect(e2e.world.issues.find((issue) => issue.identifier === "STA-24")?.attachments).toHaveLength(1);
-      expect(receiptCount(e2e, "STA-24")).toBe(1); // build only
-
+      const payload = JSON.stringify(commandEvidencePayload(head, "pass"));
+      e2e.client.failNext("addComment", { status: 504, message: "receipt response lost", afterWrite: false });
       expectOk(await e2e.cli(["submit", "STA-24", "--input", "-"], { stdin: payload }));
       const issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-24")!;
-      expect(issue.attachments).toHaveLength(1);
+      expect(issue.attachments).toHaveLength(0);
       expect(receiptCount(e2e, "STA-24")).toBe(2);
       expect(issue.stateId).toBe("st-acceptance");
       expect(issue.labelIds).toContain("label-complete");
+
+      // The same Markdown evidence resubmits without a second receipt.
+      expectOk(await e2e.cli(["submit", "STA-24", "--input", "-"], { stdin: payload }));
+      expect(receiptCount(e2e, "STA-24")).toBe(2);
     });
   });
 
@@ -216,7 +213,7 @@ describe("e2e separate Linear reconciliation and worker cleanup", () => {
       expect(retry.stdout).toContain("no owner transition to reconcile");
       expect(e2e.workspaces.calls).toHaveLength(workerCalls);
       expect(receiptCount(e2e, "STA-26")).toBe(2);
-      expect(e2e.world.issues.find((candidate) => candidate.identifier === "STA-26")?.attachments).toHaveLength(1);
+      expect(e2e.world.issues.find((candidate) => candidate.identifier === "STA-26")?.attachments).toHaveLength(0);
     });
   });
 

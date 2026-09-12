@@ -155,14 +155,14 @@ function acceptancePayload(verdict: "pass" | "fail", head = HEAD) {
         criterion: "works",
         expected: "works",
         actual: verdict === "pass" ? "works" : "broken",
-        evidence: "https://example.test/works",
+        evidence: verdict === "pass" ? "```text\n$ mycli run\nworks\nExit code: 0\n```" : "```text\n$ mycli run\nbroken\nExit code: 1\n```",
         ok: verdict === "pass",
       },
       {
         criterion: "shines",
         expected: "shines",
         actual: "shines",
-        evidence: "https://example.test/shines",
+        evidence: "![screenshot](https://example.test/shines.png)",
         ok: true,
       },
     ],
@@ -679,10 +679,10 @@ describe("submit", () => {
       expect(issue.labelIds).toEqual([COMPLETE]);
       const receipt = issue.comments.at(-1)!;
       expect(receipt.body).toContain("Agent acceptance: PASS");
+      expect(receipt.body).toContain("**Evidence**");
       expectYamlReceipt(receipt.body, "acceptance-pass", HEAD);
-      expect(issue.attachments.map((a) => a.url).sort()).toEqual(
-        ["https://example.test/shines", "https://example.test/works"],
-      );
+      // Markdown evidence stays in the receipt; nothing is auto-attached.
+      expect(issue.attachments).toHaveLength(0);
       expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
       const state = (await ticketCommand(h, "STA-1", "status")).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "acceptance", progress: "complete", next: ["approve"] });
@@ -711,18 +711,24 @@ describe("submit", () => {
     }
   });
 
-  test("acceptance submit refuses non-URL evidence before any Linear write", async () => {
+  test("acceptance submit refuses non-string evidence before any Linear write", async () => {
     const h = await harness();
     try {
       await startBuild(h, "STA-1");
       await toAcceptancePending(h, "STA-1");
       await ticketCommand(h, "STA-1", "begin");
       const payload = acceptancePayload("pass");
-      payload.results[0]!.evidence = "Command output: everything passed";
+      (payload.results[0] as { evidence: unknown }).evidence = {
+        kind: "command",
+        command: "mycli run",
+        exitCode: 0,
+        stdout: "out",
+        stderr: "",
+      };
       const before = JSON.stringify({ issue: issueOf(h, "STA-1"), meta: h.workspaces.tokensFor("STA-1") });
       const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload));
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("absolute http or https URL");
+      expect(out.text).toContain("must be a Markdown string");
       expect(JSON.stringify({ issue: issueOf(h, "STA-1"), meta: h.workspaces.tokensFor("STA-1") })).toBe(before);
     } finally {
       h.stop();

@@ -49,7 +49,11 @@ Commander reviews both files, checks the checkpoint and evidence, and submits
 the JSON unchanged with
 `igniter submit ENG-123 --input - < "/absolute/scratch/submit.json"`.
 Missing, unfinished, malformed, or stale artifacts return to the same worker
-for correction; a valid schema never substitutes for content review. The first Build
+for correction; a valid schema never substitutes for content review. Acceptance
+evidence is one Markdown string per criterion — a fenced command transcript, an
+image, a link, or a combination — rendered as Markdown in the receipt. Igniter
+never derives the verdict from that Markdown and never auto-attaches it; the
+Commander adds any supplementary attachments explicitly. The first Build
 waits at Build + Complete for your approval. Your explicit approval
 allows `igniter approve ENG-123 <id>`, using the current receipt ID
 from status, to move to Acceptance + Pending. A PASS Acceptance receipt similarly

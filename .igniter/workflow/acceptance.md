@@ -34,7 +34,7 @@ A failed result must include:
 - reproduction steps;
 - expected behavior;
 - actual behavior; and
-- captured evidence.
+- captured evidence as one Markdown string (see Evidence).
 
 Implementation guesses, architecture advice, file-and-line findings, and
 hypothetical failures are not acceptance findings. Report environment or tool
@@ -47,6 +47,12 @@ critical behavior; do not reopen passed criteria for exploratory testing.
 
 ## Evidence
 
+Acceptance evidence is Markdown in the receipt, one string per criterion. One
+string can hold a fenced command transcript, an image, a video or ordinary
+link, or a combination. Igniter renders it as Markdown and never parses it for
+the verdict, infers an evidence kind, or treats it as an attachment URL. State
+PASS or FAIL yourself; no exit code decides the verdict.
+
 Unless the project settings skip recording:
 
 - record interactions or state changes and use screenshots for important
@@ -56,22 +62,24 @@ Unless the project settings skip recording:
 - visually inspect representative frames and every screenshot; and
 - retry unusable captures instead of reporting them as evidence.
 
-Keep validated evidence available for the handoff. If recording is
-unavailable, provide validated alternative evidence and explain why.
+Present validated captures as Markdown images or links with a short caption and
+the criterion they belong to. If recording is unavailable, provide validated
+alternative evidence and explain why.
 
-For CLI or API behavior, report a short, focused command transcript per
-criterion: the exact command, integer exit code, and needed stdout and stderr
-excerpts. The receipt renders the command inline and verbatim, so use one
-short, readable invocation. Prefer a named deterministic test or concise
-existing command; do not embed long `if`/`then`/`else` shell control flow or
-chained narration merely to manufacture evidence. At least one stdout or
-stderr excerpt must be non-empty, and the command, final exit code, and output
-must describe the same invocation. Attach or link oversized output rather
-than truncating failure details. State PASS or FAIL yourself; no tool derives
-the verdict from an exit code.
+For CLI or API behavior, write a short, focused fenced command transcript per
+criterion: the exact command, its relevant output, and the exit code in the
+same fenced block. Prefer a named deterministic test or concise existing
+command; do not embed long `if`/`then`/`else` shell control flow or chained
+narration merely to manufacture evidence. Omit empty output sections and
+unrelated logs, and say explicitly when output is truncated.
+
+Supplementary screenshots and recordings stay the Commander's responsibility:
+it attaches the selected files to the Linear issue. Keep them available beside
+the result file and name them in the report; do not treat the Markdown evidence
+field as an attachment URL or rely on Igniter to extract links from it.
 
 ## Report
 
 Return the checkpoint, environment details, and one PASS or FAIL result per
 criterion with expected behavior, actual behavior, reproduction steps, and
-evidence locations. Name environment failures separately.
+Markdown evidence. Name environment failures separately.

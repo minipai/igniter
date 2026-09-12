@@ -1,10 +1,10 @@
-// Acceptance submit with inline command transcripts (STA-195).
+// Acceptance submit with Markdown evidence (STA-268).
 //
-// Acceptance evidence for CLI/API behavior travels as a structured
-// transcript — command, exit code, stdout/stderr excerpts — instead of a
-// URL. The verdict always comes from the Acceptance agent; igniter never
-// derives it from an exit code. Offline against the fake Linear endpoint:
-// no real credentials, no real provider, no real project.
+// Acceptance evidence travels as one free-form Markdown string per criterion:
+// fenced command transcripts, images, video or ordinary links, or a
+// combination. Igniter renders it verbatim, never parses it for the verdict,
+// and never treats it as an attachment URL. Offline against the fake Linear
+// endpoint: no real credentials, no real provider, no real project.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
@@ -14,7 +14,6 @@ import { runCommand, type CommandContext } from "../../run";
 import { validateStartup, type ResolvedDispatch } from "../../config/claims";
 import { parseDispatchConfig } from "../../config/config";
 import { LinearClient } from "../../service/linear/linear";
-import { MAX_COMMAND_EVIDENCE_CHARS } from "../ticket/protocol";
 import { addIssue, standardWorld, startFakeLinear } from "../../service/linear/fake-linear";
 import { FakeGit } from "../../testing/fake-git";
 import { FakeWorkspaces } from "../../testing/fake-workspaces";
@@ -84,8 +83,8 @@ async function ticketCommand(
   return runCommand({ command: "begin", ticket: identifier }, h.ctx);
 }
 
-function transcript(command: string, exitCode: number, stdout: string, stderr = "") {
-  return { kind: "command", command, exitCode, stdout, stderr };
+function transcript(command: string, exitCode: number, output: string) {
+  return ["```text", `$ ${command}`, output, `Exit code: ${exitCode}`, "```"].join("\n");
 }
 
 function buildPayload() {
@@ -102,7 +101,7 @@ function buildPayload() {
   };
 }
 
-/** Reach Acceptance+In progress, ready for a acceptance submit: first Build, owner handoff, begin. */
+/** Reach Acceptance+In progress, ready for an acceptance submit: first Build, owner handoff, begin. */
 async function toAcceptance(h: Harness, identifier: string): Promise<void> {
   addIssue(h.world, { identifier, stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
   expect((await runCommand({ command: "worker.start", ticket: identifier }, h.ctx)).ok).toBe(true);
@@ -115,8 +114,8 @@ async function toAcceptance(h: Harness, identifier: string): Promise<void> {
   expect((await ticketCommand(h, identifier, "begin")).ok).toBe(true);
 }
 
-describe("inline command evidence", () => {
-  test("command PASS without any URL lands in Acceptance+Complete", async () => {
+describe("Markdown acceptance evidence", () => {
+  test("a fenced command transcript PASS lands in Acceptance+Complete with no attachment", async () => {
     const h = await harness();
     try {
       await toAcceptance(h, "STA-1");
@@ -127,7 +126,7 @@ describe("inline command evidence", () => {
         checkpoint: HEAD,
         results: [
           { criterion: "works", expected: "cli prints ok", actual: "cli printed ok", evidence: transcript("mycli run", 0, "ok"), ok: true },
-          { criterion: "shines", expected: "exit 0", actual: "exit 0", evidence: transcript("mycli shine", 0, "shining", "warn once"), ok: true },
+          { criterion: "shines", expected: "exit 0", actual: "exit 0", evidence: transcript("mycli shine", 0, "shining"), ok: true },
         ],
         environment: "test lab, 5s timeout",
         reproduction: "run mycli run",
@@ -141,17 +140,51 @@ describe("inline command evidence", () => {
       expect(receipt.body).toContain("Agent acceptance: PASS");
       expect(receipt.body).toContain("mycli run");
       expect(receipt.body).toContain("ok");
-      // Transcripts need no attachment: URL media is untouched.
+      // Markdown evidence is not an attachment.
       expect(issue.attachments).toHaveLength(0);
     } finally {
       h.stop();
     }
   });
 
-  test("command FAIL keeps the agent verdict; exit codes never flip it", async () => {
+  test("images and ordinary links are accepted without any kind taxonomy", async () => {
     const h = await harness();
     try {
-      // A failing criterion with exit 0 is still FAIL.
+      await toAcceptance(h, "STA-1");
+      const mixed = [
+        transcript("mycli run", 0, "ok"),
+        "",
+        "![Relevant screenshot](https://example.test/evidence.png)",
+        "",
+        "[Recording](https://example.test/recording)",
+      ].join("\n");
+      const payload = {
+        v: 1,
+        kind: "acceptance",
+        verdict: "pass",
+        checkpoint: HEAD,
+        results: [
+          { criterion: "works", expected: "cli prints ok", actual: "cli printed ok", evidence: mixed, ok: true },
+          { criterion: "shines", expected: "shines", actual: "shines", evidence: "[details](https://example.test/shines)", ok: true },
+        ],
+        environment: "test lab",
+        reproduction: "run mycli run",
+      };
+      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload))).ok).toBe(true);
+      const issue = issueOf(h, "STA-1");
+      expect(issue.attachments).toHaveLength(0);
+      const receipt = issue.comments.at(-1)!.body;
+      expect(receipt).toContain("https://example.test/evidence.png");
+      expect(receipt).toContain("https://example.test/recording");
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("the agent verdict stands; Markdown and exit codes never flip it", async () => {
+    const h = await harness();
+    try {
+      // A failing criterion whose transcript says Exit code: 0 is still FAIL.
       await toAcceptance(h, "STA-1");
       const failing = {
         v: 1,
@@ -160,7 +193,7 @@ describe("inline command evidence", () => {
         checkpoint: HEAD,
         results: [
           { criterion: "works", expected: "cli prints ok", actual: "cli printed nope", evidence: transcript("mycli run", 0, "nope"), ok: false },
-          { criterion: "shines", expected: "shines", actual: "shines", evidence: "https://example.test/shines", ok: true },
+          { criterion: "shines", expected: "shines", actual: "shines", evidence: "[ok](https://example.test/shines)", ok: true },
         ],
         environment: "test lab",
         reproduction: "run mycli run",
@@ -170,7 +203,7 @@ describe("inline command evidence", () => {
       expect(issueOf(h, "STA-1").stateId).toBe(BUILD);
       expect(issueOf(h, "STA-1").comments.at(-1)!.body).toContain("Agent acceptance: FAIL");
 
-      // A passing criterion with a nonzero exit is still PASS.
+      // A passing criterion whose transcript says Exit code: 1 is still PASS.
       await toAcceptance(h, "STA-2");
       const passing = {
         v: 1,
@@ -192,88 +225,56 @@ describe("inline command evidence", () => {
     }
   });
 
-  test("mixed URL and transcript evidence publishes both", async () => {
-    const h = await harness();
-    try {
-      await toAcceptance(h, "STA-1");
-      const payload = {
-        v: 1,
-        kind: "acceptance",
-        verdict: "pass",
-        checkpoint: HEAD,
-        results: [
-          { criterion: "works", expected: "cli prints ok", actual: "cli printed ok", evidence: transcript("mycli run", 0, "ok"), ok: true },
-          { criterion: "shines", expected: "shines", actual: "shines", evidence: "https://example.test/shines", ok: true },
-        ],
-        environment: "test lab",
-        reproduction: "run mycli run",
-      };
-      expect((await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload))).ok).toBe(true);
-      const issue = issueOf(h, "STA-1");
-      expect(issue.attachments.map((a) => a.url)).toEqual(["https://example.test/shines"]);
-      const receipt = issue.comments.at(-1)!.body;
-      expect(receipt).toContain("mycli run");
-      expect(receipt).toContain("https://example.test/shines");
-    } finally {
-      h.stop();
-    }
-  });
-
   test("schema errors name the fault and write nothing to Linear", async () => {
     const h = await harness();
     try {
       await toAcceptance(h, "STA-1");
-      const cases: { name: string; evidence: unknown; message: string }[] = [
-        {
-          name: "missing command",
-          evidence: { kind: "command", exitCode: 0, stdout: "out", stderr: "" },
-          message: 'needs a non-empty "command"',
-        },
-        {
-          name: "missing exit code",
-          evidence: { kind: "command", command: "mycli run", stdout: "out", stderr: "" },
-          message: 'needs an integer "exitCode"',
-        },
-        {
-          name: "empty output",
-          evidence: transcript("mycli run", 1, "  ", ""),
-          message: 'needs non-empty "stdout" or "stderr"',
-        },
-        {
-          name: "oversize transcript",
-          evidence: transcript("mycli run", 1, "x".repeat(MAX_COMMAND_EVIDENCE_CHARS + 1)),
-          message: `exceeds ${MAX_COMMAND_EVIDENCE_CHARS} chars`,
-        },
-        {
-          name: "non-URL string",
-          evidence: "Command output: everything passed",
-          message: "absolute http or https URL or a command transcript",
-        },
+      const cases: { name: string; evidence: unknown; result?: boolean; ok: boolean; message: string }[] = [
         {
           name: "non-string evidence",
           evidence: 42,
-          message: 'must be an absolute http or https URL or a command transcript',
+          ok: false,
+          message: "must be a Markdown string",
         },
         {
-          name: "non-integer exit code",
-          evidence: { kind: "command", command: "mycli run", exitCode: 1.5, stdout: "out", stderr: "" },
-          message: 'needs an integer "exitCode"',
+          name: "command object taxonomy",
+          evidence: { kind: "command", command: "mycli run", exitCode: 0, stdout: "out", stderr: "" },
+          ok: false,
+          message: "must be a Markdown string",
         },
         {
-          name: "non-string output",
-          evidence: { kind: "command", command: "mycli run", exitCode: 1, stdout: 123, stderr: "" },
-          message: 'needs "stdout" and "stderr" strings',
+          name: "missing evidence key",
+          evidence: undefined,
+          result: true,
+          ok: false,
+          message: 'every acceptance result needs {"criterion", "expected", "actual", "evidence", "ok"}',
+        },
+        {
+          // Isolates the evidence-presence half of the PASS gate: the result
+          // is ok, only its evidence is empty.
+          name: "empty evidence on a PASS",
+          evidence: "",
+          ok: true,
+          message: "PASS verdict needs every criterion ok with evidence",
         },
       ];
       for (const c of cases) {
+        const result: Record<string, unknown> = {
+          criterion: "works",
+          expected: "ok",
+          actual: "broken",
+          evidence: c.evidence,
+          ok: c.ok,
+        };
+        if (c.result) delete result["evidence"];
         const payload = {
           v: 1,
           kind: "acceptance",
-          verdict: "fail",
+          verdict: "pass",
           checkpoint: HEAD,
           results: [
-            { criterion: "works", expected: "ok", actual: "broken", evidence: c.evidence, ok: false },
-            { criterion: "shines", expected: "shines", actual: "shines", evidence: "https://example.test/shines", ok: true },
+            result,
+            { criterion: "shines", expected: "shines", actual: "shines", evidence: "shines", ok: true },
           ],
           environment: "test lab",
           reproduction: "run mycli run",
@@ -300,18 +301,54 @@ describe("inline command evidence", () => {
     }
   });
 
-  test("published receipt reads back with expected, actual, and transcript", async () => {
+  test("a failing criterion with empty evidence is refused", async () => {
     const h = await harness();
     try {
       await toAcceptance(h, "STA-1");
       const payload = {
         v: 1,
         kind: "acceptance",
+        verdict: "fail",
+        checkpoint: HEAD,
+        results: [
+          { criterion: "works", expected: "ok", actual: "broken", evidence: "   ", ok: false },
+          { criterion: "shines", expected: "shines", actual: "shines", evidence: "shines", ok: true },
+        ],
+        environment: "test lab",
+        reproduction: "run mycli run",
+      };
+      const out = await ticketCommand(h, "STA-1", "submit", JSON.stringify(payload));
+      expect(out.ok).toBe(false);
+      expect(out.text).toContain("every failing criterion needs reproducible");
+      expect(issueOf(h, "STA-1").labelIds).toEqual([IN_PROGRESS]);
+    } finally {
+      h.stop();
+    }
+  });
+
+  test("published receipt renders separate English headings and preserves nested Markdown", async () => {
+    const h = await harness();
+    try {
+      await toAcceptance(h, "STA-1");
+      const evidence = [
+        "```text",
+        "$ mycli run --check",
+        "all green",
+        "Exit code: 0",
+        "```",
+        "",
+        "![Relevant screenshot](https://example.com/evidence.png)",
+        "",
+        "[Recording](https://example.com/recording)",
+      ].join("\n");
+      const payload = {
+        v: 1,
+        kind: "acceptance",
         verdict: "pass",
         checkpoint: HEAD,
         results: [
-          { criterion: "works", expected: "cli prints ok", actual: "cli printed ok", evidence: transcript("mycli run --check", 0, "all green"), ok: true },
-          { criterion: "shines", expected: "bright", actual: "bright", evidence: transcript("mycli shine", 0, "", "shone with warnings"), ok: true },
+          { criterion: "works", expected: "cli prints ok", actual: "cli printed ok", evidence, ok: true },
+          { criterion: "shines", expected: "bright", actual: "bright", evidence: "shone with warnings", ok: true },
         ],
         environment: "test lab",
         reproduction: "run mycli run --check",
@@ -320,15 +357,21 @@ describe("inline command evidence", () => {
       const read = await h.client.fetchIssue(issueOf(h, "STA-1").id);
       const receipt = read!.comments.at(-1)!.body;
       for (const needle of [
+        "**Expected**",
+        "**Actual**",
+        "**Evidence**",
         "cli prints ok",
         "cli printed ok",
-        "mycli run --check",
-        "all green",
-        "bright",
         "shone with warnings",
+        "  ```text",
+        "  $ mycli run --check",
+        "  ![Relevant screenshot](https://example.com/evidence.png)",
+        "  [Recording](https://example.com/recording)",
       ]) {
         expect(receipt).toContain(needle);
       }
+      expect(receipt).not.toContain("Command:");
+      expect(receipt).not.toContain("Command ");
     } finally {
       h.stop();
     }
