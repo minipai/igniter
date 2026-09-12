@@ -1,4 +1,4 @@
-import type { CommandRequest, WorkerAnswer, WorkerProfile, WorkerRole } from "../workflow/request.ts";
+import type { CommandRequest, WorkerAnswer, WorkerRole } from "../workflow/request.ts";
 import type { CliRuntime } from "./runtime.ts";
 
 export function commandActions(runtime: CliRuntime, session: { code: number }) {
@@ -67,8 +67,8 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
     await run({ command: "cancel", ticket, reason: required(options.reason, "reason") });
   }
 
-  async function workerStartCommand(ticket: string, options: { role?: string }): Promise<void> {
-    await run({ command: "worker.start", ticket, role: workerRole(options.role) });
+  async function workerStartCommand(ticket: string, options: { role?: string; agent?: string }): Promise<void> {
+    await run({ command: "worker.start", ticket, role: workerRole(options.role), agent: options.agent });
   }
 
   async function workerSendCommand(ticket: string, words: string[], options: { role?: string }): Promise<void> {
@@ -80,7 +80,7 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
       command: "worker.restart",
       ticket,
       role: workerRole(options["role"]),
-      profile: workerProfile(options["profile"]),
+      agent: options["agent"] as string | undefined,
       harness: options["harness"] as string | undefined,
       model: options["model"] as string | undefined,
       effort: options["effort"] as string | undefined,
@@ -123,12 +123,6 @@ function workerRole(value: unknown): WorkerRole | undefined {
   if (value === undefined) return undefined;
   if (value === "build" || value === "acceptance" || value === "deliver") return value;
   throw new Error("--role must be build, acceptance, or deliver");
-}
-
-function workerProfile(value: unknown): WorkerProfile | undefined {
-  if (value === undefined) return undefined;
-  if (value === "builder" || value === "acceptance" || value === "deliverer" || value === "fallback") return value;
-  throw new Error("--profile must be builder, acceptance, deliverer, or fallback");
 }
 
 function workerAnswer(value: unknown): WorkerAnswer {

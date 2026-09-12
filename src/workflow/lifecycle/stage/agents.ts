@@ -2,8 +2,8 @@
 // of the cross-harness `effort` field into each harness's native
 // reasoning/thinking launch option.
 //
-// Every profile — commander, builder, acceptance, deliverer, and the builder
-// fallback — is `harness` + `model` + optional `effort`. `effort` may be
+// Every profile — commander, builder, acceptance, deliverer, and each named
+// candidate — is `harness` + `model` + optional `effort`. `effort` may be
 // omitted to keep the harness default; once set it must become a real
 // launch argument or fail explicitly before launch, never silently dropped.
 //
@@ -22,7 +22,13 @@
 // Any other harness fails too: without a known model flag the profile's
 // model could not reach the launch, and dispatch never drops it silently.
 
-import type { CommanderAgentConfig, CommanderConfig, DispatchConfig } from "../../config/config.ts";
+import type {
+  CommanderAgentConfig,
+  CommanderConfig,
+  CommanderStage,
+  DispatchConfig,
+} from "../../config/config.ts";
+import { agentByName, STAGE_AGENTS } from "../../config/config.ts";
 
 export type { CommanderAgentConfig };
 
@@ -109,8 +115,8 @@ export function foregroundCommandFor(profile: CommanderAgentConfig, workOrder: s
 // metadata at worker start, so retries and recovery reuse the run's own
 // profiles instead of re-reading a possibly edited configuration.
 //
-// Herdr caps one metadata report at 16 tokens. Stage profiles use three
-// JSON tokens, with the builder fallback nested inside the builder blob.
+// Herdr caps one metadata report at 16 tokens. Stage profiles plus their
+// selected candidate names use six small tokens.
 // ---------------------------------------------------------------------------
 
 /** Workspace metadata keys carrying the worker-start stage-agent profiles. */
@@ -120,37 +126,80 @@ export const PROFILE_TOKENS = [
   "profile_deliverer",
 ] as const;
 
+/** Workspace metadata keys carrying the selected candidate name per stage. */
+export const SELECTED_TOKENS = [
+  "agent_builder",
+  "agent_acceptance",
+  "agent_deliverer",
+] as const;
+
 interface FrozenProfile {
   harness?: unknown;
   model?: unknown;
   effort?: unknown;
-  fallback?: FrozenProfile;
 }
 
 function freezeProfile(profile: CommanderAgentConfig): string {
   return JSON.stringify(profile);
 }
 
-/** The worker-start snapshot of every stage-agent profile for the run: three tokens. */
+/** The worker-start snapshot of every stage-agent profile for the run: three
+ *  profiles plus their default candidate names. */
 export function recordStageProfiles(config: DispatchConfig): Record<string, string> {
   const agents = config.commander.agents;
   return {
     profile_builder: freezeProfile(agents.builder),
     profile_acceptance: freezeProfile(agents.acceptance),
     profile_deliverer: freezeProfile(agents.deliverer),
+    agent_builder: "builder",
+    agent_acceptance: "acceptance",
+    agent_deliverer: "deliverer",
   };
 }
 
-/** The run-recorded profile tokens already on a workspace. A rebuild
- *  merges these over fresh defaults so it never downgrades the run record
- *  with a possibly edited configuration. */
+/** The run-recorded profile and candidate tokens already on a workspace. A
+ *  rebuild merges these over fresh defaults so it never downgrades the run
+ *  record with a possibly edited configuration. */
 export function keptStageProfiles(tokens: Record<string, string>): Record<string, string> {
   const kept: Record<string, string> = {};
-  for (const key of PROFILE_TOKENS) {
+  for (const key of [...PROFILE_TOKENS, ...SELECTED_TOKENS]) {
     const value = tokens[key];
     if (value !== undefined) kept[key] = value;
   }
   return kept;
+}
+
+/** The workspace metadata key naming the candidate selected for a stage. */
+export function selectedAgentToken(stage: CommanderStage): string {
+  return `agent_${STAGE_AGENTS[stage]}`;
+}
+
+export interface SelectedStageAgent {
+  /** The selected candidate name, kept apart from the stage role. */
+  name: string;
+  profile: CommanderAgentConfig;
+}
+
+/**
+ * Resolve the effective agent for a stage. An explicit name must exist in the
+ * live merged agents map and wins; otherwise the run's recorded selection (or
+ * the stage default) is reused from the frozen profile token. The name is
+ * display identity only: it never changes the stage role, worker identity,
+ * worktree, scratch, or receipt binding.
+ */
+export function selectStageAgent(
+  commander: CommanderConfig,
+  tokens: Record<string, string>,
+  stage: CommanderStage,
+  requested?: string,
+): SelectedStageAgent {
+  const role = STAGE_AGENTS[stage];
+  if (requested !== undefined) {
+    return { name: requested, profile: agentByName(commander.agents, requested) };
+  }
+  const name = tokens[selectedAgentToken(stage)] ?? role;
+  const profile = commanderConfigForRun(commander, tokens).agents[role];
+  return { name, profile };
 }
 
 /**
@@ -160,16 +209,8 @@ export function keptStageProfiles(tokens: Record<string, string>): Record<string
  * for stage profiles too, not just the Commander.
  */
 export function launchProblems(config: DispatchConfig): string[] {
-  const agents = config.commander.agents;
-  const profiles: [string, CommanderAgentConfig][] = [
-    ["commander", agents.commander],
-    ["builder", agents.builder],
-    ["builder.fallback", agents.builder.fallback],
-    ["acceptance", agents.acceptance],
-    ["deliverer", agents.deliverer],
-  ];
   const problems: string[] = [];
-  for (const [name, profile] of profiles) {
+  for (const [name, profile] of Object.entries(config.commander.agents)) {
     try {
       launchArgsFor(profile);
     } catch (error) {
@@ -197,10 +238,10 @@ function parseFrozen(raw: string | undefined): FrozenProfile | undefined {
   }
 }
 
-function thawBase(frozen: FrozenProfile | undefined, fallback: CommanderAgentConfig): CommanderAgentConfig {
-  if (frozen === undefined) return { ...fallback };
-  const harness = thawField(frozen, "harness") ?? fallback.harness;
-  const model = thawField(frozen, "model") ?? fallback.model;
+function thawBase(frozen: FrozenProfile | undefined, base: CommanderAgentConfig): CommanderAgentConfig {
+  if (frozen === undefined) return { ...base };
+  const harness = thawField(frozen, "harness") ?? base.harness;
+  const model = thawField(frozen, "model") ?? base.model;
   const effort = thawField(frozen, "effort");
   return effort === undefined ? { harness, model } : { harness, model, effort };
 }
@@ -211,34 +252,27 @@ function thawBase(frozen: FrozenProfile | undefined, fallback: CommanderAgentCon
  * absent even when the live configuration now sets one — only a run that
  * never recorded the profile inherits the live value.
  */
-function thawProfile(raw: string | undefined, fallback: CommanderAgentConfig): CommanderAgentConfig {
-  return thawBase(parseFrozen(raw), fallback);
+function thawProfile(raw: string | undefined, base: CommanderAgentConfig): CommanderAgentConfig {
+  return thawBase(parseFrozen(raw), base);
 }
 
 /**
  * The Commander work-order config for a resumed or recovered run: recorded
- * profile tokens win, the live configuration fills whatever the run never
- * recorded (older runs). The effective builder model
- * override (`builder` token, from `worker restart --builder`) still
- * wins for the Build stage only.
+ * profile tokens win for each stage, and the live configuration fills
+ * whatever the run never recorded (older runs). Other named candidates stay
+ * live — only the stage roles are frozen by the run record.
  */
 export function commanderConfigForRun(
   commander: CommanderConfig,
   tokens: Record<string, string>,
 ): CommanderConfig {
-  const frozenBuilder = parseFrozen(tokens["profile_builder"]);
-  const builder = thawBase(frozenBuilder, commander.agents.builder);
+  const builder = thawBase(parseFrozen(tokens["profile_builder"]), commander.agents.builder);
+  // A legacy builder-model override token still wins for Build only.
   if (tokens["builder"] !== undefined) builder.model = tokens["builder"];
-  const builderFallback = thawBase(
-    frozenBuilder?.fallback !== undefined && isFrozen(frozenBuilder.fallback)
-      ? frozenBuilder.fallback
-      : undefined,
-    commander.agents.builder.fallback,
-  );
   return {
     agents: {
-      commander: commander.agents.commander,
-      builder: { ...builder, fallback: builderFallback },
+      ...commander.agents,
+      builder,
       acceptance: thawProfile(tokens["profile_acceptance"], commander.agents.acceptance),
       deliverer: thawProfile(tokens["profile_deliverer"], commander.agents.deliverer),
     },

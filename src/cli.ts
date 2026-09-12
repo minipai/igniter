@@ -78,13 +78,14 @@ function workerCli(
 
   cli.command("start <ticket>", "Start the stage worker")
     .option("--role <role>", "build, acceptance, or deliver")
+    .option("--agent <name>", "Named agent profile (default: the stage agent)")
     .action(actions.workerStartCommand);
   cli.command("send <ticket> <...text>", "Send text to the worker")
     .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerSendCommand);
-  cli.command("restart <ticket>", "Restart with optional profile overrides")
+  cli.command("restart <ticket>", "Restart with an optional named agent or field overrides")
     .option("--role <role>", "build, acceptance, or deliver")
-    .option("--profile <profile>", "builder, acceptance, deliverer, or fallback")
+    .option("--agent <name>", "Named agent profile (default: the run's selection)")
     .option("--harness <harness>", "Agent harness")
     .option("--model <model>", "Agent model")
     .option("--effort <effort>", "Reasoning effort")

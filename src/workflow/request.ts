@@ -1,5 +1,4 @@
 export type WorkerRole = "build" | "acceptance" | "deliver";
-export type WorkerProfile = "builder" | "acceptance" | "deliverer" | "fallback";
 export type WorkerAnswer = "y" | "n";
 
 export type CommandRequest =
@@ -13,13 +12,13 @@ export type CommandRequest =
   | { command: "block"; ticket: string; reason: string }
   | { command: "unblock"; ticket: string }
   | { command: "cancel"; ticket: string; reason: string }
-  | { command: "worker.start"; ticket: string; role?: WorkerRole }
+  | { command: "worker.start"; ticket: string; role?: WorkerRole; agent?: string }
   | { command: "worker.send"; ticket: string; role?: WorkerRole; text: string }
   | {
     command: "worker.restart";
     ticket: string;
     role?: WorkerRole;
-    profile?: WorkerProfile;
+    agent?: string;
     harness?: string;
     model?: string;
     effort?: string;

@@ -2,7 +2,11 @@ import type { CommandResult } from "../../config/claims.ts";
 import { STAGE_AGENTS, type CommanderAgentConfig } from "../../config/config.ts";
 import type { CommandContext } from "../../context.ts";
 import type { ExtractCommand } from "../../lifecycle/stage/worker-target.ts";
-import { commanderConfigForRun, launchFor } from "../../lifecycle/stage/agents.ts";
+import {
+  launchFor,
+  selectStageAgent,
+  selectedAgentToken,
+} from "../../lifecycle/stage/agents.ts";
 import { bareTodoState, deriveState, latestValidReceipt } from "../../lifecycle/ticket/protocol.ts";
 import { stageForStatus, startStageTicket } from "../../lifecycle/stage/stage-start.ts";
 import { readWorkerView, selectWorker } from "../../lifecycle/stage/worker-target.ts";
@@ -19,10 +23,11 @@ export async function restartWorker(
     throw new Error(`cannot restart ${stage} while ticket is ${state.status}+${state.progress ?? "none"}`);
   }
 
-  const config = commanderConfigForRun(ctx.resolved.config.commander, view.workspace?.tokens ?? {});
-  let profile: CommanderAgentConfig = config.agents[STAGE_AGENTS[stage]];
-  if (request.profile === "fallback") profile = config.agents.builder.fallback;
-  else if (request.profile) profile = config.agents[request.profile];
+  // An explicit --agent selects a named candidate; otherwise the run's own
+  // recorded selection is reused, never silently reverted to the default.
+  const tokens = view.workspace?.tokens ?? {};
+  const selected = selectStageAgent(ctx.resolved.config.commander, tokens, stage, request.agent);
+  let profile: CommanderAgentConfig = selected.profile;
   profile = {
     harness: request.harness ?? profile.harness,
     model: request.model ?? profile.model,
@@ -50,9 +55,8 @@ export async function restartWorker(
   });
   if (agent && !rebuilt) await ctx.workspaces.stopAgent(worker);
   await ctx.workspaces.reportMetadata(view.workspace.workspaceId, {
-    [`profile_${STAGE_AGENTS[stage]}`]: JSON.stringify(
-      stage === "build" ? { ...profile, fallback: config.agents.builder.fallback } : profile,
-    ),
+    [`profile_${STAGE_AGENTS[stage]}`]: JSON.stringify(profile),
+    [selectedAgentToken(stage)]: selected.name,
     ...(stage === "build" ? { builder: null } : {}),
   });
   const result = await startStageTicket(ctx, view.full, state, { stage, rebuilding: true });

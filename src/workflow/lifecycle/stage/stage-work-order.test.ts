@@ -46,6 +46,7 @@ function input(overrides: Partial<StageWorkOrderInput> = {}): StageWorkOrderInpu
     resultPath: "/scratch/sta-241/builder/result.md",
     stage: "build",
     promptPath: "/igniter/stages/build.md",
+    agent: "builder",
     harness: "opencode",
     model: "opencode-go/deepseek-v4-flash",
     ...overrides,

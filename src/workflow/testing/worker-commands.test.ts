@@ -198,6 +198,103 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
+  test("an explicit named candidate starts the same role worker on the merged profile", async () => {
+    const h = await setup();
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_expert" }, h.ctx);
+    expect(out.ok).toBe(true);
+    expect(out.data).toMatchObject({
+      worker: "builder-sta-244",
+      role: "build",
+      agent: "builder_expert",
+      harness: "codex",
+      model: "gpt-5.6-sol",
+      confirmed: true,
+    });
+    expect(out.text).toContain("agent builder_expert");
+    // The candidate changes only the launch profile, not the stage worker name.
+    const launch = h.workspaces.calls.find((c) => c.method === "agent.start");
+    expect(launch?.params).toMatchObject({ kind: "codex", name: "builder-sta-244", args: ["-m", "gpt-5.6-sol"] });
+    const order = h.workspaces.promptsFor("builder-sta-244")[0]!;
+    expect(order).toContain("`builder_expert` — harness `codex`; model `gpt-5.6-sol`");
+    expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
+    readsOnly(h.client);
+  });
+
+  test("an unknown named candidate is refused before any workspace or worker", async () => {
+    const h = await setup();
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_experts" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain('unknown agent "builder_experts"');
+    expect(h.workspaces.calls).toHaveLength(0);
+    expect(h.workspaces.workspaces).toHaveLength(0);
+    expect(h.workspaces.agents).toHaveLength(0);
+    expect(h.git.commands).toHaveLength(0);
+    expect(h.issue.stateId).toBe("st-todo");
+    expect(h.issue.labelIds).toEqual([]);
+    readsOnly(h.client);
+  });
+
+  test("a known candidate with an unlaunchable profile is refused before any workspace", async () => {
+    const h = await setup();
+    h.ctx.resolved.config = parseDispatchConfig({
+      project: "igniter",
+      team: "Starcoder",
+      agents: { builder_backup: { effort: "turbo" } },
+    });
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_backup" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain('unsupported effort "turbo"');
+    expect(h.workspaces.calls).toHaveLength(0);
+    expect(h.git.commands).toHaveLength(0);
+    expect(h.issue.stateId).toBe("st-todo");
+    readsOnly(h.client);
+  });
+
+  test("a project-added named candidate starts on its own merged profile", async () => {
+    const h = await setup();
+    h.ctx.resolved.config = parseDispatchConfig({
+      project: "igniter",
+      team: "Starcoder",
+      agents: { builder_daily: { harness: "opencode", model: "opencode/daily" } },
+    });
+    const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_daily" }, h.ctx);
+    expect(out.ok).toBe(true);
+    expect(out.data).toMatchObject({ agent: "builder_daily", harness: "opencode", model: "opencode/daily" });
+    const launch = h.workspaces.calls.find((c) => c.method === "agent.start");
+    expect(launch?.params).toMatchObject({
+      kind: "opencode",
+      name: "builder-sta-244",
+      args: ["-m", "opencode/daily"],
+    });
+    expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
+    readsOnly(h.client);
+  });
+
+  test("restart selects a named candidate and keeps it on a retry without a new selection", async () => {
+    const h = await setup();
+    await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    const out = await workerCommand({ command: "worker.restart", ticket: "STA-244", agent: "builder_backup" }, h.ctx);
+    expect(out.ok).toBe(true);
+    expect(out.data).toMatchObject({ agent: "builder_backup", model: "gpt-5.6-luna", confirmed: true });
+    const retry = await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx);
+    expect(retry.ok).toBe(true);
+    expect(retry.data).toMatchObject({ agent: "builder_backup", model: "gpt-5.6-luna" });
+    const order = h.workspaces.promptsFor("builder-sta-244").at(-1)!;
+    expect(order).toContain("`builder_backup` — harness `codex`; model `gpt-5.6-luna`");
+    expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
+    readsOnly(h.client);
+  });
+
+  test("restart refuses an unknown agent before stopping the live worker", async () => {
+    const h = await setup();
+    await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    const out = await workerCommand({ command: "worker.restart", ticket: "STA-244", agent: "nope" }, h.ctx);
+    expect(out.ok).toBe(false);
+    expect(out.text).toContain('unknown agent "nope"');
+    expect(h.workspaces.calls.filter((c) => c.method === "agent.stop")).toHaveLength(0);
+    readsOnly(h.client);
+  });
+
   test("restart stop failure retries the saved effective profile and actual rebuild", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
