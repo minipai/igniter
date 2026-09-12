@@ -108,7 +108,7 @@ describe("e2e full lifecycle to Done", () => {
 
       // Approval binds the current receipt instead of implicitly continuing.
       const acceptanceStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-10", "--json"])).stdout) as { receipt: { id: string } };
-      const approved = expectOk(await e2e.cli(["approve", "STA-10", "--receipt", acceptanceStatus.receipt.id]));
+      const approved = expectOk(await e2e.cli(["approve", "STA-10", acceptanceStatus.receipt.id]));
       expect(approved.stdout).toContain("acceptance+complete → deliver+pending");
       issue = (await e2e.client.fetchIssue("STA-10"))!;
       expect(issue.state.name).toBe("Deliver");
@@ -130,7 +130,7 @@ describe("e2e full lifecycle to Done", () => {
 
       // Done approval leaves the checkout intact until explicit worker stop.
       const deliverStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-10", "--json"])).stdout) as { receipt: { id: string } };
-      const done = expectOk(await e2e.cli(["approve", "STA-10", "--receipt", deliverStatus.receipt.id]));
+      const done = expectOk(await e2e.cli(["approve", "STA-10", deliverStatus.receipt.id]));
       expect(done.stdout).toContain("deliver+complete → done");
       expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).toContain("worktrees/sta-10");
       expectOk(await e2e.cli(["worker", "stop", "STA-10"]));
@@ -256,7 +256,7 @@ describe("e2e owner gates", () => {
         await e2e.cli(["submit", "STA-13", "--input", "-"], { stdin: JSON.stringify(acceptancePayload(head13, "pass")) }),
       );
       const acceptanceStatus = JSON.parse(expectOk(await e2e.cli(["status", "STA-13", "--json"])).stdout) as { receipt: { id: string } };
-      expectOk(await e2e.cli(["approve", "STA-13", "--receipt", acceptanceStatus.receipt.id]));
+      expectOk(await e2e.cli(["approve", "STA-13", acceptanceStatus.receipt.id]));
       expectOk(await e2e.startStage("STA-13"));
       git(["merge", "feature/sta-13", "--no-ff", "-m", "land STA-13"], e2e.repoDir);
       expectOk(

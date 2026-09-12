@@ -79,7 +79,7 @@ export async function approveTicket(
   // The durable intent is written before either status or Progress. It is
   // also the audit record: a retry uses exactly this receipt and transition.
   // A bare ticket argument cannot distinguish a late retry from approval of
-  // the next completed stage, so the public command requires --receipt.
+  // the next completed stage, so the public command requires a receipt.
   const body = `Approved ${source}+complete → ${target}${target === "done" ? "" : "+pending"}; receipt ${receiptId}, checkpoint ${checkpoint}.\n\n` +
     approvalEventBody(full.identifier, receiptId, submission, checkpoint, source, target);
   const identity: ApprovalIdentity = { ticket: full.identifier, receipt: receiptId, submission, checkpoint, source, target };

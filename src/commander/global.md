@@ -71,7 +71,7 @@ There is no resident commander-ticket agent and no resident pane.
    the previous role explicitly when no longer useful; submit does not stop it.
 7. At first Build+Complete, wait for the owner's approval. At
    Acceptance+Complete PASS, wait for delivery approval. After approval, run
-   `igniter approve <ticket> --receipt <id>`, then status, worker start,
+   `igniter approve <ticket> <id>`, then status, worker start,
    confirmed delivery, and begin. After Deliver+Complete, confirm landing with
    the owner, approve the Deliver receipt, then explicitly stop workers for safe
    Done cleanup. Approval never starts the next worker.

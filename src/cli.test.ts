@@ -206,7 +206,7 @@ describe("CAC command actions", () => {
       { argv: ["start"], request: { command: "start" } },
       { argv: ["begin", "STA-1"], request: { command: "begin", ticket: "STA-1" } },
       { argv: ["reconcile", "STA-1"], request: { command: "reconcile", ticket: "STA-1" } },
-      { argv: ["approve", "STA-1", "--receipt", "r-1"], request: { command: "approve", ticket: "STA-1", receipt: "r-1" } },
+      { argv: ["approve", "STA-1", "r-1"], request: { command: "approve", ticket: "STA-1", receipt: "r-1" } },
       { argv: ["fail", "STA-1", "--reason", "wedged"], request: { command: "fail", ticket: "STA-1", reason: "wedged" } },
       { argv: ["submit", "STA-1", "--input", "-"], request: { command: "submit", ticket: "STA-1", payload: { ok: true } }, input: '{"ok":true}' },
       { argv: ["block", "STA-1", "--reason", "waiting"], request: { command: "block", ticket: "STA-1", reason: "waiting" } },
@@ -250,7 +250,7 @@ describe("CAC validation and help", () => {
     { args: ["--help"], usage: "igniter <command>", option: "--version" },
     { args: ["status", "--help"], usage: "igniter status [ticket]", option: "--json" },
     { args: ["start", "--help"], usage: "igniter start", option: "--help" },
-    { args: ["approve", "--help"], usage: "igniter approve <ticket>", option: "--receipt <id>" },
+    { args: ["approve", "--help"], usage: "igniter approve <ticket> <receipt>", option: "-h, --help" },
     { args: ["submit", "--help"], usage: "igniter submit <ticket>", option: "--input <source>" },
     { args: ["cancel", "--help"], usage: "igniter cancel <ticket>", option: "--reason <text>" },
     { args: ["worker", "--help"], usage: "igniter worker <command>", option: "restart <ticket>" },
@@ -263,13 +263,27 @@ describe("CAC validation and help", () => {
     expect(result.stderr).toBe("");
   });
 
+  test("approve help no longer advertises the removed option", async () => {
+    const result = await runProcess(["approve", "--help"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("--receipt");
+  });
+
+  test("a missing receipt is rejected by CAC's required-argument validation", async () => {
+    const result = await runInProcess(["approve", "STA-1"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("missing required args for command");
+    expect(result.seen).toEqual([]);
+  });
+
   test.each([
-    ["begin"], ["approve", "STA-1"], ["fail", "STA-1"], ["submit", "STA-1"],
+    ["begin"], ["fail", "STA-1"], ["submit", "STA-1"],
     ["block", "STA-1"], ["cancel", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
     ["status", "--bogus"], ["start", "STA-1", "--publish-acceptance"],
     ["worker", "start", "STA-1", "--role", "other"],
     ["worker", "restart", "STA-1", "--profile", "other"],
     ["worker", "answer", "STA-1", "yes"],
+    ["approve", "STA-1", "--receipt", "r-1"],
   ].map((argv) => ({ argv })))("invalid syntax never runs a command: $argv", async ({ argv }) => {
     const result = await runInProcess(argv);
     expect(result.code).toBe(1);

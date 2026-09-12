@@ -137,7 +137,7 @@ call Linear directly or through MCP, or publish receipts.
   - Acceptance PASS lands in Acceptance + Complete.
   - Acceptance FAIL lands in Build + Pending.
   - Deliver lands in Deliver + Complete.
-- `igniter approve <ticket> --receipt <id>` records the owner's explicit approval of the
+- `igniter approve <ticket> <id>` records the owner's explicit approval of the
   current completed stage, bound to the receipt identity returned by status.
   Never pass `--to`: a valid Build receipt permits
   Build + Complete to Acceptance + Pending; a valid Acceptance PASS receipt permits
@@ -354,7 +354,7 @@ areas. Block on a listed risk and wait for the owner.
 
 Build evidence is self-acceptance, never approval. After the first Build
 submit the ticket rests at Build + Complete: do not create the Acceptance
-worker until the owner approves and `igniter approve <ticket> --receipt <id>` records the
+worker until the owner approves and `igniter approve <ticket> <id>` records the
 Build handoff to Acceptance + Pending. A correction Build needs no
 owner step and returns straight to Acceptance + Pending. There is no code audit by
 default. Only the owner may request a bounded read-only audit, and it never
@@ -397,7 +397,7 @@ then status, worker start, confirmed delivery, `igniter begin <ticket>`, and con
 
 ## Deliver
 
-The owner's explicit approval authorizes `igniter approve <ticket> --receipt <id>` to move
+The owner's explicit approval authorizes `igniter approve <ticket> <id>` to move
 Acceptance + Complete to Deliver + Pending. Read status, run worker start, confirm
 delivery, then begin. Pass the accepted checkpoint and repository landing
 instructions to the configured Deliver worker.
