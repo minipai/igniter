@@ -35,8 +35,8 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
     await run({ command: "reconcile", ticket });
   }
 
-  async function approveCommand(ticket: string, options: { receipt?: string }): Promise<void> {
-    await run({ command: "approve", ticket, receipt: required(options.receipt, "receipt") });
+  async function approveCommand(ticket: string, receipt: string): Promise<void> {
+    await run({ command: "approve", ticket, receipt });
   }
 
   async function failCommand(ticket: string, options: { reason?: string }): Promise<void> {

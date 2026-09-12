@@ -595,7 +595,7 @@ describe("submit", () => {
       // status <ticket> --json waits on the owner: no workspace command applies.
       const state = (await ticketCommand(h, "STA-1", "status")).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "build", progress: "complete", next: ["approve"] });
-      expect(state["note"]).toContain("owner");
+      expect(state["note"]).toContain("approve <ticket> <receipt.id>");
       expect((state["submit_schema"] as Record<string, unknown>)["kind"]).toBe("build");
       // No Acceptance worker can start while the owner has not moved it.
       expect((await ticketCommand(h, "STA-1", "begin")).ok).toBe(false);
@@ -686,6 +686,7 @@ describe("submit", () => {
       expect(h.workspaces.tokensFor("STA-1")).not.toHaveProperty("receipt_kind");
       const state = (await ticketCommand(h, "STA-1", "status")).data as Record<string, unknown>;
       expect(state).toMatchObject({ status: "acceptance", progress: "complete", next: ["approve"] });
+      expect(state["note"]).toContain("approve <ticket> <receipt.id>");
     } finally {
       h.stop();
     }

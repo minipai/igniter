@@ -39,8 +39,7 @@ function mainCli(
     .action(actions.beginCommand);
   cli.command("reconcile <ticket>", "Reconcile ticket protocol state")
     .action(actions.reconcileCommand);
-  cli.command("approve <ticket>", "Approve a specific receipt")
-    .option("--receipt <id>", "Receipt ID (required)")
+  cli.command("approve <ticket> <receipt>", "Approve a specific receipt")
     .action(actions.approveCommand);
   cli.command("fail <ticket>", "Record a stage failure")
     .option("--reason <text>", "Failure reason (required)")

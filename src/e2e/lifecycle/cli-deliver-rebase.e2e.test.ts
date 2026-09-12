@@ -61,7 +61,7 @@ async function approve(e2e: E2E, ticket: string, file: string): Promise<string> 
     await e2e.cli(["submit", ticket, "--input", "-"], { stdin: JSON.stringify(acceptancePayload(head, "pass")) }),
   );
   const status = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } };
-  const approved = expectOk(await e2e.cli(["approve", ticket, "--receipt", status.receipt.id]));
+  const approved = expectOk(await e2e.cli(["approve", ticket, status.receipt.id]));
   expect(approved.stdout).toContain("acceptance+complete → deliver+pending");
   return head;
 }
@@ -144,7 +144,7 @@ describe("e2e deliver lands a rebased approval", () => {
       // Owner confirms both landings; worker stop performs cleanup explicitly.
       for (const ticket of ["STA-40", "STA-41"]) {
         const status = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } };
-        const done = expectOk(await e2e.cli(["approve", ticket, "--receipt", status.receipt.id]));
+        const done = expectOk(await e2e.cli(["approve", ticket, status.receipt.id]));
         expect(done.stdout).toContain("deliver+complete → done");
         expect(git(["worktree", "list", "--porcelain"], e2e.repoDir).stdout).toContain(`worktrees/${ticket.toLowerCase()}`);
         expectOk(await e2e.cli(["worker", "stop", ticket]));
@@ -224,7 +224,7 @@ describe("e2e deliver lands a rebased approval", () => {
       // Owner confirms the landing; worker stop cleans the content-equivalent
       // checkout even though the local branch tip is not an ancestor of main.
       const status = JSON.parse(expectOk(await e2e.cli(["status", "STA-43", "--json"])).stdout) as { receipt: { id: string } };
-      const done = expectOk(await e2e.cli(["approve", "STA-43", "--receipt", status.receipt.id]));
+      const done = expectOk(await e2e.cli(["approve", "STA-43", status.receipt.id]));
       expect(done.stdout).toContain("deliver+complete → done");
 
       expectOk(await e2e.cli(["worker", "stop", "STA-43"]));

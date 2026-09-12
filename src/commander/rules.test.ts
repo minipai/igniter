@@ -87,7 +87,7 @@ describe("Commander delivery protocol", () => {
       "`igniter status <ticket> --json`",
       "`igniter begin <ticket>`",
       "`igniter submit <ticket> --input -`",
-      "`igniter approve <ticket> --receipt <id>`",
+      "`igniter approve <ticket> <id>`",
       "`igniter worker start <ticket>`",
       "`igniter block <ticket> --reason",
       "`igniter unblock <ticket>`",
@@ -119,7 +119,7 @@ describe("Commander delivery protocol", () => {
     }
     // rules.md is the single owner of command semantics; global.md does not
     // repeat the command list.
-    expect(commonRules).toContain("--receipt <id>");
+    expect(commonRules).not.toContain("--receipt");
     for (const action of ["start", "send", "restart", "stop", "answer"]) {
       expect(commonRules).toContain(`igniter worker ${action} <ticket>`);
     }

@@ -51,7 +51,7 @@ the JSON unchanged with
 Missing, unfinished, malformed, or stale artifacts return to the same worker
 for correction; a valid schema never substitutes for content review. The first Build
 waits at Build + Complete for your approval. Your explicit approval
-allows `igniter approve ENG-123 --receipt <id>`, using the current receipt ID
+allows `igniter approve ENG-123 <id>`, using the current receipt ID
 from status, to move to Acceptance + Pending. A PASS Acceptance receipt similarly
 permits Deliver + Pending; a valid completed Deliver receipt permits Done.
 There is no `--to`: the completed stage determines the transition. Retrying

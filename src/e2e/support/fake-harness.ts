@@ -376,5 +376,5 @@ export function commitWorktreeFile(
 export async function ownerHandoff(e2e: E2E, ticket: string): Promise<void> {
   const state = JSON.parse(expectOk(await e2e.cli(["status", ticket, "--json"])).stdout) as { receipt: { id: string } | null };
   if (!state.receipt) throw new Error("owner handoff requires a completed receipt");
-  expectOk(await e2e.cli(["approve", ticket, "--receipt", state.receipt.id]));
+  expectOk(await e2e.cli(["approve", ticket, state.receipt.id]));
 }

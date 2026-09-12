@@ -1005,13 +1005,13 @@ function nextFor(status: ProtocolStatus, progress: ProtocolProgress | null): { n
   if (progress === "in_progress") return { next: ["submit", "block"], note: null };
   if (progress === "blocked") return { next: ["unblock"], note: null };
   if (status === "build" && progress === "complete") {
-    return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>" };
+    return { next: ["approve"], note: "after owner approval: approve <ticket> <receipt.id>" };
   }
   if (status === "acceptance" && progress === "complete") {
-    return { next: ["approve"], note: "after owner approval: approve <ticket> --receipt <receipt.id>; owner may send back to Build" };
+    return { next: ["approve"], note: "after owner approval: approve <ticket> <receipt.id>; owner may send back to Build" };
   }
   if (status === "deliver" && progress === "complete") {
-    return { next: ["approve"], note: "after owner confirms landing: approve <ticket> --receipt <receipt.id>" };
+    return { next: ["approve"], note: "after owner confirms landing: approve <ticket> <receipt.id>" };
   }
   return { next: [], note: `unexpected ${status}+${progress}; dispatch normalizes it` };
 }
