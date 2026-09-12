@@ -52,7 +52,10 @@ There is no resident commander-ticket agent and no resident pane.
 ## Run one stage
 
 1. `igniter status <ticket> --json`. Confirm the legal stage and read criteria,
-   checkpoint, and submit schema.
+   checkpoint, and submit schema. Before starting a stage, judge whether the
+   ticket's requirements and necessary decisions are clear enough to build;
+   when a missing decision would change the interface, behavior, or
+   implementation direction, block per the rules instead of starting.
 2. `igniter worker start <ticket>`. Confirm the initial work order was delivered;
    save the role, model, stable worker identity, and scratch result path.
 3. Only after confirmed delivery, `igniter begin <ticket>`. If the status write

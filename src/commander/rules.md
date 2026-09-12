@@ -106,6 +106,31 @@ repository's active task source.
 
 Inspect the branch and working tree before writing. Preserve unrelated work.
 
+## Clarity before starting
+
+A ticket is ready to build only when its requirements and the decisions it
+needs are clear enough to implement. Before `worker start` and before `begin`,
+read the ticket and, when needed, do limited read-only investigation. Ordinary
+implementation discovery or a large amount of work is not by itself a reason
+to block.
+
+Block instead of starting when a missing decision would change the interface,
+behavior, or implementation direction:
+
+- Use the existing `igniter block <ticket> --reason "..."`. It keeps the
+  status and sets Blocked: a ticket that has not started waits at Todo + Blocked.
+- Put the missing information or decision, why it blocks construction, and a
+  suggested option or next step in the reason, so the block comment is the
+  question.
+- Do not start another worker or post another block comment for the same
+  unchanged blockage. Wait until the missing information arrives.
+- Once it does, run `igniter unblock <ticket>` to return to Todo + Pending,
+  then judge clarity again before starting the worker and recording begin.
+
+Once a ticket has started, keep its current stage: block preserves the stage
+and its existing work, so tool, model-quota, or other execution problems use
+the same Blocked rules without discarding the worktree or checkpoint.
+
 ## Ticket commands
 
 Only the Global Commander runs ticket commands, always from the project
@@ -344,9 +369,10 @@ submission never replace the owner's approval gates.
 
 ## Build
 
-On Todo + Pending or Build + Pending, run status, worker start, confirm initial
-work-order delivery, then begin. On a returned Build + Pending, use the original
-Build role and the same sequence before continuing its correction.
+On Todo + Pending or Build + Pending, run status, apply the clarity judgment
+above, then worker start, confirm initial work-order delivery, then begin. On a
+returned Build + Pending, use the original Build role and the same sequence
+before continuing its correction.
 
 Before Acceptance, require a committed checkpoint and every check or artifact
 named by the repository workflow. Compare its diff with the configured Risk
