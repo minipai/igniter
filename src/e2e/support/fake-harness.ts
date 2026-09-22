@@ -80,7 +80,7 @@ export class E2E {
   readonly repoDir: string;
   readonly world: MemoryWorld;
   readonly client: MemoryLinearClient;
-  readonly workspaces = new FakeWorkspaces();
+  readonly workspaces: FakeWorkspaces;
   readonly decisions: string[] = [];
   readonly transcripts: CliResult[] = [];
   readonly stubBin: string;
@@ -95,6 +95,7 @@ export class E2E {
     promptDelivery: PromptDeliveryPolicy,
   ) {
     this.repoDir = repoDir;
+    this.workspaces = new FakeWorkspaces(repoDir);
     this.world = world;
     this.client = new MemoryLinearClient(world);
     this.stubBin = stubBin;

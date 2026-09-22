@@ -37,7 +37,7 @@ import {
 } from "../../service/workspace/workspaces.ts";
 import {
   bunGitRunner,
-  ensureTicketWorktree,
+  WORKTREE_BASE,
   ticketWorktree,
   type GitRunner,
 } from "../../service/worktree/worktrees.ts";
@@ -355,8 +355,8 @@ export async function ensureStageWorkspace(
   deps: StageStartDeps,
   identifier: string,
 ): Promise<{ workspaceId: string; workspace: SnapshotWorkspace | null; worktreePath: string; branch: string }> {
+  const worktree = ticketWorktree(deps.repoRoot, identifier);
   const git = deps.git ?? bunGitRunner();
-  const worktree = await ensureTicketWorktree(git, deps.repoRoot, identifier);
   const scratchRoot = scratchRootFor(deps.repoRoot, identifier);
   for (const worker of ["builder", "acceptance", "deliverer"] as const) {
     await ensureScratchDir(scratchFor(deps.repoRoot, identifier, worker), scratchRoot);
@@ -374,7 +374,9 @@ export async function ensureStageWorkspace(
     ...keptStageProfiles(existing?.tokens ?? {}),
   };
   if (existing && (existing.tokens["ticket"] === identifier || !existing.tokens["ticket"])) {
-    await deps.workspaces.reportMetadata(existing.workspaceId, tokens);
+    const rootPane = existing.tokens.worker_root_pane ??
+      (await deps.workspaces.worktreeOpen({ repoRoot: deps.repoRoot, path: worktree.path, label: identifier })).rootPaneId;
+    await deps.workspaces.reportMetadata(existing.workspaceId, { ...tokens, ...(rootPane ? { worker_root_pane: rootPane } : {}) });
     return {
       workspaceId: existing.workspaceId,
       workspace: existing,
@@ -382,14 +384,15 @@ export async function ensureStageWorkspace(
       branch: worktree.branch,
     };
   }
-  const created = await deps.workspaces.create({
-    label: identifier,
-    cwd: worktree.path,
-    env: { IGNITER_SCRATCH_ROOT: scratchRoot },
-  });
+  const listed = snapshot.workspaces.find((item) => item.worktree?.checkoutPath === worktree.path && item.worktree.linked);
+  const checkoutExists = (await git.run(["worktree", "list", "--porcelain"], deps.repoRoot)).stdout
+    .split("\n").some((line) => line === `worktree ${worktree.path}`);
+  const created = listed || checkoutExists
+    ? await deps.workspaces.worktreeOpen({ repoRoot: deps.repoRoot, path: worktree.path, label: identifier })
+    : await deps.workspaces.worktreeCreate({ repoRoot: deps.repoRoot, path: worktree.path, branch: worktree.branch, base: WORKTREE_BASE, label: identifier });
   // New workspaces freeze the run's stage-agent profiles, so a mid-run
   // config edit never drifts a retry or recovery.
-  await deps.workspaces.reportMetadata(created.workspaceId, { ...tokens, worker_root_pane: created.rootPaneId });
+  await deps.workspaces.reportMetadata(created.workspaceId, { ...tokens, ...(created.rootPaneId ? { worker_root_pane: created.rootPaneId } : {}) });
   return { workspaceId: created.workspaceId, workspace: null, worktreePath: worktree.path, branch: worktree.branch };
 }
 

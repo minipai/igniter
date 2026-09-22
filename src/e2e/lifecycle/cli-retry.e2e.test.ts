@@ -232,7 +232,7 @@ describe("e2e separate Linear reconciliation and worker cleanup", () => {
       expectOk(await e2e.cli(["submit", "STA-29", "--input", "-"], { stdin: JSON.stringify(deliverPayload(head)) }));
       ownerSetState(e2e.world, "STA-29", "Done");
       ownerSetProgress(e2e.world, "STA-29", "Complete");
-      e2e.workspaces.failNext("workspace.close");
+      e2e.workspaces.failNext("worktree.remove");
 
       expectOk(await e2e.cli(["reconcile", "STA-29"]));
       expectFail(await e2e.cli(["worker", "stop", "STA-29"]), "fake herdr exploded");
@@ -241,6 +241,8 @@ describe("e2e separate Linear reconciliation and worker cleanup", () => {
       const retry = expectOk(await e2e.cli(["worker", "stop", "STA-29"]));
       expect(retry.stdout).toContain("workers stopped");
       expect(e2e.workspaces.workspaces.find((workspace) => workspace.label === "STA-29")?.closed).toBe(true);
+      expect(e2e.workspaces.calls.filter((call) => call.method === "worktree.remove")).toHaveLength(2);
+      expect(e2e.workspaces.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
     });
   });
 });

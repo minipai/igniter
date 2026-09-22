@@ -16,6 +16,7 @@ export interface SnapshotWorkspace {
   workspaceId: string;
   label: string;
   tokens: Record<string, string>;
+  worktree?: { checkoutPath: string; repoRoot: string; repoKey: string; linked: boolean } | null;
 }
 
 export interface SnapshotAgent {
@@ -52,6 +53,9 @@ export interface CommandWorkspaces extends RunningWorkspaces {
     workspaceId: string;
     rootPaneId: string;
   }>;
+  worktreeCreate(input: { repoRoot: string; path: string; branch: string; base: string; label: string }): Promise<{ workspaceId: string; rootPaneId: string }>;
+  worktreeOpen(input: { repoRoot: string; path: string; label: string }): Promise<{ workspaceId: string; rootPaneId: string }>;
+  worktreeRemove(workspaceId: string): Promise<void>;
   close(workspaceId: string): Promise<void>;
   /** Open a fresh tab in a live workspace for an agent that needs its own pane. */
   createTab(input: { workspaceId: string; cwd?: string; title?: string }): Promise<{ tabId: string }>;
@@ -79,6 +83,9 @@ export const NoWorkspaces: CommandWorkspaces = {
   create: async () => {
     throw new Error("herdr is not wired: cannot open a workspace");
   },
+  worktreeCreate: async () => { throw new Error("herdr is not wired: cannot create a worktree"); },
+  worktreeOpen: async () => { throw new Error("herdr is not wired: cannot open a worktree"); },
+  worktreeRemove: async () => { throw new Error("herdr is not wired: cannot remove a worktree"); },
   close: async () => {
     throw new Error("herdr is not wired: cannot close a workspace");
   },
@@ -331,6 +338,21 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       }
       return { workspaceId, rootPaneId };
     },
+    worktreeCreate: async (input) => {
+      const created = (await call("worktree.create", { cwd: input.repoRoot, path: input.path, branch: input.branch, base: input.base, label: input.label, focus: false, trust_repository: true })) as { workspace?: { workspace_id?: string }; root_pane?: { pane_id?: string } };
+      const workspaceId = created.workspace?.workspace_id;
+      const rootPaneId = created.root_pane?.pane_id;
+      if (!workspaceId || !rootPaneId) throw new Error("herdr worktree.create answered without a workspace id or root pane");
+      return { workspaceId, rootPaneId };
+    },
+    worktreeOpen: async (input) => {
+      const opened = (await call("worktree.open", { cwd: input.repoRoot, path: input.path, label: input.label, focus: false, trust_repository: true })) as { workspace?: { workspace_id?: string }; root_pane?: { pane_id?: string } };
+      const workspaceId = opened.workspace?.workspace_id;
+      const rootPaneId = opened.root_pane?.pane_id;
+      if (!workspaceId || !rootPaneId) throw new Error("herdr worktree.open answered without a workspace id or root pane");
+      return { workspaceId, rootPaneId };
+    },
+    worktreeRemove: async (workspaceId) => { await call("worktree.remove", { workspace_id: workspaceId, trust_repository: true }); },
     close: async (workspaceId) => {
       await call("workspace.close", { workspace_id: workspaceId });
     },
@@ -452,7 +474,7 @@ function shapeSnapshot(envelope: unknown): WorkspaceSnapshot {
     throw new Error("herdr session.snapshot answered without a snapshot");
   }
   const view = snapshot as {
-    workspaces?: { workspace_id?: unknown; label?: unknown; tokens?: unknown }[];
+    workspaces?: { workspace_id?: unknown; label?: unknown; tokens?: unknown; worktree?: { checkout_path?: unknown; repo_root?: unknown; repo_key?: unknown; is_linked_worktree?: unknown } | null }[];
     agents?: { name?: unknown; agent_status?: unknown; workspace_id?: unknown; pane_id?: unknown; agent_session?: unknown; revision?: unknown }[];
     panes?: { pane_id?: unknown; workspace_id?: unknown }[];
   };
@@ -460,7 +482,8 @@ function shapeSnapshot(envelope: unknown): WorkspaceSnapshot {
     workspaces: (view.workspaces ?? []).map((w) => ({
       workspaceId: typeof w.workspace_id === "string" ? w.workspace_id : "",
       label: typeof w.label === "string" ? w.label : "",
-      tokens: tokensOf(w.tokens),
+    tokens: tokensOf(w.tokens),
+      worktree: w.worktree && typeof w.worktree === "object" ? { checkoutPath: String(w.worktree.checkout_path ?? ""), repoRoot: String(w.worktree.repo_root ?? ""), repoKey: String(w.worktree.repo_key ?? ""), linked: w.worktree.is_linked_worktree === true } : null,
     })),
     agents: (view.agents ?? []).map((a) => ({
       name: typeof a.name === "string" ? a.name : "",

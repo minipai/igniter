@@ -188,6 +188,24 @@ async function startFakeHerdr(handlers: Record<string, SocketHandler>): Promise<
 const AGENT_READY = { type: "agent_info", agent: { interactive_ready: true, launch_pending: false } };
 
 describe("startAgent against a live socket", () => {
+  test("native worktree open sends path-only with explicit repository cwd", async () => {
+    const fake = await startFakeHerdr({
+      "worktree.open": (params) => {
+        if ("branch" in params || params.path !== "/repo/.igniter/runtime/worktrees/sta-1" || params.cwd !== "/repo") {
+          throw new Error("worktree.open requires path-only with repository cwd");
+        }
+        return { type: "worktree_opened", already_open: false, workspace: { workspace_id: "ws-1" }, root_pane: { pane_id: "pane-1" } };
+      },
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await expect(workspaces.worktreeOpen({ repoRoot: "/repo", path: "/repo/.igniter/runtime/worktrees/sta-1", label: "STA-1" })).resolves.toEqual({ workspaceId: "ws-1", rootPaneId: "pane-1" });
+      expect(fake.calls.find((call) => call.method === "worktree.open")?.params).toEqual({ cwd: "/repo", path: "/repo/.igniter/runtime/worktrees/sta-1", label: "STA-1", focus: false, trust_repository: true });
+    } finally {
+      await fake.stop();
+    }
+  });
+
   test("retries while the fresh pane's shell is not up yet", async () => {
     let starts = 0;
     const fake = await startFakeHerdr({
