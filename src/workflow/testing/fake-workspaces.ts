@@ -31,6 +31,7 @@ export interface FakeCall {
 export const MAX_METADATA_TOKENS = 16;
 
 export class FakeWorkspaces implements CommandWorkspaces {
+  constructor(private readonly repoRoot?: string) {}
   workspaces: FakeWorkspace[] = [];
   agents: FakeAgent[] = [];
   kinds: string[] = [...KNOWN_AGENT_KINDS];
@@ -75,6 +76,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
         workspaceId: w.workspaceId,
         label: w.label,
         tokens: { ...w.tokens },
+        worktree: w.worktree,
       })),
       agents: this.agents
         .filter((a) => liveIds.has(a.workspaceId))
@@ -97,6 +99,45 @@ export class FakeWorkspaces implements CommandWorkspaces {
     const rootPaneId = `pane-${this.paneCounter}`;
     this.workspaces.push({ workspaceId, label: input.label, tokens: {}, panes: [rootPaneId], closed: false });
     return { workspaceId, rootPaneId };
+  }
+
+  async worktreeCreate(input: { repoRoot: string; path: string; branch: string; base: string; label: string }): Promise<{ workspaceId: string; rootPaneId: string }> {
+    this.calls.push({ method: "worktree.create", params: { ...input, focus: false } });
+    this.failWhen("worktree.create");
+    if (this.repoRoot) {
+      const proc = Bun.spawn(["git", "worktree", "add", "-b", input.branch, input.path, input.base], { cwd: input.repoRoot, stdout: "pipe", stderr: "pipe" });
+      const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+      if (code !== 0) throw new Error(`fake git worktree create failed: ${stderr.trim()}`);
+    }
+    const created = await this.create({ label: input.label, cwd: input.path, env: {} });
+    if (this.repoRoot) this.calls = this.calls.filter((call, index) => !(call.method === "workspace.create" && index === this.calls.length - 1));
+    const workspace = this.workspaces.find((item) => item.workspaceId === created.workspaceId);
+    if (workspace) workspace.worktree = { checkoutPath: input.path, repoRoot: input.repoRoot, repoKey: input.repoRoot, linked: Boolean(this.repoRoot) };
+    return created;
+  }
+
+  async worktreeOpen(input: { repoRoot: string; path: string; label: string }): Promise<{ workspaceId: string; rootPaneId: string }> {
+    this.calls.push({ method: "worktree.open", params: { ...input, focus: false } });
+    this.failWhen("worktree.open");
+    const existing = this.workspaces.find((item) => !item.closed && item.worktree?.checkoutPath === input.path);
+    if (existing) return { workspaceId: existing.workspaceId, rootPaneId: existing.panes[0] ?? "" };
+    const created = await this.create({ label: input.label, cwd: input.path, env: {} });
+    if (this.repoRoot) this.calls = this.calls.filter((call, index) => !(call.method === "workspace.create" && index === this.calls.length - 1));
+    const workspace = this.workspaces.find((item) => item.workspaceId === created.workspaceId);
+    if (workspace) workspace.worktree = { checkoutPath: input.path, repoRoot: input.repoRoot, repoKey: input.repoRoot, linked: Boolean(this.repoRoot) };
+    return created;
+  }
+
+  async worktreeRemove(workspaceId: string): Promise<void> {
+    this.calls.push({ method: "worktree.remove", params: { workspaceId } });
+    this.failWhen("worktree.remove");
+    const workspace = this.workspaces.find((item) => item.workspaceId === workspaceId);
+    if (this.repoRoot && workspace?.worktree?.checkoutPath) {
+      const proc = Bun.spawn(["git", "worktree", "remove", workspace.worktree.checkoutPath], { cwd: this.repoRoot, stdout: "pipe", stderr: "pipe" });
+      const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+      if (code !== 0) throw new Error(`fake git worktree remove failed: ${stderr.trim()}`);
+    }
+    await this.close(workspaceId);
   }
 
   async close(workspaceId: string): Promise<void> {

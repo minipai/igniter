@@ -48,8 +48,8 @@ describe("e2e CLI explicit ticket status", () => {
       const workspace = e2e.workspaces.workspaces.find((candidate) => candidate.label === "STA-20")!;
       const worktree = join(e2e.repoDir, ".igniter", "runtime", "worktrees", "sta-20");
       expect(
-        e2e.workspaces.calls.find((call) => call.method === "workspace.create")?.params,
-      ).toMatchObject({ cwd: worktree });
+        e2e.workspaces.calls.find((call) => call.method === "worktree.create")?.params,
+      ).toMatchObject({ path: worktree, repoRoot: e2e.repoDir, base: "main", branch: "feature/sta-20", focus: false });
 
       const status = expectOk(await e2e.cli(["status", "STA-20", "--json"]));
       expect(status.stderr).toBe("");

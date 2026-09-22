@@ -165,8 +165,12 @@ describe("worker command boundary", () => {
     const h = await setup();
     h.workspaces.failNext("workspace.report_metadata");
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
+    h.workspaces.workspaces[0]!.panes.push("user-pane");
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.workspaces.workspaces).toHaveLength(1);
+    expect(h.workspaces.workspaces[0]?.tokens.worker_root_pane).toBe(h.workspaces.workspaces[0]?.panes[0]);
+    expect(h.workspaces.workspaces[0]?.tokens.worker_root_pane).not.toBe("user-pane");
+    expect(h.workspaces.calls.filter((call) => call.method === "worktree.open")).toHaveLength(2);
     readsOnly(h.client);
   });
 

@@ -564,11 +564,11 @@ describe("worker work order", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.git.failOn = ["worktree"];
+      h.workspaces.failMethods.add("worktree.create");
       h.git.failMessage = "fatal: not a git repository";
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
-      expect(out.text).toContain("not a git repository");
+      expect(out.text).toContain("fake herdr exploded");
       expect(h.workspaces.workspaces).toHaveLength(0);
       expect(out.text).toContain("worker start failed:");
     } finally {

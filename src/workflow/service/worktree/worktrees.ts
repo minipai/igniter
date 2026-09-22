@@ -112,6 +112,7 @@ export interface CleanupOptions {
   checkpoint: string;
   /** Branch the delivery landed on (dispatch `target_branch`). */
   targetBranch: string;
+  removeWorktree?: () => Promise<void>;
 }
 
 export interface CleanupOutcome {
@@ -365,7 +366,8 @@ export async function cleanupTicketCheckout(
   }
 
   try {
-    await git.run(["worktree", "remove", worktree.path], repoRoot);
+    if (options.removeWorktree) await options.removeWorktree();
+    else await git.run(["worktree", "remove", worktree.path], repoRoot);
   } catch (error) {
     return kept(
       `${identifier}: cannot remove worktree at ${worktree.path} (${gitError(error)}); ` +

@@ -47,7 +47,8 @@ async function cleanupDone(
   const cleanup = await cleanupTicketCheckout(ctx.git ?? bunGitRunner(), ctx.repoRoot, view.ticket, {
     checkpoint: landed,
     targetBranch: ctx.resolved.config.targetBranch,
+    ...(view.workspace?.worktree?.linked ? { removeWorktree: () => ctx.workspaces.worktreeRemove(view.workspace!.workspaceId) } : {}),
   });
-  if (cleanup.ok && view.workspace) await ctx.workspaces.close(view.workspace.workspaceId);
+  if (cleanup.ok && view.workspace && !view.workspace.worktree?.linked) await ctx.workspaces.close(view.workspace.workspaceId);
   return { ok: cleanup.ok, text: `${view.ticket}: workers stopped; ${cleanup.detail}` };
 }
