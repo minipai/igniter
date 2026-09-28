@@ -268,7 +268,7 @@ describe("worker command boundary", () => {
     expect(launch?.params).toMatchObject({
       kind: "opencode",
       name: "builder-sta-244",
-      args: ["-m", "opencode/daily"],
+      args: ["mini", "-m", "opencode/daily"],
     });
     expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
     readsOnly(h.client);

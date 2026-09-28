@@ -47,6 +47,7 @@ describe("launchArgsFor", () => {
       "claude-sonnet-5",
     ]);
     expect(launchArgsFor({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" })).toEqual([
+      "mini",
       "-m",
       "opencode/muse-spark-1.3-contributor-free",
     ]);
@@ -92,8 +93,7 @@ describe("launchArgsFor", () => {
   });
 
   test("a harness with no effort option fails instead of dropping the effort", () => {
-    // The installed opencode TUI (`opencode [project]`, what Herdr starts)
-    // documents no effort flag — only `opencode run` has --variant.
+    // OpenCode Mini documents no reasoning-effort flag.
     expect(() => launchArgsFor({ harness: "opencode", model: "provider/m", effort: "high" })).toThrow(
       'unsupported effort "high" for harness "opencode"',
     );
@@ -126,7 +126,7 @@ describe("launchArgsFor", () => {
     // Every stage profile translates too: the helper serves any launch.
     expect(
       launchFor({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-    ).toEqual({ kind: "opencode", args: ["-m", "opencode/muse-spark-1.3-contributor-free"] });
+    ).toEqual({ kind: "opencode", args: ["mini", "-m", "opencode/muse-spark-1.3-contributor-free"] });
     expect(launchFor({ harness: "claude", model: "claude-sonnet-5", effort: "high" })).toEqual({
       kind: "claude",
       args: ["--model", "claude-sonnet-5", "--effort", "high"],
@@ -152,7 +152,7 @@ describe("launchArgsFor", () => {
     expect(foregroundCommandFor(
       { harness: "opencode", model: "opencode/model" },
       "patrol now",
-    )).toEqual(["opencode", "-m", "opencode/model", "--prompt", "patrol now"]);
+    )).toEqual(["opencode", "mini", "-m", "opencode/model", "--prompt", "patrol now"]);
   });
 });
 

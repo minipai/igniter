@@ -15,10 +15,10 @@
 //   the documented Codex reasoning levels: minimal, low, medium, high, xhigh.
 // - claude 2.1.263: `--model <model>` selects the model and
 //   `--effort <level>` the effort (low, medium, high, xhigh, max).
-// - opencode 1.18.29: `-m/--model provider/model` selects the model on the
-//   interactive TUI Herdr launches (`opencode [project]`), which documents
-//   no effort flag — only `opencode run` has `--variant` — so a configured
-//   effort for the opencode harness fails instead of being dropped.
+// - opencode 2.0.16: `mini -m/--model provider/model` selects the model on
+//   the minimal interactive interface. The full TUI has no model flag.
+//   Mini has no effort flag, so a configured effort fails instead of
+//   being dropped.
 // Any other harness fails too: without a known model flag the profile's
 // model could not reach the launch, and dispatch never drops it silently.
 
@@ -64,10 +64,10 @@ export function launchArgsFor(profile: Pick<CommanderAgentConfig, "harness" | "m
       if (effort !== undefined) {
         throw new Error(
           `unsupported effort "${effort}" for harness "opencode": ` +
-            `the opencode TUI has no reasoning-effort launch option; omit effort to keep the harness default`,
+            `opencode mini has no reasoning-effort launch option; omit effort to keep the harness default`,
         );
       }
-      return ["-m", profile.model];
+      return ["mini", "-m", profile.model];
     default:
       throw new Error(
         `unsupported harness "${profile.harness}": ` +
