@@ -259,11 +259,11 @@ describe("worker command boundary", () => {
     h.ctx.resolved.config = parseDispatchConfig({
       project: "igniter",
       team: "Starcoder",
-      agents: { builder_daily: { harness: "opencode", model: "opencode/daily" } },
+      agents: { builder_daily: { harness: "opencode-mini", model: "opencode/daily" } },
     });
     const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_daily" }, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({ agent: "builder_daily", harness: "opencode", model: "opencode/daily" });
+    expect(out.data).toMatchObject({ agent: "builder_daily", harness: "opencode-mini", model: "opencode/daily" });
     const launch = h.workspaces.calls.find((c) => c.method === "agent.start");
     expect(launch?.params).toMatchObject({
       kind: "opencode",
