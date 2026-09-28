@@ -158,9 +158,9 @@ export class FakeWorkspaces implements CommandWorkspaces {
     return { tabId: `tab-${this.tabCounter}` };
   }
 
-  async startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void> {
-    this.calls.push({ method: "agent.start", params: { ...input } });
-    this.failWhen("agent.start");
+  async startAgent(input: { paneId: string; name: string; command: string }): Promise<void> {
+    this.calls.push({ method: "pane.send_input", params: { pane_id: input.paneId, text: input.command, keys: ["Enter"] } });
+    this.failWhen("pane.send_input");
     const workspace = this.workspaces.find((w) => w.panes.includes(input.paneId) && !w.closed);
     if (!workspace) throw new Error(`fake herdr: pane ${input.paneId} is not in a live workspace`);
     if (this.agents.some((a) => a.paneId === input.paneId)) {
@@ -172,7 +172,7 @@ export class FakeWorkspaces implements CommandWorkspaces {
     if (ended >= 0) this.agents.splice(ended, 1);
     this.agents.push({
       name: input.name,
-      kind: input.kind,
+      kind: "custom",
       agentStatus: "working",
       workspaceId: workspace.workspaceId,
       paneId: input.paneId,
@@ -223,6 +223,12 @@ export class FakeWorkspaces implements CommandWorkspaces {
     this.calls.push({ method: "pane.send_keys", params: { pane_id: paneId, keys } });
     this.failWhen("pane.send_keys");
     this.sentKeys.push({ paneId, keys: [...keys] });
+  }
+
+  async sendAgentKeys(target: string, keys: string[]): Promise<void> {
+    this.calls.push({ method: "agent.send_keys", params: { target, keys } });
+    this.failWhen("agent.send_keys");
+    this.sentKeys.push({ paneId: target, keys: [...keys] });
   }
 
   async readPane(paneId: string, lines: number): Promise<{ text: string; revision: number | null }> {

@@ -59,7 +59,7 @@ function identity(over: Partial<PromptDeliveryIdentity> = {}): PromptDeliveryIde
 /** One live workspace with one running agent, the way a start leaves it. */
 async function liveAgent(fake: FakeWorkspaces, name: string): Promise<{ workspaceId: string; paneId: string }> {
   const { workspaceId, rootPaneId } = await fake.create({ label: "STA-1", cwd: "/tmp/sta-1", env: {} });
-  await fake.startAgent({ paneId: rootPaneId, kind: "claude", name });
+  await fake.startAgent({ paneId: rootPaneId, name, command: "worker-command" });
   return { workspaceId, paneId: rootPaneId };
 }
 

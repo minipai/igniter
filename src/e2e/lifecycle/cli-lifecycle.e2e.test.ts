@@ -178,7 +178,7 @@ describe("e2e Acceptance FAIL back to Build", () => {
 
       // The old builder ended but its row lingers in the snapshot.
       e2e.workspaces.agents.find((a) => a.name === "builder-sta-11")!.agentStatus = "done";
-      const startsBefore = e2e.workspaces.calls.filter((call) => call.method === "agent.start").length;
+      const startsBefore = e2e.workspaces.calls.filter((call) => call.method === "pane.send_input").length;
       const again = expectOk(await e2e.startStage("STA-11"));
       expect(again.stdout).toContain("STA-11: build worker");
       issue = (await e2e.client.fetchIssue("STA-11"))!;
@@ -189,7 +189,7 @@ describe("e2e Acceptance FAIL back to Build", () => {
       expect(inbox).toHaveLength(1);
       expect(inbox[0]).toContain(first);
       expect(e2e.workspaces.agents.filter((a) => a.name === "builder-sta-11")).toHaveLength(1);
-      expect(e2e.workspaces.calls.filter((call) => call.method === "agent.start")).toHaveLength(startsBefore + 1);
+      expect(e2e.workspaces.calls.filter((call) => call.method === "pane.send_input")).toHaveLength(startsBefore + 1);
 
       // Round two completes Acceptance: new checkpoint, correction build lands
       // straight back in Acceptance+Pending with no owner step.

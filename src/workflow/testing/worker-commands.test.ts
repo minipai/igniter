@@ -40,7 +40,7 @@ describe("worker command boundary", () => {
     const h = await setup();
     const out = await workerCommand({ command: "worker.start", ticket: "sta-244" }, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({ worker: "builder-sta-244", role: "build", model: h.ctx.resolved.config.commander.agents.builder.model, confirmed: true });
+    expect(out.data).toMatchObject({ worker: "builder-sta-244", role: "build", launchCommand: h.ctx.resolved.config.commander.agents.builder.command, confirmed: true });
     expect(out.text).toContain("builder/result.md");
     expect(h.issue.stateId).toBe("st-todo");
     expect(h.issue.labelIds).toEqual([]);
@@ -55,7 +55,7 @@ describe("worker command boundary", () => {
     h.issue.stateId = "st-build";
     h.issue.labelIds = ["label-in-progress"];
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
-    expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(1);
+    expect(h.workspaces.calls.filter((c) => c.method === "pane.send_input")).toHaveLength(1);
     expect(h.workspaces.calls.filter((c) => c.method === "agent.prompt")).toHaveLength(1);
     readsOnly(h.client);
   });
@@ -130,7 +130,7 @@ describe("worker command boundary", () => {
 
   test("start failure leaves Linear untouched and retries reuse the prepared tab", async () => {
     const h = await setup();
-    h.workspaces.failNext("agent.start");
+    h.workspaces.failNext("pane.send_input");
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.workspaces.calls.filter((c) => c.method === "tab.create")).toHaveLength(1);
@@ -174,31 +174,31 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
-  test("restart performs a real rebuild with the effective model, preserves dirty work, and dedupes retries", async () => {
+  test("restart performs a real rebuild with the launch command, preserves dirty work, and dedupes retries", async () => {
     const h = await setup();
     expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     const oldPane = h.workspaces.agents[0]!.paneId;
     h.git.statusPorcelain = " M unfinished.ts";
     const request: WorkerRequest = {
-      command: "worker.restart", ticket: "STA-244", harness: "codex", model: "gpt-5.6-sol", effort: "high",
+      command: "worker.restart", ticket: "STA-244", launchCommand: "codex --model gpt-5.6-sol --effort high",
     };
     const out = await workerCommand(request, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({ model: "gpt-5.6-sol", confirmed: true });
+    expect(out.data).toMatchObject({ launchCommand: request.launchCommand, confirmed: true });
     expect(h.workspaces.agents[0]!.paneId).not.toBe(oldPane);
-    const launch = h.workspaces.calls.filter((c) => c.method === "agent.start").at(-1)!;
-    expect(launch.params).toMatchObject({ kind: "codex", args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'] });
+    const launch = h.workspaces.calls.filter((c) => c.method === "pane.send_input").at(-1)!;
+    expect(launch.params).toMatchObject({ text: request.launchCommand, keys: ["Enter"] });
     expect((await workerCommand(request, h.ctx)).ok).toBe(true);
     expect(h.workspaces.calls.filter((c) => c.method === "agent.stop")).toHaveLength(1);
     expect(h.git.commands.every((c) => !["reset", "clean"].includes(c.args[0]!) && !(c.args[0] === "worktree" && c.args[1] === "remove"))).toBe(true);
     readsOnly(h.client);
   });
 
-  test("restart validates an incompatible model before touching a live worker", async () => {
+  test("restart accepts a command override before touching a live worker", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
-    expect((await workerCommand({ command: "worker.restart", ticket: "STA-244", harness: "codex", model: "provider/model" }, h.ctx)).ok).toBe(false);
-    expect(h.workspaces.calls.filter((c) => c.method === "agent.stop")).toHaveLength(0);
+    expect((await workerCommand({ command: "worker.restart", ticket: "STA-244", launchCommand: "custom --flag" }, h.ctx)).ok).toBe(true);
+    expect(h.workspaces.calls.filter((c) => c.method === "agent.stop")).toHaveLength(1);
     readsOnly(h.client);
   });
 
@@ -206,20 +206,13 @@ describe("worker command boundary", () => {
     const h = await setup();
     const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_expert" }, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({
-      worker: "builder-sta-244",
-      role: "build",
-      agent: "builder_expert",
-      harness: "codex",
-      model: "gpt-5.6-sol",
-      confirmed: true,
-    });
+    expect(out.data).toMatchObject({ worker: "builder-sta-244", role: "build", agent: "builder_expert", launchCommand: "codex -m gpt-5.6-sol", confirmed: true });
     expect(out.text).toContain("agent builder_expert");
     // The candidate changes only the launch profile, not the stage worker name.
-    const launch = h.workspaces.calls.find((c) => c.method === "agent.start");
-    expect(launch?.params).toMatchObject({ kind: "codex", name: "builder-sta-244", args: ["-m", "gpt-5.6-sol"] });
+    const launch = h.workspaces.calls.find((c) => c.method === "pane.send_input");
+    expect(launch?.params).toMatchObject({ text: "codex -m gpt-5.6-sol", keys: ["Enter"] });
     const order = h.workspaces.promptsFor("builder-sta-244")[0]!;
-    expect(order).toContain("`builder_expert` — harness `codex`; model `gpt-5.6-sol`");
+    expect(order).toContain('`builder_expert` — command "codex -m gpt-5.6-sol"');
     expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
     readsOnly(h.client);
   });
@@ -243,11 +236,11 @@ describe("worker command boundary", () => {
     h.ctx.resolved.config = parseDispatchConfig({
       project: "igniter",
       team: "Starcoder",
-      agents: { builder_backup: { effort: "turbo" } },
+      agents: { builder_backup: { command: "codex {prompt}" } },
     });
     const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_backup" }, h.ctx);
     expect(out.ok).toBe(false);
-    expect(out.text).toContain('unsupported effort "turbo"');
+    expect(out.text).toContain("worker commands cannot contain {prompt}");
     expect(h.workspaces.calls).toHaveLength(0);
     expect(h.git.commands).toHaveLength(0);
     expect(h.issue.stateId).toBe("st-todo");
@@ -259,17 +252,13 @@ describe("worker command boundary", () => {
     h.ctx.resolved.config = parseDispatchConfig({
       project: "igniter",
       team: "Starcoder",
-      agents: { builder_daily: { harness: "opencode-mini", model: "opencode/daily" } },
+      agents: { builder_daily: { command: "opencode mini -m opencode/daily" } },
     });
     const out = await workerCommand({ command: "worker.start", ticket: "STA-244", agent: "builder_daily" }, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({ agent: "builder_daily", harness: "opencode-mini", model: "opencode/daily" });
-    const launch = h.workspaces.calls.find((c) => c.method === "agent.start");
-    expect(launch?.params).toMatchObject({
-      kind: "opencode",
-      name: "builder-sta-244",
-      args: ["mini", "-m", "opencode/daily"],
-    });
+    expect(out.data).toMatchObject({ agent: "builder_daily", launchCommand: "opencode mini -m opencode/daily" });
+    const launch = h.workspaces.calls.find((c) => c.method === "pane.send_input");
+    expect(launch?.params).toMatchObject({ text: "opencode mini -m opencode/daily", keys: ["Enter"] });
     expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
     readsOnly(h.client);
   });
@@ -279,12 +268,15 @@ describe("worker command boundary", () => {
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
     const out = await workerCommand({ command: "worker.restart", ticket: "STA-244", agent: "builder_backup" }, h.ctx);
     expect(out.ok).toBe(true);
-    expect(out.data).toMatchObject({ agent: "builder_backup", model: "gpt-5.6-luna", confirmed: true });
+    expect(out.data).toMatchObject({ agent: "builder_backup", launchCommand: "codex -m gpt-5.6-luna", confirmed: true });
     const retry = await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx);
     expect(retry.ok).toBe(true);
-    expect(retry.data).toMatchObject({ agent: "builder_backup", model: "gpt-5.6-luna" });
+    expect(retry.data).toMatchObject({ agent: "builder_backup", launchCommand: "codex -m gpt-5.6-luna" });
     const order = h.workspaces.promptsFor("builder-sta-244").at(-1)!;
-    expect(order).toContain("`builder_backup` — harness `codex`; model `gpt-5.6-luna`");
+    expect(order).toContain('`builder_backup` — command "codex -m gpt-5.6-luna"');
+    const changed = await workerCommand({ command: "worker.restart", ticket: "STA-244", launchCommand: "custom-agent --resume" }, h.ctx);
+    expect(changed.ok).toBe(true);
+    expect(changed.data).toMatchObject({ agent: "builder_backup", launchCommand: "custom-agent --resume" });
     expect(h.workspaces.agents.filter((a) => a.name === "builder-sta-244")).toHaveLength(1);
     readsOnly(h.client);
   });
@@ -299,33 +291,64 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
+  test("an explicit command can recover a run with an unreadable saved profile", async () => {
+    const h = await setup();
+    await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    h.workspaces.workspaces[0]!.tokens.profile_builder = JSON.stringify({ legacy: "profile" });
+
+    const restarted = await workerCommand({
+      command: "worker.restart", ticket: "STA-244", launchCommand: "custom-agent --resume",
+    }, h.ctx);
+    expect(restarted.ok).toBe(true);
+    expect(restarted.data).toMatchObject({ launchCommand: "custom-agent --resume" });
+    expect(h.workspaces.calls.filter((call) => call.method === "pane.send_input").at(-1)?.params["text"])
+      .toBe("custom-agent --resume");
+    readsOnly(h.client);
+  });
+
+  test("a damaged restart record refuses normal retry but an explicit command recovers it", async () => {
+    const h = await setup();
+    await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
+    h.workspaces.workspaces[0]!.tokens.restart_build = "igniter:" + "a".repeat(64);
+
+    const retry = await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx);
+    expect(retry.ok).toBe(false);
+    expect(retry.text).toContain("saved restart record");
+    expect(h.workspaces.calls.filter((call) => call.method === "agent.stop")).toHaveLength(0);
+
+    const recovered = await workerCommand({ command: "worker.restart", ticket: "STA-244", launchCommand: "custom --resume" }, h.ctx);
+    expect(recovered.ok).toBe(true);
+    expect(recovered.data).toMatchObject({ launchCommand: "custom --resume" });
+    expect(h.workspaces.calls.filter((call) => call.method === "agent.stop")).toHaveLength(1);
+  });
+
   test("restart stop failure retries the saved effective profile and actual rebuild", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
     h.workspaces.failNext("agent.stop");
-    const request: WorkerRequest = { command: "worker.restart", ticket: "STA-244", harness: "codex", model: "gpt-5.6-sol" };
+    const request: WorkerRequest = { command: "worker.restart", ticket: "STA-244", launchCommand: "codex --model gpt-5.6-sol" };
     expect((await workerCommand(request, h.ctx)).ok).toBe(false);
-    expect((await workerCommand(request, h.ctx)).ok).toBe(true);
+    expect((await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
     expect(h.workspaces.agents).toHaveLength(1);
-    expect(h.workspaces.agents[0]!.kind).toBe("codex");
+    expect(h.workspaces.calls.filter((c) => c.method === "pane.send_input").at(-1)?.params["text"]).toBe(request.launchCommand);
     readsOnly(h.client);
   });
 
-  test("failed cross-harness stop keeps permission answers bound to the live old harness", async () => {
+  test("failed command-switch stop keeps permission answers bound to the live old worker", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
-    await workerCommand({ command: "worker.restart", ticket: "STA-244", harness: "claude", model: "sonnet" }, h.ctx);
+    await workerCommand({ command: "worker.restart", ticket: "STA-244", launchCommand: "claude --model sonnet" }, h.ctx);
     const oldPane = h.workspaces.agents[0]!.paneId;
     h.workspaces.failNext("agent.stop");
-    const restart: WorkerRequest = { command: "worker.restart", ticket: "STA-244", harness: "codex", model: "gpt-5.6-sol" };
+    const restart: WorkerRequest = { command: "worker.restart", ticket: "STA-244", launchCommand: "codex --model gpt-5.6-sol" };
     expect((await workerCommand(restart, h.ctx)).ok).toBe(false);
     expect(h.workspaces.agents[0]!.paneId).toBe(oldPane);
     const reused = await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
     expect(reused.ok).toBe(true);
-    expect(reused.data).toMatchObject({ model: "sonnet" });
+    expect(reused.data).toMatchObject({ launchCommand: "codex --model gpt-5.6-sol" });
     expect(h.workspaces.agents[0]!.paneId).toBe(oldPane);
-    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", answer: "y" }, h.ctx)).ok).toBe(true);
-    expect(h.workspaces.sentKeys.at(-1)?.keys).toEqual(["enter"]);
+    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", answer: "space" }, h.ctx)).ok).toBe(true);
+    expect(h.workspaces.sentKeys.at(-1)?.keys).toEqual(["space"]);
     expect((await workerCommand(restart, h.ctx)).ok).toBe(true);
     expect(h.workspaces.agents[0]!.paneId).not.toBe(oldPane);
     expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", answer: "y" }, h.ctx)).ok).toBe(true);
@@ -333,19 +356,19 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
-  test("restart launch and prompt failures retry the intended model without another rebuild", async () => {
-    for (const failure of ["agent.start", "input-buffer"]) {
+  test("restart launch and prompt failures retry the intended command without another rebuild", async () => {
+    for (const failure of ["pane.send_input", "input-buffer"]) {
       const h = await setup();
       await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
-      if (failure === "agent.start") h.workspaces.failNext(failure);
+      if (failure === "pane.send_input") h.workspaces.failNext(failure);
       else h.workspaces.promptMode = "input-buffer";
-      const request: WorkerRequest = { command: "worker.restart", ticket: "STA-244", harness: "codex", model: "gpt-5.6-sol" };
+      const request: WorkerRequest = { command: "worker.restart", ticket: "STA-244", launchCommand: "codex --model gpt-5.6-sol" };
       expect((await workerCommand(request, h.ctx)).ok).toBe(false);
       h.workspaces.promptMode = "consumed";
-      expect((await workerCommand(request, h.ctx)).ok).toBe(true);
+      expect((await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx)).ok).toBe(true);
       expect(h.workspaces.calls.filter((c) => c.method === "agent.stop")).toHaveLength(1);
       expect(h.workspaces.agents).toHaveLength(1);
-      expect(h.workspaces.agents[0]!.kind).toBe("codex");
+      expect(h.workspaces.calls.filter((c) => c.method === "pane.send_input").at(-1)?.params["text"]).toBe(request.launchCommand);
       readsOnly(h.client);
     }
   });
@@ -459,12 +482,12 @@ describe("worker command boundary", () => {
     readsOnly(h.client);
   });
 
-  test("answer uses frozen effective harness after model switch and refuses a changing pane", async () => {
+  test("answer sends its key after a command switch and refuses a changing pane", async () => {
     const h = await setup();
     await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx);
-    await workerCommand({ command: "worker.restart", ticket: "STA-244", harness: "claude", model: "sonnet" }, h.ctx);
-    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", answer: "y" }, h.ctx)).ok).toBe(true);
-    expect(h.workspaces.sentKeys.at(-1)?.keys).toEqual(["enter"]);
+    await workerCommand({ command: "worker.restart", ticket: "STA-244", launchCommand: "claude --model sonnet" }, h.ctx);
+    expect((await workerCommand({ command: "worker.answer", ticket: "STA-244", answer: "space" }, h.ctx)).ok).toBe(true);
+    expect(h.workspaces.sentKeys.at(-1)?.keys).toEqual(["space"]);
     const read = h.workspaces.readPane.bind(h.workspaces);
     let revision = 0;
     h.workspaces.readPane = async (pane, lines) => ({ ...await read(pane, lines), revision: ++revision });
@@ -478,7 +501,7 @@ describe("worker command boundary", () => {
       const h = await setup("st-build", [progress]);
       expect((await workerCommand({ command: "worker.start", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
       expect((await workerCommand({ command: "worker.restart", ticket: "STA-244" }, h.ctx)).ok).toBe(false);
-      expect(h.workspaces.calls.filter((c) => c.method === "agent.start")).toHaveLength(0);
+      expect(h.workspaces.calls.filter((c) => c.method === "pane.send_input")).toHaveLength(0);
       readsOnly(h.client);
     }
   });

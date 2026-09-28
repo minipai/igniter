@@ -81,9 +81,7 @@ export function commandActions(runtime: CliRuntime, session: { code: number }) {
       ticket,
       role: workerRole(options["role"]),
       agent: options["agent"] as string | undefined,
-      harness: options["harness"] as string | undefined,
-      model: options["model"] as string | undefined,
-      effort: options["effort"] as string | undefined,
+      launchCommand: options["command"] as string | undefined,
     });
   }
 
@@ -126,8 +124,8 @@ function workerRole(value: unknown): WorkerRole | undefined {
 }
 
 function workerAnswer(value: unknown): WorkerAnswer {
-  if (value === "y" || value === "n") return value;
-  throw new Error("answer must be y or n");
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new Error("answer key is required");
 }
 
 interface CommanderForegroundLaunch {

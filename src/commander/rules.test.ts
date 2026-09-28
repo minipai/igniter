@@ -6,12 +6,12 @@ const commanderConfig = Bun.YAML.parse(
   await Bun.file(new URL("./config.yaml", import.meta.url)).text(),
 ) as {
   agents: {
-    commander: { harness: string; model: string; effort?: string };
-    builder: { harness: string; model: string; effort?: string };
-    acceptance: { harness: string; model: string; effort?: string };
-    deliverer: { harness: string; model: string; effort?: string };
-    builder_backup: { harness: string; model: string; effort?: string };
-    builder_expert: { harness: string; model: string; effort?: string };
+    commander: { command: string };
+    builder: { command: string };
+    acceptance: { command: string };
+    deliverer: { command: string };
+    builder_backup: { command: string };
+    builder_expert: { command: string };
   };
 };
 const stageNames = ["build", "acceptance", "deliver"] as const;
@@ -54,24 +54,15 @@ describe("Commander delivery protocol", () => {
     expect(commonRules).toContain("absolute bundled stage protocol prompt");
     expect(commonRules).not.toContain("src/commander/config.yaml");
     expect(stageDocuments).toEqual(["build.md", "acceptance.md", "deliver.md"].map((name) => `./stages/${name}`));
-    expect(commanderConfig.agents.commander.harness).toBe("codex");
-    expect(commanderConfig.agents.commander.model).toBe("gpt-6-astra");
-    expect(commanderConfig.agents.commander.effort).toBe("medium");
-    expect(commanderConfig.agents.builder.harness).toBe("codex");
-    expect(commanderConfig.agents.builder.model).toBe("gpt-5.6-terra");
-    expect(commanderConfig.agents.builder.effort).toBeUndefined();
-    expect(commanderConfig.agents.acceptance.harness).toBe("codex");
-    expect(commanderConfig.agents.acceptance.model).toBe("gpt-5.6-sol");
-    expect(commanderConfig.agents.acceptance.effort).toBe("high");
-    expect(commanderConfig.agents.deliverer.harness).toBe("codex");
-    expect(commanderConfig.agents.deliverer.model).toBe("gpt-5.6-luna");
-    expect(commanderConfig.agents.deliverer.effort).toBe("high");
-    expect(commanderConfig.agents.builder_backup.harness).toBe("codex");
-    expect(commanderConfig.agents.builder_backup.model).toBe("gpt-5.6-luna");
-    expect(commanderConfig.agents.builder_backup.effort).toBeUndefined();
-    expect(commanderConfig.agents.builder_expert.harness).toBe("codex");
-    expect(commanderConfig.agents.builder_expert.model).toBe("gpt-5.6-sol");
-    expect(commanderConfig.agents.builder_expert.effort).toBeUndefined();
+    expect(commanderConfig.agents.commander.command).toBe("opencode --prompt {prompt}");
+    expect(commanderConfig.agents.commander.command).toContain("{prompt}");
+    expect(commanderConfig.agents.builder.command).toBe("opencode mini -m opencode-go/deepseekflash-4.1");
+    expect(commanderConfig.agents.acceptance.command).toBe("opencode mini -m openai/gpt-6-luna#max");
+    expect(commanderConfig.agents.deliverer.command).toBe("opencode mini -m openai/gpt-6-luna#high");
+    expect(commanderConfig.agents.builder_backup.command).toContain("gpt-5.6-luna");
+    expect(commanderConfig.agents.builder_expert.command).toContain("gpt-5.6-sol");
+    expect(commonRules).toContain("launch command");
+    expect(commonRules).not.toContain("effective harness/model/effort");
     expect(commonRules).toContain("builder_backup");
     expect(commonRules).toContain("named candidate");
     expect(stageRules[0]).toStartWith("# Build agent");

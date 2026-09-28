@@ -216,7 +216,7 @@ describe("CAC command actions", () => {
       { argv: ["worker", "start", "STA-1", "--agent", "builder_expert"], request: { command: "worker.start", ticket: "STA-1", agent: "builder_expert" } },
       { argv: ["worker", "send", "STA-1", "--role", "acceptance", "check", "this"], request: { command: "worker.send", ticket: "STA-1", role: "acceptance", text: "check this" } },
       { argv: ["worker", "stop", "STA-1", "--role", "deliver"], request: { command: "worker.stop", ticket: "STA-1", role: "deliver" } },
-      { argv: ["worker", "restart", "STA-1", "--agent", "builder_expert", "--harness", "codex", "--model", "m", "--effort", "high"], request: { command: "worker.restart", ticket: "STA-1", agent: "builder_expert", harness: "codex", model: "m", effort: "high" } },
+      { argv: ["worker", "restart", "STA-1", "--agent", "builder_expert", "--command", "codex --model m"], request: { command: "worker.restart", ticket: "STA-1", agent: "builder_expert", launchCommand: "codex --model m" } },
       { argv: ["worker", "answer", "STA-1", "y"], request: { command: "worker.answer", ticket: "STA-1", answer: "y" } },
     ];
 
@@ -255,7 +255,7 @@ describe("CAC validation and help", () => {
     { args: ["submit", "--help"], usage: "igniter submit <ticket>", option: "--input <source>" },
     { args: ["cancel", "--help"], usage: "igniter cancel <ticket>", option: "--reason <text>" },
     { args: ["worker", "--help"], usage: "igniter worker <command>", option: "restart <ticket>" },
-    { args: ["worker", "restart", "--help"], usage: "igniter worker restart <ticket>", option: "--model <model>" },
+    { args: ["worker", "restart", "--help"], usage: "igniter worker restart <ticket>", option: "--command <command>" },
   ])("help comes from its CAC declaration: $args", async ({ args, usage, option }) => {
     const result = await runProcess(args);
     expect(result.code).toBe(0);
@@ -282,7 +282,6 @@ describe("CAC validation and help", () => {
     ["block", "STA-1"], ["cancel", "STA-1"], ["worker", "send", "STA-1"], ["worker", "answer", "STA-1"],
     ["status", "--bogus"], ["start", "STA-1", "--publish-acceptance"],
     ["worker", "start", "STA-1", "--role", "other"],
-    ["worker", "answer", "STA-1", "yes"],
     ["approve", "STA-1", "--receipt", "r-1"],
   ].map((argv) => ({ argv })))("invalid syntax never runs a command: $argv", async ({ argv }) => {
     const result = await runInProcess(argv);

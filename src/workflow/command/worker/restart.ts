@@ -26,18 +26,11 @@ export async function restartWorker(
   // An explicit --agent selects a named candidate; otherwise the run's own
   // recorded selection is reused, never silently reverted to the default.
   const tokens = view.workspace?.tokens ?? {};
-  const selected = selectStageAgent(ctx.resolved.config.commander, tokens, stage, request.agent);
-  let profile: CommanderAgentConfig = selected.profile;
-  profile = {
-    harness: request.harness ?? profile.harness,
-    model: request.model ?? profile.model,
-    ...(request.effort
-      ? { effort: request.effort }
-      : request.harness && request.harness !== profile.harness
-        ? {}
-        : profile.effort
-          ? { effort: profile.effort }
-          : {}),
+  const selected = request.launchCommand !== undefined && request.agent === undefined
+    ? { name: tokens[selectedAgentToken(stage)] ?? STAGE_AGENTS[stage], profile: { command: request.launchCommand } }
+    : selectStageAgent(ctx.resolved.config.commander, tokens, stage, request.agent);
+  const profile: CommanderAgentConfig = {
+    command: request.launchCommand ?? selected.profile.command,
   };
   launchFor(profile);
   if (!view.workspace) throw new Error(`no workspace for ${view.ticket}; use worker start first`);
@@ -45,20 +38,26 @@ export async function restartWorker(
 
   const restartKey = `restart_${stage}`;
   const restartRequest = JSON.stringify([latestValidReceipt(view.full.comments)?.receipt.submission ?? "initial", profile]);
-  const previous = view.workspace.tokens[restartKey]
-    ? JSON.parse(view.workspace.tokens[restartKey]) as { request: string; oldPane?: string }
-    : null;
+  const previousValue = view.workspace.tokens[restartKey];
+  let previous: { request: string; oldPane?: string } | null = null;
+  if (previousValue) {
+    try {
+      previous = JSON.parse(previousValue) as { request: string; oldPane?: string };
+    } catch {
+      if (request.launchCommand === undefined && request.agent === undefined) {
+        throw new Error(`saved restart record for ${stage} is unreadable; retry with --command or --agent to recover`);
+      }
+    }
+  }
   const rebuilding = previous?.request === restartRequest;
-  const rebuilt = rebuilding && agent && agent.paneId !== previous.oldPane;
+  const rebuilt = rebuilding && agent && agent.paneId !== previous?.oldPane;
   await ctx.workspaces.reportMetadata(view.workspace.workspaceId, {
     [restartKey]: JSON.stringify(rebuilding ? previous : { request: restartRequest, oldPane: agent?.paneId }),
-  });
-  if (agent && !rebuilt) await ctx.workspaces.stopAgent(worker);
-  await ctx.workspaces.reportMetadata(view.workspace.workspaceId, {
     [`profile_${STAGE_AGENTS[stage]}`]: JSON.stringify(profile),
     [selectedAgentToken(stage)]: selected.name,
     ...(stage === "build" ? { builder: null } : {}),
   });
+  if (agent && !rebuilt) await ctx.workspaces.stopAgent(worker);
   const result = await startStageTicket(ctx, view.full, state, { stage, rebuilding: true });
   return { ...result, data: result };
 }

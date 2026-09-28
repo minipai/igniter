@@ -84,18 +84,15 @@ with Progress Pending | In progress | Complete | Blocked — and every ticket
 runs Build, independent Acceptance, and Deliver in that order. Projects cannot
 add, skip, or reorder stages.
 
-Bundled agent profiles contain harness, model, and optional effort;
-`.igniter/config.yaml` may override any field of a same-named profile, inherit
-the omitted fields, and add new named candidates. Each stage has a default
+Bundled agent profiles contain a launch command; `.igniter/config.yaml` may
+override a same-named profile and add new named candidates. Each stage has a default
 agent: Build runs on `builder`, Acceptance on `acceptance`, and
 Deliver on `deliverer`. The Commander may select another named candidate for a
 run with `worker start <ticket> --agent <name>` before the worker starts;
 `builder_backup` and `builder_expert` are bundled candidates. The candidate
 name carries no special program behavior, no automatic fallback, and no
 candidate ordering. `acceptance` is a wiring name, not permission to perform
-code review. `effort` is cross-harness reasoning/thinking effort: the launch
-translates it into the harness's native option, and a harness with no such
-option refuses the configuration instead of ignoring it.
+code review.
 
 When no additional project instruction file exists, proceed with the stage
 prompt and repository instructions.
@@ -242,7 +239,7 @@ and delivery of the initial work order. Pass `--agent <name>` to select a named
 candidate before the worker starts; without it a new run uses the stage default
 and a retry keeps the run's recorded selection.
 Require its confirmed delivery result and retain the returned role, selected
-agent, effective harness/model/effort, worker identity, and result path before
+agent, effective launch command, worker identity, and result path before
 running `igniter begin <ticket>`. Worker creation or undelivered prompts
 must never be followed by begin. Retry worker start after fixing the cause;
 reuse the same role's identity and work order rather than creating duplicates.
@@ -257,15 +254,15 @@ Worker commands may read ticket context but never write Linear:
 - `igniter worker send <ticket> --role build|acceptance|deliver TEXT` sends work to
   the explicitly selected role. Never guess when several roles exist.
 - `igniter worker restart <ticket> --role build|acceptance|deliver --agent NAME`
-  (or `--model MODEL`, with `--harness` and `--effort` when needed) rebuilds the
-  selected worker using the named candidate and its merged profile. Without a
+  (or `--command COMMAND`) rebuilds the selected worker using the named
+  candidate and its command profile. Without a
   new `--agent`, it keeps the run's recorded selection instead of reverting to
   the stage default. It preserves worktree changes and checkpoint; tell the
   replacement to inspect the diff.
 - `igniter worker stop <ticket> --role build|acceptance|deliver` stops only that
   workflow worker; use it explicitly after a handoff, block, failure, or Done.
-- `igniter worker answer <ticket> --role build|acceptance|deliver y|n` answers a
-  verified live permission dialog.
+- `igniter worker answer <ticket> --role build|acceptance|deliver KEY` sends the
+  supplied key to a verified live permission dialog.
 
 Retain the IDs of workflow-created tabs and close only those during cleanup.
 
@@ -300,8 +297,7 @@ Use `builder-<ticket>` for Build, `acceptance-<ticket>` for Acceptance, and
 `deliverer-<ticket>` for Deliver. The Deliver name may remain unassociated on
 the current board; that does not prevent the worker from running.
 
-Before opening a worker, verify that the configured harness exists in Herdr and
-that its configured model id is available. Use `builder_backup` or
+Before opening a worker, verify that the configured launch command is available. Use `builder_backup` or
 `builder_expert` when the project workflow calls for a stronger Build
 candidate; the Commander records the choice and a short reason.
 
@@ -396,8 +392,8 @@ owner step and returns straight to Acceptance + Pending. There is no code audit 
 default. Only the owner may request a bounded read-only audit, and it never
 replaces black-box acceptance.
 
-When a Builder model switch is needed, use `igniter worker restart <ticket>
---role build --model MODEL`. Confirm the returned effective model and real
+When a Builder command switch is needed, use `igniter worker restart <ticket>
+--role build --command COMMAND`. Confirm the returned launch command and real
 replacement worker; preserve the worktree and current checkpoint.
 
 ## Acceptance

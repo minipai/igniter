@@ -24,7 +24,7 @@ describe("e2e begin worker recovery", () => {
   test("a Pending agent-start failure leaves Linear untouched and the next begin recovers", async () => {
     await withE2E({}, async (e2e) => {
       addTodo(e2e, "STA-30");
-      e2e.workspaces.failNext("agent.start");
+      e2e.workspaces.failNext("pane.send_input");
       expectFail(await e2e.cli(["worker", "start", "STA-30"]), "worker start failed");
       let issue = e2e.world.issues.find((candidate) => candidate.identifier === "STA-30")!;
       expect(issue.stateId).toBe("st-todo");

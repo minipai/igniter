@@ -298,9 +298,9 @@ describe("explicit worker start and begin", () => {
       // Linear is the authority; workspace metadata carries identity plus
       // the run's frozen profiles, never the protocol transition.
       expect(workspace.tokens).toMatchObject({ ticket: "STA-1" });
-      expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-terra" });
-      expect(JSON.parse(workspace.tokens["profile_acceptance"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-sol" });
-      expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toMatchObject({ harness: "codex", model: "gpt-5.6-luna" });
+      expect(JSON.parse(workspace.tokens["profile_builder"]!)).toMatchObject({ command: "opencode mini -m opencode-go/deepseekflash-4.1" });
+      expect(JSON.parse(workspace.tokens["profile_acceptance"]!)).toEqual(h.resolved.config.commander.agents.acceptance);
+      expect(JSON.parse(workspace.tokens["profile_deliverer"]!)).toEqual(h.resolved.config.commander.agents.deliverer);
       expect(workspace.tokens).not.toHaveProperty("commander");
       expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
       expect(h.workspaces.agents.find((a) => a.name === "builder-sta-1")).toBeDefined();

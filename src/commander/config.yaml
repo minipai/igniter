@@ -1,48 +1,29 @@
-# Bundled Commander defaults. A repository may override any agent profile
-# field under `agents` in `.igniter/config.yaml`; omitted fields inherit the
-# values below, and a new named agent is added to the candidate list. Stage
-# prompts are bundled and cannot be replaced; a project may add optional
-# per-stage runbooks under `runbooks` in `.igniter/config.yaml`.
-#
-# Every profile — commander, builder, acceptance, deliverer, and each named
-# candidate — shares one shape: `harness`, `model`, and optional `effort`.
-# `effort` is cross-harness reasoning/thinking effort. Omit it to keep the
-# harness default; once set, dispatch translates it into the harness's
-# native launch option (codex: `-c model_reasoning_effort="<effort>"`,
-# claude: `--effort <effort>`) and refuses to launch when the harness has
-# no such option, never silently dropping it.
-# Codex model ids are bare (`gpt-5.6-sol`). Provider-qualified ids such as
-# `openai/...` belong to OpenCode and are rejected by the Codex ChatGPT login.
+# Bundled Commander defaults. A repository may replace a profile's complete
+# command under `agents` in `.igniter/config.yaml`; same-named profiles inherit
+# the whole command when omitted. New named candidates require a command.
+# The Commander command receives the prompt through the unquoted {prompt}
+# placeholder. Worker commands are launched without a prompt placeholder.
 #
 # Stage mapping is fixed: Build defaults to builder, Acceptance to
 # acceptance, Deliver to deliverer. builder_backup and builder_expert are
-# named candidates the Commander may select per run; the name carries no
-# special program behavior, and no automatic fallback or ordering exists.
+# named candidates the Commander may select per run; names carry no special
+# program behavior, and no automatic fallback or ordering exists.
 
 agents:
   commander:
-    harness: codex
-    model: gpt-6-astra
-    effort: medium
+    command: 'opencode --prompt {prompt}'
 
   builder:
-    harness: codex
-    model: gpt-5.6-terra
+    command: 'opencode mini -m opencode-go/deepseekflash-4.1'
 
   acceptance:
-    harness: codex
-    model: gpt-5.6-sol
-    effort: high
+    command: 'opencode mini -m openai/gpt-6-luna#max'
 
   deliverer:
-    harness: codex
-    model: gpt-5.6-luna
-    effort: high
+    command: 'opencode mini -m openai/gpt-6-luna#high'
 
   builder_backup:
-    harness: codex
-    model: gpt-5.6-luna
+    command: 'codex -m gpt-5.6-luna'
 
   builder_expert:
-    harness: codex
-    model: gpt-5.6-sol
+    command: 'codex -m gpt-5.6-sol'

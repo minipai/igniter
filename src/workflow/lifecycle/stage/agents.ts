@@ -1,285 +1,123 @@
-// Agent profiles: one shape for every worker, and the launch translation
-// of the cross-harness `effort` field into each harness's native
-// reasoning/thinking launch option.
-//
-// Every profile — commander, builder, acceptance, deliverer, and each named
-// candidate — is `harness` + `model` + optional `effort`. `effort` may be
-// omitted to keep the harness default; once set it must become a real
-// launch argument or fail explicitly before launch, never silently dropped.
-//
-// Native options, read off the installed CLIs (never guessed):
-// - codex 0.153.4: `-m/--model <MODEL>` selects the model; there is no
-//   `--effort` flag, so reasoning effort is the `model_reasoning_effort`
-//   config key, settable per launch with `-c model_reasoning_effort="<effort>"`
-//   (the key is in live use in `~/.codex/config.toml`). Accepted values are
-//   the documented Codex reasoning levels: minimal, low, medium, high, xhigh.
-// - claude 2.1.263: `--model <model>` selects the model and
-//   `--effort <level>` the effort (low, medium, high, xhigh, max).
-// - opencode: the full TUI launch contract uses `-m provider/model`, as
-//   supported by 1.18.29. The 2.0.16 full TUI has no model launch flag.
-// - opencode-mini: `mini -m provider/model` selects the model in the
-//   2.0.16 minimal interactive interface. Neither interactive launch
-//   contract exposes an effort flag, so a configured effort fails.
-// Any other harness fails too: without a known model flag the profile's
-// model could not reach the launch, and dispatch never drops it silently.
-
-import type {
-  CommanderAgentConfig,
-  CommanderConfig,
-  CommanderStage,
-  DispatchConfig,
-} from "../../config/config.ts";
+// Agent commands and the run-recorded profiles used by retries.
+import type { CommanderAgentConfig, CommanderConfig, CommanderStage, DispatchConfig } from "../../config/config.ts";
 import { agentByName, STAGE_AGENTS } from "../../config/config.ts";
 
 export type { CommanderAgentConfig };
 
-const CODEX_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"] as const;
-const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-
-/**
- * Native Herdr `agent.start` args carrying a profile's model and effort:
- * the model always rides along, the effort only when configured. Throws
- * naming the harness and the value when either has no way to reach the
- * launch — the caller fails before launch, never drops silently.
- */
-export function launchArgsFor(profile: Pick<CommanderAgentConfig, "harness" | "model" | "effort">): string[] {
-  const effort = profile.effort;
-  switch (profile.harness) {
-    case "codex":
-      if (profile.model.includes("/")) {
-        throw new Error(
-          `unsupported model "${profile.model}" for harness "codex": ` +
-            `Codex expects a bare model id such as "gpt-5.6-sol"; provider/model ids belong to OpenCode`,
-        );
-      }
-      return ["-m", profile.model, ...codexEffortArgs(effort)];
-    case "claude":
-      return ["--model", profile.model, ...claudeEffortArgs(effort)];
-    case "opencode":
-    case "opencode-mini":
-      if (!profile.model.includes("/")) {
-        throw new Error(
-          `unsupported model "${profile.model}" for harness "${profile.harness}": ` +
-            `OpenCode expects a provider/model id`,
-        );
-      }
-      if (effort !== undefined) {
-        throw new Error(
-          `unsupported effort "${effort}" for harness "${profile.harness}": ` +
-            `this interactive OpenCode launch has no reasoning-effort option; omit effort or set effort: null to keep the harness default`,
-        );
-      }
-      return profile.harness === "opencode-mini"
-        ? ["mini", "-m", profile.model]
-        : ["-m", profile.model];
-    default:
-      throw new Error(
-        `unsupported harness "${profile.harness}": ` +
-          `no known model launch option, so the configured model "${profile.model}" could not reach the launch`,
-      );
+/** Worker commands are submitted unchanged to the pane's shell. */
+export function launchFor(profile: CommanderAgentConfig): { command: string } {
+  if (!profile.command.trim()) throw new Error("agent command must be non-empty");
+  if (profile.command.includes("{prompt}")) {
+    throw new Error("worker commands cannot contain {prompt}; Herdr delivers the work order after startup");
   }
+  return { command: profile.command };
 }
 
-function codexEffortArgs(effort: string | undefined): string[] {
-  if (effort === undefined) return [];
-  if (!(CODEX_EFFORTS as readonly string[]).includes(effort)) {
-    throw new Error(
-      `unsupported effort "${effort}" for harness "codex" ` +
-        `(known: ${CODEX_EFFORTS.join(", ")}); omit effort to keep the harness default`,
-    );
-  }
-  return ["-c", `model_reasoning_effort="${effort}"`];
-}
-
-function claudeEffortArgs(effort: string | undefined): string[] {
-  if (effort === undefined) return [];
-  if (!(CLAUDE_EFFORTS as readonly string[]).includes(effort)) {
-    throw new Error(
-      `unsupported effort "${effort}" for harness "claude" ` +
-        `(known: ${CLAUDE_EFFORTS.join(", ")}); omit effort to keep the harness default`,
-    );
-  }
-  return ["--effort", effort];
-}
-
-/** The Herdr `agent.start` identity behind one agent profile. */
-export function launchFor(profile: CommanderAgentConfig): { kind: string; args: string[] } {
-  const kind = profile.harness === "opencode-mini" ? "opencode" : profile.harness;
-  return { kind, args: launchArgsFor(profile) };
-}
-
-/** Interactive Commander command with its first work order supplied at launch. */
+/** The placeholder is a whole, unquoted shell word, replaced with one quoted argument. */
 export function foregroundCommandFor(profile: CommanderAgentConfig, workOrder: string): string[] {
-  const { kind, args } = launchFor(profile);
-  if (kind === "opencode") return [kind, ...args, "--prompt", workOrder];
-  return [kind, ...args, workOrder];
+  const command = profile.command;
+  if (!/(^|\s)\{prompt\}(?=\s|$)/.test(command) || command.split("{prompt}").length !== 2) {
+    throw new Error("Commander command requires exactly one unquoted {prompt} argument");
+  }
+  const index = command.indexOf("{prompt}");
+  let quote: string | undefined;
+  let comment = false;
+  for (let i = 0; i < index; i++) {
+    const char = command[i];
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      i++;
+      continue;
+    }
+    if (quote === undefined && char === "#" && (i === 0 || /[\s;|&()<>]/.test(command[i - 1]!))) {
+      comment = true;
+      continue;
+    }
+    if (char === quote) quote = undefined;
+    else if ((char === "'" || char === '"') && quote === undefined) quote = char;
+  }
+  if (comment) throw new Error("Commander {prompt} argument must not be inside a shell comment");
+  if (quote !== undefined) throw new Error("Commander {prompt} argument must not be inside shell quotes");
+  const quoted = `'${workOrder.replaceAll("'", "'\\''")}'`;
+  return ["sh", "-c", command.slice(0, index) + quoted + command.slice(index + "{prompt}".length)];
 }
 
-// ---------------------------------------------------------------------------
-// Run record: the resolved stage-agent profiles frozen into workspace
-// metadata at worker start, so retries and recovery reuse the run's own
-// profiles instead of re-reading a possibly edited configuration.
-//
-// Herdr caps one metadata report at 16 tokens. Stage profiles plus their
-// selected candidate names use six small tokens.
-// ---------------------------------------------------------------------------
+export const PROFILE_TOKENS = ["profile_builder", "profile_acceptance", "profile_deliverer"] as const;
+export const SELECTED_TOKENS = ["agent_builder", "agent_acceptance", "agent_deliverer"] as const;
 
-/** Workspace metadata keys carrying the worker-start stage-agent profiles. */
-export const PROFILE_TOKENS = [
-  "profile_builder",
-  "profile_acceptance",
-  "profile_deliverer",
-] as const;
-
-/** Workspace metadata keys carrying the selected candidate name per stage. */
-export const SELECTED_TOKENS = [
-  "agent_builder",
-  "agent_acceptance",
-  "agent_deliverer",
-] as const;
-
-interface FrozenProfile {
-  harness?: unknown;
-  model?: unknown;
-  effort?: unknown;
-}
-
-function freezeProfile(profile: CommanderAgentConfig): string {
-  return JSON.stringify(profile);
-}
-
-/** The worker-start snapshot of every stage-agent profile for the run: three
- *  profiles plus their default candidate names. */
 export function recordStageProfiles(config: DispatchConfig): Record<string, string> {
   const agents = config.commander.agents;
   return {
-    profile_builder: freezeProfile(agents.builder),
-    profile_acceptance: freezeProfile(agents.acceptance),
-    profile_deliverer: freezeProfile(agents.deliverer),
+    profile_builder: JSON.stringify(agents.builder),
+    profile_acceptance: JSON.stringify(agents.acceptance),
+    profile_deliverer: JSON.stringify(agents.deliverer),
     agent_builder: "builder",
     agent_acceptance: "acceptance",
     agent_deliverer: "deliverer",
   };
 }
 
-/** The run-recorded profile and candidate tokens already on a workspace. A
- *  rebuild merges these over fresh defaults so it never downgrades the run
- *  record with a possibly edited configuration. */
 export function keptStageProfiles(tokens: Record<string, string>): Record<string, string> {
   const kept: Record<string, string> = {};
   for (const key of [...PROFILE_TOKENS, ...SELECTED_TOKENS]) {
-    const value = tokens[key];
-    if (value !== undefined) kept[key] = value;
+    if (tokens[key] !== undefined) kept[key] = tokens[key];
   }
   return kept;
 }
 
-/** The workspace metadata key naming the candidate selected for a stage. */
 export function selectedAgentToken(stage: CommanderStage): string {
   return `agent_${STAGE_AGENTS[stage]}`;
 }
 
 export interface SelectedStageAgent {
-  /** The selected candidate name, kept apart from the stage role. */
   name: string;
   profile: CommanderAgentConfig;
 }
 
-/**
- * Resolve the effective agent for a stage. An explicit name must exist in the
- * live merged agents map and wins; otherwise the run's recorded selection (or
- * the stage default) is reused from the frozen profile token. The name is
- * display identity only: it never changes the stage role, worker identity,
- * worktree, scratch, or receipt binding.
- */
+/** Explicit selection wins; retries keep the selected command even after config edits. */
 export function selectStageAgent(
   commander: CommanderConfig,
   tokens: Record<string, string>,
   stage: CommanderStage,
   requested?: string,
 ): SelectedStageAgent {
+  if (requested !== undefined) return { name: requested, profile: agentByName(commander.agents, requested) };
   const role = STAGE_AGENTS[stage];
-  if (requested !== undefined) {
-    return { name: requested, profile: agentByName(commander.agents, requested) };
-  }
-  const name = tokens[selectedAgentToken(stage)] ?? role;
-  const profile = commanderConfigForRun(commander, tokens).agents[role];
-  return { name, profile };
+  return {
+    name: tokens[selectedAgentToken(stage)] ?? role,
+    profile: thawProfile(tokens[`profile_${role}`], commander.agents[role]),
+  };
 }
 
-/**
- * Every profile effort dispatch cannot translate, named concretely. The
- * worker start refuses on these before any workspace opens, so a
- * configured effort is either a real launch option or an explicit error —
- * for stage profiles too, not just the Commander.
- */
 export function launchProblems(config: DispatchConfig): string[] {
   const problems: string[] = [];
   for (const [name, profile] of Object.entries(config.commander.agents)) {
     try {
-      launchArgsFor(profile);
+      if (name === "commander") foregroundCommandFor(profile, "work order");
+      else launchFor(profile);
     } catch (error) {
       problems.push(`agents."${name}": ${(error as Error).message}`);
     }
   }
   return problems;
 }
-function isFrozen(value: unknown): value is FrozenProfile {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
-function thawField(frozen: FrozenProfile, key: "harness" | "model" | "effort"): string | undefined {
-  const value = frozen[key];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function parseFrozen(raw: string | undefined): FrozenProfile | undefined {
-  if (raw === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isFrozen(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function thawBase(frozen: FrozenProfile | undefined, base: CommanderAgentConfig): CommanderAgentConfig {
-  if (frozen === undefined) return { ...base };
-  const harness = thawField(frozen, "harness") ?? base.harness;
-  const model = thawField(frozen, "model") ?? base.model;
-  const effort = thawField(frozen, "effort");
-  return effort === undefined ? { harness, model } : { harness, model, effort };
-}
-
-/**
- * A frozen profile wins field by field; anything missing or malformed
- * falls back to the live configuration. An effort frozen as absent stays
- * absent even when the live configuration now sets one — only a run that
- * never recorded the profile inherits the live value.
- */
 function thawProfile(raw: string | undefined, base: CommanderAgentConfig): CommanderAgentConfig {
-  return thawBase(parseFrozen(raw), base);
-}
-
-/**
- * The Commander work-order config for a resumed or recovered run: recorded
- * profile tokens win for each stage, and the live configuration fills
- * whatever the run never recorded (older runs). Other named candidates stay
- * live — only the stage roles are frozen by the run record.
- */
-export function commanderConfigForRun(
-  commander: CommanderConfig,
-  tokens: Record<string, string>,
-): CommanderConfig {
-  const builder = thawBase(parseFrozen(tokens["profile_builder"]), commander.agents.builder);
-  // A legacy builder-model override token still wins for Build only.
-  if (tokens["builder"] !== undefined) builder.model = tokens["builder"];
-  return {
-    agents: {
-      ...commander.agents,
-      builder,
-      acceptance: thawProfile(tokens["profile_acceptance"], commander.agents.acceptance),
-      deliverer: thawProfile(tokens["profile_deliverer"], commander.agents.deliverer),
-    },
-  };
+  if (raw === undefined) return { ...base };
+  if (raw.startsWith("igniter:")) {
+    throw new Error("recorded agent command is missing or corrupt; restart with an explicit agent or command");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("invalid recorded agent command; restart with an explicit agent or command");
+  }
+  if (parsed === null || typeof parsed !== "object" || !("command" in parsed) || typeof parsed.command !== "string" || !parsed.command.trim()) {
+    throw new Error("recorded agent profile has no command; restart with an explicit agent or command");
+  }
+  return { command: parsed.command };
 }

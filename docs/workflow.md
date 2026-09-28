@@ -82,12 +82,12 @@ recovery boundary, but never writes that format again.
 After each approved transition, the Commander starts the next worker, confirms
 delivery, and records begin. `worker start` owns worktree/scratch setup, stable
 per-role identities, tabs, effective profile, and confirmed initial work-order
-delivery. It returns the role, selected agent, merged harness/model/effort,
+delivery. It returns the role, selected agent, launch command,
 worker identity, and result path. Pass `--agent <name>` to select a named
 candidate before the worker starts; without it a new run uses the stage default
 and a retry keeps the run's recorded selection. Use
-`worker send`, `worker restart --agent NAME` (or `--model MODEL`),
-`worker stop`, and `worker answer ... y|n` for worker operations. Use
+`worker send`, `worker restart --agent NAME` (or `--command COMMAND`),
+`worker stop`, and `worker answer ... KEY` for worker operations. Use
 `--role build|acceptance|deliver` when targeting an earlier role or when several
 workers exist. A restart without a new `--agent` keeps the run's recorded
 selection.

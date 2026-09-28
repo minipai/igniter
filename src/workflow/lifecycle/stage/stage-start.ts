@@ -91,9 +91,7 @@ export interface StageWorkOrderInput {
   runbook?: string;
   /** The selected candidate name; the stage role is separate. */
   agent: string;
-  harness: string;
-  model: string;
-  effort?: string;
+  launchCommand: string;
   /** Delivery document path relative to the repo root, when configured. */
   delivery?: string;
 }
@@ -123,7 +121,6 @@ const STAGE_MARKER: Record<CommanderStage, string> = {
 export function buildStageWorkOrder(input: StageWorkOrderInput): string {
   const scratch = dirname(input.resultPath);
   const submitPath = join(scratch, "submit.json");
-  const effort = input.effort !== undefined ? `; effort \`${input.effort}\`` : "";
   const runbook = input.runbook !== undefined
     ? `Read the project runbook at ${input.runbook} (an optional, project-specific addition to this stage).\n` +
       `Follow it for this project's ${input.stage === "acceptance" ? "run, checks, and acceptance environment" : "run, checks, acceptance environment, and delivery procedure"}.\n` +
@@ -145,7 +142,7 @@ export function buildStageWorkOrder(input: StageWorkOrderInput): string {
     `\n` +
     `Worktree: ${input.worktreePath} on branch ${input.branch} (base main). ` +
     `${worktreeInstruction(input)}\n` +
-    `Agent profile for this stage: \`${input.agent}\` — harness \`${input.harness}\`; model \`${input.model}\`${effort}.\n` +
+    `Agent profile for this stage: \`${input.agent}\` — command ${JSON.stringify(input.launchCommand)}.\n` +
     `Your own scratch dir is \`${scratch}\`; ` +
     `write your submit JSON to \`${submitPath}\` and your completion report to \`${input.resultPath}\`.\n` +
     `\n` +
@@ -261,9 +258,7 @@ export interface StageStartResult {
   role?: CommanderStage;
   /** The selected candidate name, distinct from the stage role. */
   agent?: string;
-  harness?: string;
-  model?: string;
-  effort?: string;
+  launchCommand?: string;
   resultPath?: string;
   confirmed?: boolean;
 }
@@ -407,12 +402,12 @@ export async function ensureStageWorker(
   identifier: string,
   stage: CommanderStage,
   workspaceId: string,
-  profileOverride?: { harness: string; model: string; effort?: string },
+  profileOverride?: { command: string },
 ): Promise<{ worker: string; created: boolean }> {
   const worker = workerAgentName(stage, identifier);
   const config = deps.config ?? deps.resolved.config;
   const profile = profileOverride ?? stageAgentProfile(config, stage);
-  const { kind, args } = launchFor(profile);
+  const { command } = launchFor(profile);
   const snapshot = await deps.workspaces.snapshot();
   const existing = snapshot.agents.find((a) => a.name === worker);
   const workspaceOf = (name: string): string | null =>
@@ -438,7 +433,7 @@ export async function ensureStageWorker(
     if (paneId) await deps.workspaces.reportMetadata(workspaceId, { [paneToken]: paneId });
   }
   if (!paneId) throw new WorkspaceError(`workspace ${workspaceId} has no pane available for ${worker}`);
-  await deps.workspaces.startAgent({ paneId, kind, name: worker, ...(args.length > 0 ? { args } : {}) });
+  await deps.workspaces.startAgent({ paneId, command, name: worker });
   return { worker, created: true };
 }
 
@@ -513,8 +508,7 @@ export async function startStageTicket(
         criteria: state.criteria, worktreePath: ensured.worktreePath, branch: ensured.branch,
         checkpoint, resultPath, stage,
         promptPath: promptPathForStage(deps.assets ?? commanderAssetPaths(), stage),
-        agent: selected.name, harness: profile.harness, model: profile.model,
-        ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+        agent: selected.name, launchCommand: profile.command,
         ...(config.delivery !== undefined ? { delivery: config.delivery } : {}),
         ...(config.runbooks[stage] !== undefined ? { runbook: config.runbooks[stage] } : {}),
       });
@@ -531,14 +525,12 @@ export async function startStageTicket(
       }, order, deps.promptDelivery);
       await saveWorkOrder(recordPath, { run, order, confirmedPane: live.paneId, confirmedSession: delivered.observed.session });
     }
-    const effortText = profile.effort !== undefined ? `; effort ${profile.effort}` : "";
     return {
       ok: true,
-      text: `${full.identifier}: ${stage} worker ${worker}; agent ${selected.name} (${profile.harness}); ` +
-        `model ${profile.model}${effortText}; work order confirmed; result → ${resultPath}`,
+      text: `${full.identifier}: ${stage} worker ${worker}; agent ${selected.name}; ` +
+        `command ${profile.command}; work order confirmed; result → ${resultPath}`,
       workspaceId, worker, stage, role: stage, agent: selected.name,
-      harness: profile.harness, model: profile.model,
-      ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+      launchCommand: profile.command,
       resultPath, confirmed: true,
     };
   } catch (error) {

@@ -108,44 +108,44 @@ setup, continue in that session.
 
 ### Configure agents
 
-Define profiles under `agents` in `.igniter/config.yaml`. Each profile selects
-a `harness`, a `model`, and optionally an `effort`:
+Define profiles under `agents` in `.igniter/config.yaml`. Each profile is a
+complete shell command:
 
 ```yaml
 agents:
   builder:
-    model: gpt-5.6-sol
+    command: "opencode mini -m opencode-go/deepseekflash-4.1"
   builder_backup:
-    model: gpt-5.6-luna
+    command: "claude --model sonnet"
   specialist:
-    harness: codex
-    model: gpt-5.6-sol
-```
-
-Profiles with the same name merge field by field with the
-[bundled defaults](src/commander/config.yaml); omitted fields are inherited.
-Set `effort: null` to clear an inherited effort and use the harness default.
-This is needed when switching a profile with a default effort to OpenCode Mini,
-which has no effort launch flag.
-A new profile name must specify both `harness` and `model`.
-
-OpenCode has two separate harness choices:
-
-- `opencode` launches the full TUI with `opencode -m provider/model`. This
-  requires a CLI that supports the full TUI model flag (such as OpenCode V1);
-  OpenCode V2.0.16 does not support that flag.
-- `opencode-mini` launches `opencode mini -m provider/model`, supported by
-  OpenCode V2. Both use Herdr's `opencode` agent kind.
-
-For example, to use Mini for the Commander:
-
-```yaml
-agents:
+    command: "HERDR_AGENT=opencode opencode2 mini -m provider/model"
   commander:
-    harness: opencode-mini
-    model: provider/model
-    effort: null
+    command: "opencode --prompt {prompt}"
 ```
+
+The Commander command receives its prompt through the unquoted `{prompt}`
+placeholder. Worker commands must not include that placeholder. Same-named
+profiles replace the bundled command as a whole; if `command` is omitted, the
+entire bundled command is inherited. New profile names require a non-empty
+`command`, and profile settings other than `command` are rejected.
+
+Commands include the executable name, model flags, and effort flags verbatim;
+Igniter does not translate CLI options. The Commander runs through `sh -c`,
+with `{prompt}` replaced by one shell-quoted argument. Workers run in their
+Herdr pane's shell and receive work through `agent.prompt` after detection.
+Use `HERDR_AGENT=opencode` when a renamed executable or wrapper needs Herdr's
+OpenCode detection rules. The command must stay in the foreground.
+
+Replace the old `harness`, `model`, and `effort` settings with `command`.
+To change a running worker's command, use
+`igniter worker restart ENG-123 --command 'opencode2 mini -m provider/model'`.
+`igniter worker answer ENG-123 enter` sends that exact key; `y` and `n` are
+literal keys too, not portable approve/reject actions.
+
+Worker retries retain their selected command. Full command records live in
+`$XDG_STATE_HOME/igniter/worker-records` (default
+`~/.local/state/igniter/worker-records`); Herdr metadata holds short references
+so its token length limit cannot truncate commands.
 
 `commander` configures the Commander. `builder`, `acceptance`, and `deliverer`
 are the defaults for their stages. Additional names, including the bundled
@@ -174,8 +174,8 @@ your repository's instructions.
   cancellation, and command migration.
 - [Project runbooks](docs/workflow.md#project-runbooks) — add repository-specific
   instructions for Build, Acceptance, and Deliver.
-- [Agent defaults](src/commander/config.yaml) — harness, model, and reasoning
-  settings that projects can override under `agents` in `.igniter/config.yaml`.
+- [Agent defaults](src/commander/config.yaml) — command strings that projects
+  can override under `agents` in `.igniter/config.yaml`.
 
 ## Development
 

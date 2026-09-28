@@ -20,24 +20,18 @@ target_branch: main
 # Optional: `herdr --remote <value> --session factory` target for README.
 # herdr_remote: art@192.168.88.8
 
-# Agent overrides may set any profile field (commander, builder,
-# acceptance, deliverer, or any named candidate: harness, model, effort).
-# A same-named profile merges field by field over the bundled default;
-# a new name must be a complete harness + model profile. Stage defaults are
+# Agent overrides replace the complete shell command (commander, builder,
+# acceptance, deliverer, or any named candidate).
+# A new name must provide a command. Stage defaults are
 # fixed: Build → builder, Acceptance → acceptance, Deliver → deliverer.
 # The Commander may select another named candidate per stage, e.g.
 # `igniter worker start <ticket> --agent builder_expert`.
 agents:
   builder:
-    harness: opencode
-    model: opencode-go/deepseek-v4.1-flash
-    # DeepSeek V4 Flash defaults to high, its recommended effort for daily
-    # agent work. OpenCode's interactive TUI has no --variant launch option.
+    command: opencode mini -m opencode-go/deepseekflash-4.1
 
   acceptance:
-    harness: claude
-    model: claude-sonnet-5
-    effort: high
+    command: opencode mini -m openai/gpt-6-luna#max
 
 # Optional project runbooks. Each entry is optional; omit the whole map to
 # use only the bundled stage protocol prompts and repository instructions.

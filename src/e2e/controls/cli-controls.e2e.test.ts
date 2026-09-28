@@ -145,7 +145,7 @@ describe("e2e CLI removed controls and blockers", () => {
 });
 
 describe("e2e CLI recovery controls", () => {
-  test("worker restart changes the real model; fail leaves worker cleanup explicit", async () => {
+  test("worker restart changes the real command; fail leaves worker cleanup explicit", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-23",
@@ -159,9 +159,10 @@ describe("e2e CLI recovery controls", () => {
       const writesBefore = e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels").length;
 
       const restarted = expectOk(
-        await e2e.cli(["worker", "restart", "STA-23", "--model", "gpt-5.6-sol"]),
+        await e2e.cli(["worker", "restart", "STA-23", "--command", "worker-cli --fast"]),
       );
-      expect(restarted.stdout).toContain("model gpt-5.6-sol; work order confirmed");
+      expect(restarted.stdout).toContain("work order confirmed");
+      expect(e2e.workspaces.calls.some((call) => call.method === "pane.send_input" && call.params["text"] === "worker-cli --fast")).toBe(true);
       expect(restarted.stderr).toBe("");
       expect(e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-23")!.paneId).not.toBe(originalPane);
       expect(e2e.client.calls.filter((call) => call.method === "setIssueState" || call.method === "setIssueLabels")).toHaveLength(writesBefore);
@@ -184,7 +185,7 @@ describe("e2e CLI recovery controls", () => {
 });
 
 describe("e2e CLI permission answers", () => {
-  test("answer y/n targets the current stage worker using each stage harness keys", async () => {
+  test("answer sends raw keys to the current stage worker", async () => {
     await withE2E(async (e2e) => {
       memoryAddIssue(e2e.world, {
         identifier: "STA-24",
@@ -194,12 +195,15 @@ describe("e2e CLI permission answers", () => {
       });
       expectOk(await e2e.startStage("STA-24"));
       const builder = e2e.workspaces.agents.find((agent) => agent.name === "builder-sta-24")!;
-      expect(builder.kind).toBe("opencode");
+      expect(builder.kind).toBe("custom");
+      expect(e2e.workspaces.calls.some((call) =>
+        call.method === "pane.send_input" && call.params["text"] === "builder-cli --mode fast"
+      )).toBe(true);
 
-      const allowed = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "build", "y"]));
-      expect(allowed.stdout).toContain("answered y for builder-sta-24");
+      const allowed = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "build", "ctrl+c"]));
+      expect(allowed.stdout).toContain("answered ctrl+c for builder-sta-24");
       expect(allowed.stderr).toBe("");
-      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: builder.paneId, keys: ["y"] });
+      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: builder.name, keys: ["ctrl+c"] });
 
       const head = commitWorktreeFile(e2e.repoDir, "STA-24", "answer.txt", "mixed harness\n", "answer fixture");
       const submitted = expectOk(
@@ -212,18 +216,21 @@ describe("e2e CLI permission answers", () => {
       await ownerHandoff(e2e, "STA-24");
       expectOk(await e2e.startStage("STA-24"));
       const acceptance = e2e.workspaces.agents.find((agent) => agent.name === "acceptance-sta-24")!;
-      expect(acceptance.kind).toBe("claude");
+      expect(acceptance.kind).toBe("custom");
       expect(acceptance.paneId).not.toBe(builder.paneId);
+      expect(e2e.workspaces.calls.some((call) =>
+        call.method === "pane.send_input" && call.params["text"] === "acceptance-cli --mode fast"
+      )).toBe(true);
 
-      const denied = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "acceptance", "n"]));
-      expect(denied.stdout).toContain("answered n for acceptance-sta-24");
+      const denied = expectOk(await e2e.cli(["worker", "answer", "STA-24", "--role", "acceptance", "esc"]));
+      expect(denied.stdout).toContain("answered esc for acceptance-sta-24");
       expect(denied.stderr).toBe("");
-      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: acceptance.paneId, keys: ["esc"] });
+      expect(e2e.workspaces.sentKeys.at(-1)).toEqual({ paneId: acceptance.name, keys: ["esc"] });
     }, {
       config: {
         agents: {
-          builder: { harness: "opencode", model: "opencode-go/deepseek-v4-flash" },
-          acceptance: { harness: "claude", model: "claude-sonnet-5" },
+          builder: { command: "builder-cli --mode fast" },
+          acceptance: { command: "acceptance-cli --mode fast" },
         },
       },
     });
@@ -234,16 +241,16 @@ describe("e2e CLI foreground start", () => {
   test("start runs the fake Commander in project context", async () => {
     await withE2E(async (e2e) => {
       const marker = join(e2e.repoDir, "fake-commander-started");
-      e2e.stubForegroundAgent("codex", marker);
+      e2e.stubForegroundAgent("opencode", marker);
 
       const started = expectOk(await e2e.cli(["start"], { stdin: "" }));
-      expect(started.stdout).toContain("starting Commander with codex in the current terminal");
+      expect(started.stdout).toContain("starting Commander with sh in the current terminal");
       expect(started.stdout).toContain("patrolling queue and active tickets");
       expect(started.stderr).toBe("");
       expect(await Bun.file(marker).exists()).toBe(true);
       const args = readFileSync(`${marker}.args`, "utf8");
-      expect(args).toContain("-m\ngpt-6-astra\n");
-      expect(args).toContain('model_reasoning_effort="medium"');
+      expect(args).toStartWith("--prompt\n");
+      expect(args).not.toContain("-m\n");
       expect(args).toContain("Begin with `igniter status --json`");
       const env = readFileSync(`${marker}.env`, "utf8");
       expect(env).toContain(`PWD=${e2e.repoDir}`);
