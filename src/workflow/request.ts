@@ -1,5 +1,5 @@
 export type WorkerRole = "build" | "acceptance" | "deliver";
-export type WorkerAnswer = "y" | "n";
+export type WorkerAnswer = string;
 
 export type CommandRequest =
   | { command: "status"; ticket?: string; json?: boolean }
@@ -19,9 +19,7 @@ export type CommandRequest =
     ticket: string;
     role?: WorkerRole;
     agent?: string;
-    harness?: string;
-    model?: string;
-    effort?: string;
+    launchCommand?: string;
   }
   | { command: "worker.stop"; ticket: string; role?: WorkerRole }
   | { command: "worker.answer"; ticket: string; role?: WorkerRole; answer: WorkerAnswer };

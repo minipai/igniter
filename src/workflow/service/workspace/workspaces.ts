@@ -6,6 +6,10 @@
 
 import { createHerdrSocket } from "../../../herdr/client/socket.ts";
 import { lookupSocketPath } from "../../../herdr/client/socket-path.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface RunningWorkspaces {
   runningTickets(): Promise<Set<string>>;
@@ -59,12 +63,14 @@ export interface CommandWorkspaces extends RunningWorkspaces {
   close(workspaceId: string): Promise<void>;
   /** Open a fresh tab in a live workspace for an agent that needs its own pane. */
   createTab(input: { workspaceId: string; cwd?: string; title?: string }): Promise<{ tabId: string }>;
-  startAgent(input: { paneId: string; kind: string; name: string; args?: string[] }): Promise<void>;
+  startAgent(input: { paneId: string; name: string; command: string }): Promise<void>;
   prompt(agentName: string, text: string): Promise<void>;
   /** Close the worker pane to terminate its process; preserve the checkout. */
   stopAgent?(agentName: string): Promise<void>;
   /** Send raw keys (e.g. y/n answers) straight to a pane. */
   sendKeys(paneId: string, keys: string[]): Promise<void>;
+  /** Send keys through Herdr's agent-aware input path. */
+  sendAgentKeys(target: string, keys: string[]): Promise<void>;
   readPane(paneId: string, lines: number): Promise<PaneRead>;
   reportMetadata(workspaceId: string, tokens: Record<string, string | null>): Promise<void>;
   agentKinds(): Promise<string[]>;
@@ -100,6 +106,9 @@ export const NoWorkspaces: CommandWorkspaces = {
   },
   sendKeys: async () => {
     throw new Error("herdr is not wired: cannot send keys to a pane");
+  },
+  sendAgentKeys: async () => {
+    throw new Error("herdr is not wired: cannot send keys to an agent");
   },
   readPane: async () => {
     throw new Error("herdr is not wired: cannot read a pane");
@@ -220,6 +229,7 @@ export interface HerdrWorkspacesOptions {
   timeoutMs?: number;
   runStatus?: () => Promise<string>;
   env?: Record<string, string | undefined>;
+  recordDir?: string;
 }
 
 /** Igniter agents never inherit these real provider credentials. */
@@ -277,6 +287,7 @@ async function runHerdrStatus(timeoutMs: number): Promise<string> {
  */
 export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): CommandWorkspaces {
   const timeoutMs = options.timeoutMs ?? 5000;
+  const recordDir = options.recordDir ?? workerRecordDirectory(options.env ?? process.env);
   const path = createSocketPathCache({
     socketPath: options.socketPath,
     timeoutMs,
@@ -292,25 +303,54 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       socket.close();
     }
   }
-  async function waitAgentReady(name: string): Promise<void> {
+  async function waitAgentReady(paneId: string, name: string): Promise<void> {
     const startedAt = Date.now();
+    let renamed = false;
     for (;;) {
-      let ready = false;
+      let agent: { agent?: string | null; interactive_ready?: boolean; launch_pending?: boolean; agent_status?: string } | undefined;
       try {
-        const got = (await call("agent.get", { target: name })) as {
-          agent?: { interactive_ready?: boolean; launch_pending?: boolean };
+        const got = (await call("agent.get", { target: paneId })) as {
+          agent?: { agent?: string | null; interactive_ready?: boolean; launch_pending?: boolean; agent_status?: string };
         };
-        ready = got.agent?.interactive_ready === true && got.agent?.launch_pending !== true;
+        agent = got.agent;
       } catch {
-        // The name may not resolve yet right after the start; keep polling
-        // until the deadline instead of failing the whole claim on it.
-        ready = false;
+        // Detection may not have a result immediately after the command starts.
       }
-      if (ready) return;
+      if (agent?.agent) {
+        if (!renamed) {
+          await call("agent.rename", { target: paneId, name });
+          renamed = true;
+        }
+        if (agent.agent_status === "blocked") {
+          throw new Error(`agent ${name} is blocked during startup and needs attention`);
+        }
+        if (agent.interactive_ready === true && agent.launch_pending !== true) return;
+      }
       if (Date.now() - startedAt >= READY_TIMEOUT_MS) {
-        throw new Error(`agent ${name} did not become ready within ${READY_TIMEOUT_MS}ms`);
+        throw new Error(`agent ${name} in pane ${paneId} did not become ready within ${READY_TIMEOUT_MS}ms`);
       }
       await Bun.sleep(READY_POLL_MS);
+    }
+  }
+  async function waitShellReady(paneId: string): Promise<void> {
+    const startedAt = Date.now();
+    for (;;) {
+      try {
+        const result = (await call("pane.process_info", { pane_id: paneId })) as {
+          process_info?: { shell_pid?: number; foreground_process_group_id?: number; foreground_processes?: { pid: number; name: string }[] };
+        };
+        const info = result.process_info;
+        const processes = info?.foreground_processes;
+        if (info?.shell_pid !== undefined && info.foreground_process_group_id === info.shell_pid &&
+            processes?.length === 1 && processes[0]?.pid === info.shell_pid &&
+            /^(?:-)?(?:sh|bash|zsh|fish|dash|ash|ksh|nu|pwsh|powershell|cmd)(?:\.exe)?$/i.test(processes[0].name)) return;
+      } catch {
+        // A newly created pane may not have a shell process to inspect yet.
+      }
+      if (Date.now() - startedAt >= SHELL_TIMEOUT_MS) {
+        throw new Error(`pane ${paneId} did not become an available shell within ${SHELL_TIMEOUT_MS}ms`);
+      }
+      await Bun.sleep(SHELL_RETRY_MS);
     }
   }
   return {
@@ -320,7 +360,7 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       };
       return extractRunningTickets(envelope.snapshot);
     },
-    snapshot: async () => shapeSnapshot(await call("session.snapshot", {})),
+    snapshot: async () => hydrateWorkerRecords(shapeSnapshot(await call("session.snapshot", {})), recordDir),
     create: async (input) => {
       const created = (await call("workspace.create", {
         label: input.label,
@@ -372,35 +412,18 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       return { tabId };
     },
     startAgent: async (input) => {
+      await waitShellReady(input.paneId);
       await call("pane.send_input", {
         pane_id: input.paneId,
         text: `unset ${AGENT_SECRET_NAMES.join(" ")}`,
         keys: ["Enter"],
       });
-      // The root pane's shell needs ~100-300ms after workspace.create; any
-      // other error is real and throws at once. The unset above is queued in
-      // that same shell, so these retries also wait for it to finish.
-      const startedAt = Date.now();
-      for (;;) {
-        try {
-          await call("agent.start", {
-            pane_id: input.paneId,
-            kind: input.kind,
-            name: input.name,
-            ...(input.args ? { args: input.args } : {}),
-          });
-          break;
-        } catch (error) {
-          const message = (error as Error).message;
-          if (!message.includes("is not an available shell") || Date.now() - startedAt >= SHELL_TIMEOUT_MS) {
-            throw error;
-          }
-          await Bun.sleep(SHELL_RETRY_MS);
-        }
-      }
-      // The socket start returns while the agent is still launch_pending;
-      // prompting now would fail, so wait the way the herdr CLI does.
-      await waitAgentReady(input.name);
+      await call("pane.send_input", {
+        pane_id: input.paneId,
+        text: input.command,
+        keys: ["Enter"],
+      });
+      await waitAgentReady(input.paneId, input.name);
     },
     stopAgent: async (agentName) => {
       const snapshot = shapeSnapshot(await call("session.snapshot", {}));
@@ -412,6 +435,9 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
     },
     sendKeys: async (paneId, keys) => {
       await call("pane.send_keys", { pane_id: paneId, keys });
+    },
+    sendAgentKeys: async (target, keys) => {
+      await call("agent.send_keys", { target, keys });
     },
     readPane: async (paneId, lines) => {
       const read = (await call("pane.read", {
@@ -429,7 +455,7 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
       await call("workspace.report_metadata", {
         workspace_id: workspaceId,
         source: METADATA_SOURCE,
-        tokens,
+        tokens: await storeWorkerRecords(tokens, recordDir),
       });
     },
     agentKinds: async () => parseAgentKinds(await call("server.agent_manifests", {})),
@@ -439,9 +465,8 @@ export function createHerdrWorkspaces(options: HerdrWorkspacesOptions = {}): Com
 /** Source stamped on every workspace metadata write igniter owns. */
 export const METADATA_SOURCE = "igniter";
 
-/** Shell warm-up after workspace.create: retry agent.start this often… */
+/** Poll for the interactive shell prompt after creating a workspace pane. */
 const SHELL_RETRY_MS = 250;
-/** …for at most this long before the error counts as real. */
 const SHELL_TIMEOUT_MS = 10_000;
 /** Readiness poll after agent.start returns launch_pending… */
 const READY_POLL_MS = 500;
@@ -515,4 +540,82 @@ function tokensOf(tokens: unknown): Record<string, string> {
     if (typeof value === "string") out[key] = value;
   }
   return out;
+}
+
+function workerRecordDirectory(env: Record<string, string | undefined>): string {
+  return join(env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "igniter", "worker-records");
+}
+
+function isWorkerRecordKey(key: string): boolean {
+  return key.startsWith("profile_") || key.startsWith("restart_");
+}
+
+async function storeWorkerRecords(
+  tokens: Record<string, string | null>,
+  directory: string,
+): Promise<Record<string, string | null>> {
+  const stored: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(tokens)) {
+    stored[key] = value === null || !isWorkerRecordKey(key)
+      ? value
+      : /^igniter:[a-f0-9]{64}$/.test(value)
+        ? value
+        : await writeWorkerRecord(directory, value);
+  }
+  return stored;
+}
+
+async function hydrateWorkerRecords(snapshot: WorkspaceSnapshot, directory: string): Promise<WorkspaceSnapshot> {
+  for (const workspace of snapshot.workspaces) {
+    for (const [key, value] of Object.entries(workspace.tokens)) {
+      if (isWorkerRecordKey(key) && value.startsWith("igniter:")) {
+        try {
+          workspace.tokens[key] = await readWorkerRecord(directory, key, value);
+        } catch {
+          // Keep unresolved references visible so only the selected worker
+          // profile blocks its command, rather than every workspace snapshot.
+        }
+      }
+    }
+  }
+  return snapshot;
+}
+
+async function writeWorkerRecord(directory: string, value: string): Promise<string> {
+  const digest = createHash("sha256").update(value, "utf8").digest("hex");
+  const path = join(directory, `${digest}.record`);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  try {
+    const existing = await readFile(path, "utf8");
+    if (existing === value) return `igniter:${digest}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const temporary = join(directory, `.${digest}.${randomUUID()}.tmp`);
+  await writeFile(temporary, value, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+  return `igniter:${digest}`;
+}
+
+async function readWorkerRecord(directory: string, key: string, reference: string): Promise<string> {
+  const match = /^igniter:([a-f0-9]{64})$/.exec(reference);
+  if (!match?.[1]) throw new Error(`workspace token ${key} has an invalid worker record reference`);
+  const digest = match[1];
+  let value: string;
+  try {
+    value = await readFile(join(directory, `${digest}.record`), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`workspace token ${key} references missing worker record ${digest}`);
+    }
+    throw error;
+  }
+  const actual = createHash("sha256").update(value, "utf8").digest("hex");
+  if (actual !== digest) throw new Error(`workspace token ${key} references corrupt worker record ${digest}`);
+  return value;
 }

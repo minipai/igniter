@@ -1,347 +1,76 @@
-// Agent profiles: one shape everywhere, effort translation per harness,
-// and the run-recorded stage profiles retries reuse. No network, no real
-// credentials, no real project.
-
 import { describe, expect, test } from "bun:test";
-import {
-  commanderConfigForRun,
-  foregroundCommandFor,
-  launchArgsFor,
-  launchFor,
-  launchProblems,
-  recordStageProfiles,
-  selectStageAgent,
-} from "./agents";
+import { foregroundCommandFor, launchFor, launchProblems, recordStageProfiles, selectStageAgent } from "./agents";
 import { parseDispatchConfig, STAGE_AGENTS } from "../../config/config";
 
-describe("stage mapping", () => {
-  test("Build runs on builder, Acceptance on acceptance, Deliver on deliverer", () => {
-    expect(STAGE_AGENTS).toEqual({ build: "builder", acceptance: "acceptance", deliver: "deliverer" });
-    const commander = parseDispatchConfig({ project: "x" }).commander;
-    // The mapping is fixed by STAGE_AGENTS; each role exists and is distinct.
-    expect(Object.keys(commander.agents).sort()).toEqual([
-      "acceptance",
-      "builder",
-      "builder_backup",
-      "builder_expert",
-      "commander",
-      "deliverer",
-    ]);
-    expect(STAGE_AGENTS.deliver).not.toBe("builder");
-    expect(commander.agents.deliverer).toEqual({
-      harness: "codex",
-      model: "gpt-5.6-luna",
-      effort: "high",
-    });
-  });
-});
-
-describe("launchArgsFor", () => {
-  test("the model always rides along, even with no effort", () => {
-    expect(launchArgsFor({ harness: "codex", model: "gpt-5.6-sol" })).toEqual([
-      "-m",
-      "gpt-5.6-sol",
-    ]);
-    expect(launchArgsFor({ harness: "claude", model: "claude-sonnet-5" })).toEqual([
-      "--model",
-      "claude-sonnet-5",
-    ]);
-    expect(launchArgsFor({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" })).toEqual([
-      "-m",
-      "opencode/muse-spark-1.3-contributor-free",
-    ]);
+describe("command launches", () => {
+  test("custom executable and shell arguments pass through unchanged", () => {
+    const command = 'HERDR_AGENT=opencode /opt/bin/opencode2 mini -m "provider/model#high"';
+    expect(launchFor({ command })).toEqual({ command });
+    expect(launchFor({ command: "custom-agent --anything" })).toEqual({ command: "custom-agent --anything" });
   });
 
-  test("codex effort becomes the model_reasoning_effort config override", () => {
-    expect(launchArgsFor({ harness: "codex", model: "gpt-5.6-sol", effort: "high" })).toEqual([
-      "-m",
-      "gpt-5.6-sol",
-      "-c",
-      'model_reasoning_effort="high"',
-    ]);
-    expect(launchArgsFor({ harness: "codex", model: "m", effort: "low" })).toEqual([
-      "-m",
-      "m",
-      "-c",
-      'model_reasoning_effort="low"',
-    ]);
+  test("Commander passes hostile prompt text as one literal shell argument", () => {
+    const prompt = "don't execute $(printf INJECTED); `printf INJECTED`\n\"quotes\" $HOME \\";
+    const argv = foregroundCommandFor({ command: "printf '%s' {prompt}" }, prompt);
+    const result = Bun.spawnSync(argv);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(prompt);
   });
 
-  test("claude effort becomes the --effort flag", () => {
-    expect(launchArgsFor({ harness: "claude", model: "claude-sonnet-5", effort: "high" })).toEqual([
-      "--model",
-      "claude-sonnet-5",
-      "--effort",
-      "high",
-    ]);
-    expect(launchArgsFor({ harness: "claude", model: "m", effort: "max" })).toEqual([
-      "--model",
-      "m",
-      "--effort",
-      "max",
-    ]);
-  });
-
-  test("an unknown effort value fails naming the harness and the value", () => {
-    expect(() => launchArgsFor({ harness: "codex", model: "m", effort: "turbo" })).toThrow(
-      'unsupported effort "turbo" for harness "codex"',
-    );
-    expect(() => launchArgsFor({ harness: "claude", model: "m", effort: "turbo" })).toThrow(
-      'unsupported effort "turbo" for harness "claude"',
-    );
-  });
-
-  test("a harness with no effort option fails instead of dropping the effort", () => {
-    for (const harness of ["opencode", "opencode-mini"]) {
-      expect(() => launchArgsFor({ harness, model: "provider/m", effort: "high" })).toThrow(
-        `unsupported effort "high" for harness "${harness}"`,
-      );
+  test("Commander requires one unquoted standalone prompt placeholder", () => {
+    for (const command of ["agent", 'agent "{prompt}"', "agent '{prompt}'", "agent --prompt={prompt}", "agent {prompt} {prompt}", 'agent "x {prompt} y"']) {
+      expect(() => foregroundCommandFor({ command }, "order")).toThrow();
     }
-  });
-
-  test("keeps Codex and OpenCode model namespaces distinct", () => {
-    expect(() => launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol" })).toThrow(
-      'Codex expects a bare model id such as "gpt-5.6-sol"',
-    );
-    // The diagnostic names where provider/model syntax belongs.
-    expect(() => launchArgsFor({ harness: "codex", model: "openai/gpt-5.6-sol" })).toThrow(
-      "provider/model ids belong to OpenCode",
-    );
-    expect(() => launchArgsFor({ harness: "opencode", model: "gpt-5.6-sol" })).toThrow(
-      "OpenCode expects a provider/model id",
-    );
-    expect(() => launchArgsFor({ harness: "opencode-mini", model: "gpt-5.6-sol" })).toThrow(
-      "OpenCode expects a provider/model id",
-    );
-  });
-
-  test("a harness with no known model flag fails instead of launching model-less", () => {
-    expect(() => launchArgsFor({ harness: "gemini", model: "m" })).toThrow(
-      'unsupported harness "gemini"',
-    );
-  });
-
-  test("launchFor carries the harness as the Herdr kind with model and effort", () => {
-    expect(launchFor({ harness: "codex", model: "gpt-5.6-sol", effort: "high" })).toEqual({
-      kind: "codex",
-      args: ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="high"'],
-    });
-    // Every stage profile translates too: the helper serves any launch.
-    expect(
-      launchFor({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-    ).toEqual({ kind: "opencode", args: ["-m", "opencode/muse-spark-1.3-contributor-free"] });
-    expect(launchFor({ harness: "claude", model: "claude-sonnet-5", effort: "high" })).toEqual({
-      kind: "claude",
-      args: ["--model", "claude-sonnet-5", "--effort", "high"],
-    });
-  });
-
-  test("foregroundCommandFor supplies the work order to each interactive harness", () => {
-    expect(foregroundCommandFor(
-      { harness: "codex", model: "gpt-5.6-sol", effort: "high" },
-      "patrol now",
-    )).toEqual([
-      "codex",
-      "-m",
-      "gpt-5.6-sol",
-      "-c",
-      'model_reasoning_effort="high"',
-      "patrol now",
+    expect(foregroundCommandFor({ command: "opencode2 mini --prompt {prompt}" }, "order")).toEqual([
+      "sh", "-c", "opencode2 mini --prompt 'order'",
     ]);
-    expect(foregroundCommandFor(
-      { harness: "claude", model: "claude-sonnet-5", effort: "high" },
-      "patrol now",
-    )).toEqual(["claude", "--model", "claude-sonnet-5", "--effort", "high", "patrol now"]);
-    expect(foregroundCommandFor(
-      { harness: "opencode", model: "opencode/model" },
-      "patrol now",
-    )).toEqual(["opencode", "-m", "opencode/model", "--prompt", "patrol now"]);
-    expect(foregroundCommandFor(
-      { harness: "opencode-mini", model: "opencode/model" },
-      "patrol now",
-    )).toEqual(["opencode", "mini", "-m", "opencode/model", "--prompt", "patrol now"]);
   });
-});
 
-describe("launchProblems", () => {
-  test("explicit null clears inherited effort when switching built-in roles to OpenCode", () => {
-    const config = parseDispatchConfig({
-      project: "x",
-      agents: {
-        commander: { harness: "opencode-mini", model: "provider/model", effort: null },
-        acceptance: { harness: "opencode-mini", model: "provider/model", effort: null },
-      },
-    });
-    for (const role of ["commander", "acceptance"] as const) {
-      expect(config.commander.agents[role]).toEqual({ harness: "opencode-mini", model: "provider/model" });
-      expect(launchFor(config.commander.agents[role])).toEqual({
-        kind: "opencode",
-        args: ["mini", "-m", "provider/model"],
-      });
+  test("workers receive work through Herdr, not a startup placeholder", () => {
+    expect(() => launchFor({ command: "agent {prompt}" })).toThrow("worker commands cannot contain {prompt}");
+  });
+
+  test("Commander refuses commented prompts but permits model variants and completed comments", () => {
+    for (const command of ["codex # {prompt}", "# {prompt}", "codex;# {prompt}"]) {
+      expect(() => foregroundCommandFor({ command }, "order")).toThrow("shell comment");
     }
-    expect(launchProblems(config)).toEqual([]);
-    const defaults = parseDispatchConfig({ project: "x" }).commander.agents;
-    expect(defaults.commander.effort).toBe("medium");
-    expect(defaults.acceptance.effort).toBe("high");
+    const command = '# comment with an unmatched quote "\nprintf "%s" {prompt}';
+    expect(Bun.spawnSync(foregroundCommandFor({ command }, "literal # text")).stdout.toString()).toBe("literal # text");
+    expect(foregroundCommandFor({ command: "opencode mini -m openai/gpt-6-luna#high --prompt {prompt}" }, "order")[2])
+      .toContain("openai/gpt-6-luna#high --prompt 'order'");
   });
 
-  test("bundled defaults launch cleanly", () => {
+  test("validation names the invalid command profile", () => {
     expect(launchProblems(parseDispatchConfig({ project: "x" }))).toEqual([]);
-  });
-
-  test("names a model written for the wrong harness", () => {
-    const config = parseDispatchConfig({
-      project: "x",
-      agents: { commander: { model: "openai/gpt-5.6-sol" } },
-    });
+    const config = parseDispatchConfig({ project: "x", agents: { commander: { command: "agent" }, builder: { command: "agent {prompt}" } } });
     expect(launchProblems(config)).toEqual([
-      expect.stringContaining('agents."commander": unsupported model "openai/gpt-5.6-sol" for harness "codex"'),
+      expect.stringContaining('agents."commander"'),
+      expect.stringContaining('agents."builder"'),
     ]);
-  });
-
-  test("names every profile whose effort its harness cannot express", () => {
-    const config = parseDispatchConfig({
-      project: "x",
-      agents: {
-        deliverer: { harness: "opencode", model: "opencode/model", effort: "high" },
-        builder_backup: { effort: "turbo" },
-      },
-    });
-    const problems = launchProblems(config);
-    expect(problems).toHaveLength(2);
-    expect(problems[0]).toContain('agents."deliverer"');
-    expect(problems[0]).toContain('unsupported effort "high" for harness "opencode"');
-    expect(problems[1]).toContain('agents."builder_backup"');
-    expect(problems[1]).toContain('unsupported effort "turbo"');
   });
 });
 
-describe("selectStageAgent", () => {
-  test("an unspecified stage uses the recorded selection or the default", () => {
-    const config = parseDispatchConfig({ project: "x" }).commander;
-    expect(selectStageAgent(config, {}, "build")).toEqual({
-      name: "builder",
-      profile: { harness: "codex", model: "gpt-5.6-terra" },
-    });
-    // A run that selected a candidate keeps that frozen profile on retry.
-    const tokens = {
-      agent_builder: "builder_expert",
-      profile_builder: JSON.stringify({ harness: "codex", model: "gpt-5.6-sol" }),
-    };
-    expect(selectStageAgent(config, tokens, "build")).toEqual({
-      name: "builder_expert",
-      profile: { harness: "codex", model: "gpt-5.6-sol" },
-    });
+describe("run-recorded commands", () => {
+  test("roles remain fixed and explicit candidates use their own command", () => {
+    expect(STAGE_AGENTS).toEqual({ build: "builder", acceptance: "acceptance", deliver: "deliverer" });
+    const { commander } = parseDispatchConfig({ project: "x", agents: { specialist: { command: "special-agent --flag" } } });
+    expect(selectStageAgent(commander, {}, "build", "specialist")).toEqual({ name: "specialist", profile: { command: "special-agent --flag" } });
+    expect(() => selectStageAgent(commander, {}, "build", "missing")).toThrow("missing");
   });
 
-  test("an explicit candidate wins and keeps the stage role separate", () => {
-    const config = parseDispatchConfig({
-      project: "x",
-      agents: { builder_expert: { harness: "codex", model: "expert/model", effort: "low" } },
-    }).commander;
-    expect(selectStageAgent(config, {}, "build", "builder_expert")).toEqual({
-      name: "builder_expert",
-      profile: { harness: "codex", model: "expert/model", effort: "low" },
-    });
-    // The name carries no special behavior: it works for any stage role.
-    expect(selectStageAgent(config, {}, "acceptance", "builder_expert").name).toBe("builder_expert");
-    expect(STAGE_AGENTS.acceptance).toBe("acceptance");
+  test("retries preserve complete commands across config changes", () => {
+    const config = parseDispatchConfig({ project: "x", agents: { builder: { command: "opencode2 mini -m original" } } });
+    const tokens = recordStageProfiles(config);
+    const changed = parseDispatchConfig({ project: "x", agents: { builder: { command: "other-agent --new" } } });
+    expect(selectStageAgent(changed.commander, tokens, "build").profile.command).toBe("opencode2 mini -m original");
+    expect(selectStageAgent(changed.commander, {}, "build").profile.command).toBe("other-agent --new");
+    expect(selectStageAgent(changed.commander, { ...tokens, agent_builder: "specialist" }, "build")).toEqual({ name: "specialist", profile: { command: "opencode2 mini -m original" } });
   });
 
-  test("an unknown explicit candidate is refused naming the known agents", () => {
-    const config = parseDispatchConfig({ project: "x" }).commander;
-    expect(() => selectStageAgent(config, {}, "build", "builder_experts")).toThrow(
-      'unknown agent "builder_experts"',
-    );
-    expect(() => selectStageAgent(config, {}, "build", "builder_experts")).toThrow(
-      "builder_backup",
-    );
-    // An inherited object member is not a candidate.
-    expect(() => selectStageAgent(config, {}, "build", "toString")).toThrow(
-      'unknown agent "toString"',
-    );
-  });
-});
-
-describe("run-recorded stage profiles", () => {
-  test("the claim snapshot freezes every stage-agent profile and selection", () => {
-    const config = parseDispatchConfig({ project: "x" });
-    const recorded = recordStageProfiles(config);
-    expect(Object.keys(recorded).sort()).toEqual([
-      "agent_acceptance",
-      "agent_builder",
-      "agent_deliverer",
-      "profile_acceptance",
-      "profile_builder",
-      "profile_deliverer",
-    ]);
-    expect(JSON.parse(recorded["profile_builder"]!)).toEqual({
-      harness: "codex",
-      model: "gpt-5.6-terra",
-    });
-    expect(JSON.parse(recorded["profile_acceptance"]!)).toEqual({
-      harness: "codex",
-      model: "gpt-5.6-sol",
-      effort: "high",
-    });
-    expect(JSON.parse(recorded["profile_deliverer"]!)).toEqual({
-      harness: "codex",
-      model: "gpt-5.6-luna",
-      effort: "high",
-    });
-    expect(recorded["agent_builder"]).toBe("builder");
-    expect(recorded["agent_acceptance"]).toBe("acceptance");
-    expect(recorded["agent_deliverer"]).toBe("deliverer");
-    // The freeze round-trips back to the configured profiles.
-    expect(commanderConfigForRun(config.commander, recorded).agents).toEqual(config.commander.agents);
-  });
-
-  test("a malformed freeze falls back to the live configuration field by field", () => {
-    const config = parseDispatchConfig({ project: "x" });
-    const rerun = commanderConfigForRun(config.commander, {
-      profile_builder: "not json",
-      profile_acceptance: JSON.stringify({ harness: 42 }),
-      profile_deliverer: JSON.stringify(["array"]),
-    });
-    expect(rerun.agents.builder).toEqual(config.commander.agents.builder);
-    // Invalid fields fall back; absent fields stay absent, not inherited.
-    expect(rerun.agents.acceptance).toEqual({ harness: "codex", model: "gpt-5.6-sol" });
-    expect(rerun.agents.deliverer).toEqual(config.commander.agents.deliverer);
-  });
-
-  test("a retry reuses the recorded profiles when the configuration drifts", () => {
-    const config = parseDispatchConfig({ project: "x" });
-    const recorded = recordStageProfiles(config);
-    const edited = parseDispatchConfig({
-      project: "x",
-      agents: {
-        builder: { harness: "gemini", model: "new/builder", effort: "low" },
-        acceptance: { harness: "opencode", model: "new/acceptance" },
-        deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
-      },
-    });
-    const rerun = commanderConfigForRun(edited.commander, recorded);
-    expect(rerun.agents.builder).toMatchObject({
-      harness: "codex",
-      model: "gpt-5.6-terra",
-    });
-    expect(rerun.agents.builder.effort).toBeUndefined();
-    expect(rerun.agents.acceptance.model).toBe("gpt-5.6-sol");
-    expect(rerun.agents.deliverer.harness).toBe("codex");
-  });
-
-  test("an effective builder model override still wins for the Build stage", () => {
-    const config = parseDispatchConfig({ project: "x" });
-    const recorded = { ...recordStageProfiles(config), builder: "custom/builder-x" };
-    const rerun = commanderConfigForRun(config.commander, recorded);
-    expect(rerun.agents.builder.model).toBe("custom/builder-x");
-    expect(rerun.agents.builder.harness).toBe("codex");
-    expect(rerun.agents.deliverer.model).toBe("gpt-5.6-luna");
-  });
-
-  test("a run without a record falls back to the live configuration", () => {
-    const config = parseDispatchConfig({ project: "x" });
-    const rerun = commanderConfigForRun(config.commander, {});
-    expect(rerun.agents).toEqual(config.commander.agents);
+  test("malformed and legacy records cannot silently select a different command", () => {
+    const { commander } = parseDispatchConfig({ project: "x" });
+    for (const profile_builder of ['{', '{"harness":"codex","model":"old"}', '{"command":""}']) {
+      expect(() => selectStageAgent(commander, { profile_builder }, "build")).toThrow("recorded agent");
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import net from "node:net";
-import { unlink } from "node:fs/promises";
+import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -185,9 +185,23 @@ async function startFakeHerdr(handlers: Record<string, SocketHandler>): Promise<
   };
 }
 
-const AGENT_READY = { type: "agent_info", agent: { interactive_ready: true, launch_pending: false } };
+const AGENT_READY = { type: "agent_info", agent: { agent: "claude", agent_status: "working", interactive_ready: true, launch_pending: false } };
+const SHELL_READY = { type: "pane_process_info", process_info: { shell_pid: 123, foreground_process_group_id: 123, foreground_processes: [{ pid: 123, name: "zsh" }] } };
 
 describe("startAgent against a live socket", () => {
+  test("agent answers use the agent-aware raw key endpoint", async () => {
+    const fake = await startFakeHerdr({
+      "agent.send_keys": (params) => ({ type: "agent_keys_sent", ...params }),
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await workspaces.sendAgentKeys("builder-sta-1", ["y"]);
+      expect(fake.calls[0]).toEqual({ method: "agent.send_keys", params: { target: "builder-sta-1", keys: ["y"] } });
+    } finally {
+      await fake.stop();
+    }
+  });
+
   test("native worktree open sends path-only with explicit repository cwd", async () => {
     const fake = await startFakeHerdr({
       "worktree.open": (params) => {
@@ -206,22 +220,21 @@ describe("startAgent against a live socket", () => {
     }
   });
 
-  test("retries while the fresh pane's shell is not up yet", async () => {
-    let starts = 0;
+  test("unsets secrets, launches, names the detected agent, then returns when ready", async () => {
     const fake = await startFakeHerdr({
+      "pane.process_info": (_params, index) => index === 0
+        ? { type: "pane_process_info", process_info: { shell_pid: null, foreground_processes: [] } }
+        : SHELL_READY,
       "pane.send_input": () => ({ type: "ok" }),
-      "agent.start": () => {
-        starts += 1;
-        if (starts <= 2) throw new Error("agent target pane pane-1 is not an available shell");
-        return { type: "agent_started" };
-      },
-      "agent.get": () => AGENT_READY,
+      "agent.get": (params) => params.target === "pane-1" ? AGENT_READY : { type: "agent_info" },
+      "agent.rename": () => ({ type: "ok" }),
     });
     try {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
-      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "deliverer-sta-1" });
-      expect(starts).toBe(3);
-      expect(fake.calls[0]).toEqual({
+      await workspaces.startAgent({ paneId: "pane-1", name: "deliverer-sta-1", command: "claude --dangerously-skip-permissions" });
+      expect(fake.calls[0]).toEqual({ method: "pane.process_info", params: { pane_id: "pane-1" } });
+      expect(fake.calls[1]).toEqual({ method: "pane.process_info", params: { pane_id: "pane-1" } });
+      expect(fake.calls[2]).toEqual({
         method: "pane.send_input",
         params: {
           pane_id: "pane-1",
@@ -229,27 +242,49 @@ describe("startAgent against a live socket", () => {
           keys: ["Enter"],
         },
       });
-      expect(fake.calls.filter((c) => c.method === "agent.get")).toHaveLength(1);
+      expect(fake.calls[3]).toEqual({ method: "pane.send_input", params: { pane_id: "pane-1", text: "claude --dangerously-skip-permissions", keys: ["Enter"] } });
+      expect(fake.calls.find((c) => c.method === "agent.get")?.params).toEqual({ target: "pane-1" });
+      expect(fake.calls.at(-1)).toEqual({ method: "agent.rename", params: { target: "pane-1", name: "deliverer-sta-1" } });
     } finally {
       await fake.stop();
     }
   });
 
-  test("any other start error throws at once", async () => {
-    let starts = 0;
+  test("a command-send error throws", async () => {
     const fake = await startFakeHerdr({
-      "pane.send_input": () => ({ type: "ok" }),
-      "agent.start": () => {
-        starts += 1;
-        throw new Error("agent kind hal is unknown");
-      },
+      "pane.process_info": () => SHELL_READY,
+      "pane.send_input": (_params, index) => { if (index === 1) throw new Error("command rejected"); return { type: "ok" }; },
     });
     try {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
       await expect(
-        workspaces.startAgent({ paneId: "pane-1", kind: "hal", name: "x" }),
-      ).rejects.toThrow("unknown");
-      expect(starts).toBe(1);
+        workspaces.startAgent({ paneId: "pane-1", name: "x", command: "broken" }),
+      ).rejects.toThrow("command rejected");
+      expect(fake.calls.filter((c) => c.method === "pane.send_input")).toHaveLength(2);
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("does not type a launch into a foreground command or an unobservable shell", async () => {
+    let inspections = 0;
+    const fake = await startFakeHerdr({
+      "pane.process_info": () => {
+        inspections++;
+        if (inspections === 1) return { process_info: { shell_pid: 123, foreground_processes: [] } };
+        if (inspections === 2) return { process_info: { shell_pid: 123, foreground_process_group_id: 123, foreground_processes: [{ pid: 123, name: "vim" }] } };
+        return SHELL_READY;
+      },
+      "pane.send_input": () => {
+        expect(inspections).toBe(3);
+        return { type: "ok" };
+      },
+      "agent.get": () => AGENT_READY,
+      "agent.rename": () => ({ type: "ok" }),
+    });
+    try {
+      await createHerdrWorkspaces({ socketPath: fake.path }).startAgent({ paneId: "pane-1", name: "builder", command: "opencode2 mini" });
+      expect(inspections).toBe(3);
     } finally {
       await fake.stop();
     }
@@ -258,22 +293,132 @@ describe("startAgent against a live socket", () => {
   test("waits for interactive_ready past launch_pending before returning", async () => {
     let gets = 0;
     const fake = await startFakeHerdr({
+      "pane.process_info": () => SHELL_READY,
       "pane.send_input": () => ({ type: "ok" }),
-      "agent.start": () => ({ type: "agent_started" }),
-      "agent.get": () => {
+      "agent.get": (params) => {
+        if (params.target !== "pane-1") throw new Error("expected pane target");
         gets += 1;
         return gets === 1
-          ? { type: "agent_info", agent: { interactive_ready: false, launch_pending: true } }
+          ? { type: "agent_info", agent: { agent: "claude", agent_status: "working", interactive_ready: false, launch_pending: true } }
           : AGENT_READY;
+      },
+      "agent.rename": () => ({ type: "ok" }),
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
+      await workspaces.startAgent({ paneId: "pane-1", name: "deliverer-sta-1", command: "claude" });
+      expect(gets).toBe(2);
+      expect(fake.calls.filter((c) => c.method === "agent.rename")).toHaveLength(1);
+      expect(fake.calls.findIndex((call) => call.method === "agent.rename")).toBeLessThan(
+        fake.calls.findIndex((call, index) => call.method === "agent.get" && index > fake.calls.findIndex((item) => item.method === "agent.get")),
+      );
+    } finally {
+      await fake.stop();
+    }
+  });
+
+  test("names a recognized agent before failing blocked startup", async () => {
+    let availableName: string | undefined;
+    const fake = await startFakeHerdr({
+      "pane.process_info": () => SHELL_READY,
+      "pane.send_input": () => ({ type: "ok" }),
+      "agent.get": () => ({ type: "agent_info", agent: { agent: "claude", agent_status: "blocked", interactive_ready: false, launch_pending: false } }),
+      "agent.rename": (params) => {
+        availableName = String(params.name);
+        return { type: "ok" };
       },
     });
     try {
       const workspaces = createHerdrWorkspaces({ socketPath: fake.path });
-      await workspaces.startAgent({ paneId: "pane-1", kind: "claude", name: "deliverer-sta-1" });
-      expect(gets).toBe(2);
-      expect(fake.calls.filter((c) => c.method === "agent.start")).toHaveLength(1);
+      await expect(workspaces.startAgent({ paneId: "pane-1", name: "builder-sta-1", command: "claude" }))
+        .rejects.toThrow("blocked during startup");
+      expect(availableName).toBe("builder-sta-1");
+      expect(fake.calls.filter((call) => call.method === "agent.rename")).toHaveLength(1);
+      expect(fake.calls.at(-1)).toEqual({ method: "agent.rename", params: { target: "pane-1", name: "builder-sta-1" } });
     } finally {
       await fake.stop();
+    }
+  });
+});
+
+describe("worker metadata records", () => {
+  test("long multiline profile and restart values survive Herdr truncation and a new client", async () => {
+    const recordDir = await mkdtemp(join(tmpdir(), "igniter-records-"));
+    const tokens: Record<string, string> = {};
+    const fake = await startFakeHerdr({
+      "workspace.report_metadata": (params) => {
+        const patch = params.tokens as Record<string, string | null>;
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === null) delete tokens[key];
+          else tokens[key] = value.slice(0, 80);
+        }
+        return { type: "workspace_metadata_reported" };
+      },
+      "session.snapshot": () => ({
+        snapshot: {
+          workspaces: [{ workspace_id: "ws-1", label: "STA-1", tokens: { ...tokens } }],
+          agents: [],
+          panes: [],
+        },
+      }),
+    });
+    try {
+      const profile = JSON.stringify({ command: "claude --model sonnet\n--dangerously-skip-permissions", prompt: "line one\nline two" });
+      const restart = JSON.stringify({ command: `custom --option ${"x".repeat(300)}`, startedAt: "2026-09-28" });
+      const firstClient = createHerdrWorkspaces({ socketPath: fake.path, recordDir });
+      await firstClient.reportMetadata("ws-1", { profile_builder: profile, restart_build: restart });
+      expect(tokens.profile_builder).toMatch(/^igniter:[a-f0-9]{64}$/);
+      expect(tokens.restart_build).toMatch(/^igniter:[a-f0-9]{64}$/);
+      expect(tokens.profile_builder!.length).toBeLessThanOrEqual(80);
+
+      const secondClient = createHerdrWorkspaces({ socketPath: fake.path, recordDir });
+      const snapshot = await secondClient.snapshot();
+      expect(snapshot.workspaces[0]?.tokens).toMatchObject({ profile_builder: profile, restart_build: restart });
+      const reference = tokens.profile_builder!;
+      await writeFile(join(recordDir, `${reference.slice("igniter:".length)}.record`), "damaged");
+      expect((await secondClient.snapshot()).workspaces[0]?.tokens.profile_builder).toBe(reference);
+      await secondClient.reportMetadata("ws-1", { profile_builder: profile });
+      expect((await secondClient.snapshot()).workspaces[0]?.tokens.profile_builder).toBe(profile);
+    } finally {
+      await fake.stop();
+      await rm(recordDir, { recursive: true, force: true });
+    }
+  });
+
+  test("unresolved references stay raw without blocking healthy workspaces and can be cleared", async () => {
+    const recordDir = await mkdtemp(join(tmpdir(), "igniter-records-"));
+    const tokens: Record<string, string> = { profile_builder: "igniter:" + "a".repeat(64) };
+    const fake = await startFakeHerdr({
+      "workspace.report_metadata": (params) => {
+        const patch = params.tokens as Record<string, string | null>;
+        for (const [key, value] of Object.entries(patch)) {
+          if (value === null) delete tokens[key];
+          else tokens[key] = value.slice(0, 80);
+        }
+        return { type: "workspace_metadata_reported" };
+      },
+      "session.snapshot": () => ({ snapshot: { workspaces: [
+        { workspace_id: "ws-1", label: "STA-1", tokens: { ...tokens } },
+        { workspace_id: "ws-2", label: "STA-2", tokens: { profile_builder: "healthy profile" } },
+      ], agents: [], panes: [] } }),
+    });
+    try {
+      const workspaces = createHerdrWorkspaces({ socketPath: fake.path, recordDir });
+      const snapshot = await workspaces.snapshot();
+      const reference = tokens.profile_builder!;
+      expect(snapshot.workspaces[0]?.tokens.profile_builder).toBe(reference);
+      expect(snapshot.workspaces[1]?.tokens.profile_builder).toBe("healthy profile");
+      await workspaces.reportMetadata("ws-1", { restart_build: tokens.profile_builder! });
+      expect(tokens.restart_build).toBe(reference);
+      const digest = "a".repeat(64);
+      await writeFile(join(recordDir, `${digest}.record`), "corrupt", "utf8");
+      expect((await workspaces.snapshot()).workspaces[0]?.tokens.profile_builder).toBe(reference);
+      await workspaces.reportMetadata("ws-1", { profile_builder: null });
+      expect(tokens).toEqual({ restart_build: reference });
+      expect((await workspaces.snapshot()).workspaces[0]?.tokens).toEqual({ restart_build: reference });
+    } finally {
+      await fake.stop();
+      await rm(recordDir, { recursive: true, force: true });
     }
   });
 });

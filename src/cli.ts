@@ -83,17 +83,15 @@ function workerCli(
   cli.command("send <ticket> <...text>", "Send text to the worker")
     .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerSendCommand);
-  cli.command("restart <ticket>", "Restart with an optional named agent or field overrides")
+  cli.command("restart <ticket>", "Restart with an optional named agent or command override")
     .option("--role <role>", "build, acceptance, or deliver")
     .option("--agent <name>", "Named agent profile (default: the run's selection)")
-    .option("--harness <harness>", "Agent harness")
-    .option("--model <model>", "Agent model")
-    .option("--effort <effort>", "Reasoning effort")
+    .option("--command <command>", "Agent launch command")
     .action(actions.workerRestartCommand);
   cli.command("stop <ticket>", "Stop the stage worker")
     .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerStopCommand);
-  cli.command("answer <ticket> <answer>", "Answer a permission prompt with y or n")
+  cli.command("answer <ticket> <answer>", "Send a key to a verified permission prompt")
     .option("--role <role>", "build, acceptance, or deliver")
     .action(actions.workerAnswerCommand);
 

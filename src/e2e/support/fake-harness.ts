@@ -133,6 +133,7 @@ export class E2E {
     return {
       PATH: `${this.stubBin}${delimiter}${process.env["PATH"] ?? ""}`,
       HOME: process.env["HOME"] ?? "",
+      XDG_STATE_HOME: join(this.stubBin, "state"),
       TMPDIR: process.env["TMPDIR"] ?? tmpdir(),
       TZ: "UTC",
       NO_COLOR: "1",

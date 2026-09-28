@@ -20,7 +20,6 @@ import type { CommandRequest, WorkerRequest } from "./request.ts";
 export type { CommandResult } from "./config/claims.ts";
 export type { CommandContext } from "./context.ts";
 export { collectStatus, type StatusCollection, type StatusData, type StatusTicketData } from "./command/status.ts";
-export { answerKeysFor } from "./command/worker/answer.ts";
 export { formatDuration } from "./lifecycle/ticket/recovery.ts";
 
 export function runCommand(command: CommandRequest, ctx: CommandContext): Promise<CommandResult> {

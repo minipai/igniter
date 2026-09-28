@@ -282,88 +282,82 @@ describe("begin", () => {
   });
 });
 
-describe("worker start profiles", () => {
-  test("worker start runs the Build worker on the unified builder profile", async () => {
+describe("worker start commands", () => {
+  test("worker start runs the Build worker using its configured command", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("builder-sta-1");
-      const started = h.workspaces.calls.find((call) => call.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "codex", name: "builder-sta-1" });
+      const started = h.workspaces.calls.find((call) => call.method === "pane.send_input");
+      expect(started?.params).toMatchObject({ text: "opencode mini -m opencode-go/deepseekflash-4.1", keys: ["Enter"] });
       expect(h.workspaces.agents.find((a) => a.name.startsWith("commander-"))).toBeUndefined();
     } finally {
       h.stop();
     }
   });
 
-  test("worker start refuses an unknown stage harness with the known kinds", async () => {
+  test("worker start launches a custom stage command", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { builder: { harness: "hal" } },
+        agents: { builder: { command: "custom-worker --fast" } },
       });
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain('"hal"');
-      expect(h.workspaces.agents).toHaveLength(0);
-      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(out.ok).toBe(true);
+      expect(h.workspaces.calls.some((call) => call.method === "pane.send_input" && call.params["text"] === "custom-worker --fast")).toBe(true);
     } finally {
       h.stop();
     }
   });
 
-  test("worker start refuses a stage effort its harness cannot express before moving Linear", async () => {
+  test("worker start uses the custom stage command", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { builder: { harness: "opencode", model: "opencode/model", effort: "high" } },
+        agents: { builder: { command: "custom-worker --mode quick" } },
       });
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain('unsupported effort "high" for harness "opencode"');
-      expect(h.workspaces.agents).toHaveLength(0);
-      expect(h.world.issues[0]!.stateId).toBe(TODO);
-      expect(h.world.issues[0]!.labelIds).toEqual([PENDING]);
-      expect(h.world.issues[0]!.comments).toHaveLength(0);
+      expect(out.ok).toBe(true);
+      expect(h.workspaces.calls.some((call) => call.method === "pane.send_input" && call.params["text"] === "custom-worker --mode quick")).toBe(true);
     } finally {
       h.stop();
     }
   });
 
-  test("a retry over a live workspace keeps the run's recorded profiles", async () => {
+  test("a retry over a live workspace keeps the run's recorded commands", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-7", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      // The run recorded opencode profiles at claim time; the configuration
-      // drifted since. The retry must still launch the recorded profile.
+      // The run recorded commands at claim time; configuration drift must not
+      // change the command used for this retry.
       h.workspaces.seedWorkspace("STA-7", {
         ticket: "STA-7",
-        profile_builder: JSON.stringify({ harness: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-        profile_acceptance: JSON.stringify({ harness: "claude", model: "claude-sonnet-5", effort: "high" }),
+        profile_builder: JSON.stringify({ command: "opencode --model muse-spark-1.3-contributor-free" }),
+        profile_acceptance: JSON.stringify({ command: "claude --model sonnet-5" }),
       });
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
         agents: {
-          builder: { harness: "gemini", model: "new/builder", effort: "low" },
-          acceptance: { harness: "opencode", model: "new/acceptance" },
+          builder: { command: "new-builder" },
+          acceptance: { command: "new-acceptance" },
         },
       });
       const out = await runCommand({ command: "worker.start", ticket: "STA-7" }, h.ctx);
       expect(out.ok).toBe(true);
       expect(out.text).toContain("builder-sta-7");
-      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "opencode", name: "builder-sta-7" });
+      const started = h.workspaces.calls.find((c) => c.method === "pane.send_input");
+      expect(started?.params["text"]).toBe("opencode --model muse-spark-1.3-contributor-free");
       const inbox = h.workspaces.promptsFor("builder-sta-7");
-      expect(inbox[0]).toContain("harness `opencode`");
+      expect(inbox[0]).toContain('command "opencode --model muse-spark-1.3-contributor-free"');
       expect(inbox[0]).not.toContain("new/builder");
     } finally {
       h.stop();
@@ -374,7 +368,7 @@ describe("worker start profiles", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.workspaces.failMethods.add("agent.start");
+      h.workspaces.failMethods.add("pane.send_input");
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(false);
       expect(out.text).toContain("worker start failed");
@@ -386,20 +380,17 @@ describe("worker start profiles", () => {
     }
   });
 
-  test("a stage profile mismatch fails before moving Linear", async () => {
+  test("a custom worker command launches without provider-specific validation", async () => {
     const h = await harness();
     try {
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
-        agents: { builder: { harness: "codex", model: "openai/gpt-5.6-sol" } },
+        agents: { builder: { command: "codex --model gpt-5.6-sol" } },
       });
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
-      expect(out.ok).toBe(false);
-      expect(out.text).toContain("provider/model ids belong to OpenCode");
-      expect(h.workspaces.agents).toHaveLength(0);
-      expect(h.world.issues[0]!.stateId).toBe(TODO);
+      expect(out.ok).toBe(true);
     } finally {
       h.stop();
     }
@@ -529,31 +520,31 @@ describe("fail", () => {
 });
 
 describe("worker work order", () => {
-  test("a worker start reuses the recorded stage profiles when the configuration drifts", async () => {
+  test("a worker start reuses the recorded command when the configuration drifts", async () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: BUILD, priority: 1, description: CRITERIA, title: "Drifted config", labelIds: [PENDING] });
-      // The run recorded the bundled profiles at claim time.
+      // The run recorded the bundled commands at claim time.
       const recorded = recordStageProfiles(h.ctx.resolved.config);
       h.workspaces.seedWorkspace("STA-1", { ticket: "STA-1", ...recorded });
-      // The configuration drifts mid-run: new harnesses, models, efforts.
+      // The configuration drifts mid-run; the run's command remains authoritative.
       h.ctx.resolved.config = parseDispatchConfig({
         project: "igniter",
         team: "Starcoder",
         agents: {
-          builder: { harness: "gemini", model: "new/builder", effort: "low" },
-          acceptance: { harness: "opencode", model: "new/acceptance" },
-          deliverer: { harness: "claude", model: "new/deliverer", effort: "max" },
+          builder: { command: "new-builder" },
+          acceptance: { command: "new-acceptance" },
+          deliverer: { command: "new-deliverer" },
         },
       });
       const out = await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx);
       expect(out.ok).toBe(true);
-      // The worker still launches the run's recorded stage profile.
-      const started = h.workspaces.calls.find((c) => c.method === "agent.start");
-      expect(started?.params).toMatchObject({ kind: "codex", name: "builder-sta-1" });
+      // The worker still launches the run's recorded stage command.
+      const started = h.workspaces.calls.find((c) => c.method === "pane.send_input");
+      expect(started?.params["text"]).toBe("opencode mini -m opencode-go/deepseekflash-4.1");
       const inbox = h.workspaces.promptsFor("builder-sta-1");
       expect(inbox).toHaveLength(1);
-      expect(inbox[0]).toContain("harness `codex`; model `gpt-5.6-terra`");
+      expect(inbox[0]).toContain('command "opencode mini -m opencode-go/deepseekflash-4.1"');
       expect(inbox[0]).not.toContain("new/builder");
     } finally {
       h.stop();

@@ -19,12 +19,7 @@ import commanderDefaultsYaml from "../../commander/config.yaml";
 // names or the bundled stage protocol.
 
 export interface CommanderAgentConfig {
-  harness: string;
-  model: string;
-  /** Cross-harness reasoning/thinking effort. Omitted keeps the harness
-   *  default; once set the launch layer translates it into the harness's
-   *  native option or refuses to launch. Never silently ignored. */
-  effort?: string;
+  command: string;
 }
 
 export type CommanderStage = "build" | "acceptance" | "deliver";
@@ -243,13 +238,14 @@ function parseBundledCommanderConfig(raw: unknown): CommanderConfig {
   return { agents: agents as CommanderAgents };
 }
 
-/** A bundled profile: harness and model are mandatory, effort is optional. */
+/** A bundled profile has one complete command. */
 function bundledAgent(value: Record<string, unknown>, path: string): CommanderAgentConfig {
-  const harness = optionalText(value, "harness");
-  const model = optionalText(value, "model");
-  if (!harness || !model) fail(`bundled Commander agent "${path}" requires harness and model`);
-  const effort = optionalText(value, "effort");
-  return effort === undefined ? { harness, model } : { harness, model, effort };
+  const command = optionalText(value, "command");
+  if (!command) fail(`bundled Commander agent "${path}" requires command`);
+  for (const key of Object.keys(value)) {
+    if (key !== "command") fail(`unknown bundled Commander agent "${path}" setting "${key}"`);
+  }
+  return { command };
 }
 
 export const DEFAULT_COMMANDER_CONFIG = parseBundledCommanderConfig(commanderDefaultsYaml);
@@ -267,28 +263,19 @@ function parseCommander(agentsRaw: unknown): CommanderConfig {
     }
     if (!isRecord(value)) fail(`agents."${name}" must be a map`);
     for (const key of Object.keys(value)) {
-      if (key !== "harness" && key !== "model" && key !== "effort") {
+      if (key !== "command") {
         fail(`unknown agents."${name}" setting "${key}"`);
       }
     }
-    const harness = optionalText(value, "harness");
-    const model = optionalText(value, "model");
-    const effort = optionalText(value, "effort");
+    const command = optionalText(value, "command");
     const bundled = Object.hasOwn(agents, name) ? agents[name] : undefined;
     if (bundled === undefined) {
-      // A new named candidate has no bundled fields to inherit, so it must
-      // be complete on its own.
-      if (harness === undefined || model === undefined) {
-        fail(`agents."${name}" is a new agent and requires harness and model`);
-      }
-      agents[name] = effort === undefined ? { harness, model } : { harness, model, effort };
+      if (command === undefined) fail(`agents."${name}" is a new agent and requires command`);
+      agents[name] = { command };
       continue;
     }
-    // A same-named profile merges field by field; omitted fields inherit.
-    if (harness !== undefined) bundled.harness = harness;
-    if (model !== undefined) bundled.model = model;
-    if (value.effort === null) delete bundled.effort;
-    else if (effort !== undefined) bundled.effort = effort;
+    // Same-named profiles inherit the complete bundled command when omitted.
+    if (command !== undefined) agents[name] = { command };
   }
   return { agents: agents as CommanderAgents };
 }
@@ -297,7 +284,7 @@ function parseCommander(agentsRaw: unknown): CommanderConfig {
 export function parseDispatchConfig(raw: unknown): DispatchConfig {
   if (!isRecord(raw)) fail(`expected a YAML map at the top level`);
   if (raw["models"] !== undefined) {
-    fail(`"models" was replaced by "agents"; move each model under its agent profile`);
+    fail(`"models" was replaced by "agents"; set each agent's complete shell command under agents.<name>.command`);
   }
   rejectMigrated(raw);
   const project = requiredText(raw, "project");

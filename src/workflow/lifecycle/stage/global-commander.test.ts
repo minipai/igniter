@@ -96,13 +96,9 @@ describe("foreground lifecycle", () => {
       const launch = out.data as { kind: string; cwd: string; command: string[] };
       expect(launch.kind).toBe("commander_foreground");
       expect(launch.cwd).toBe(h.repoRoot);
-      expect(launch.command.slice(0, 5)).toEqual([
-        "codex",
-        "-m",
-        "gpt-6-astra",
-        "-c",
-        'model_reasoning_effort="medium"',
-      ]);
+      expect(launch.command.slice(0, 2)).toEqual(["sh", "-c"]);
+      expect(launch.command[2]).toStartWith("opencode --prompt ");
+      expect(launch.command[2]).toContain("'Run the Igniter Global Commander workflow");
       expect(launch.command.at(-1)).toContain("Begin with `igniter status --json`");
       expect(launch.command.at(-1)).not.toContain("Assigned ticket");
       expect(launch.command.at(-1)).toContain("not your assignment");
@@ -160,7 +156,7 @@ describe("ticket-targeted worker start", () => {
     const h = await harness();
     try {
       addIssue(h.world, { identifier: "STA-1", stateId: TODO, priority: 1, description: CRITERIA, labelIds: [PENDING] });
-      h.workspaces.failMethods.add("agent.start");
+      h.workspaces.failMethods.add("pane.send_input");
       expect((await runCommand({ command: "worker.start", ticket: "STA-1" }, h.ctx)).ok).toBe(false);
       expect(h.world.issues[0]!.stateId).toBe(TODO);
       h.workspaces.failMethods.clear();
