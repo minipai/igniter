@@ -124,7 +124,28 @@ agents:
 
 Profiles with the same name merge field by field with the
 [bundled defaults](src/commander/config.yaml); omitted fields are inherited.
+Set `effort: null` to clear an inherited effort and use the harness default.
+This is needed when switching a profile with a default effort to OpenCode Mini,
+which has no effort launch flag.
 A new profile name must specify both `harness` and `model`.
+
+OpenCode has two separate harness choices:
+
+- `opencode` launches the full TUI with `opencode -m provider/model`. This
+  requires a CLI that supports the full TUI model flag (such as OpenCode V1);
+  OpenCode V2.0.16 does not support that flag.
+- `opencode-mini` launches `opencode mini -m provider/model`, supported by
+  OpenCode V2. Both use Herdr's `opencode` agent kind.
+
+For example, to use Mini for the Commander:
+
+```yaml
+agents:
+  commander:
+    harness: opencode-mini
+    model: provider/model
+    effort: null
+```
 
 `commander` configures the Commander. `builder`, `acceptance`, and `deliverer`
 are the defaults for their stages. Additional names, including the bundled

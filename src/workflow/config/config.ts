@@ -287,7 +287,8 @@ function parseCommander(agentsRaw: unknown): CommanderConfig {
     // A same-named profile merges field by field; omitted fields inherit.
     if (harness !== undefined) bundled.harness = harness;
     if (model !== undefined) bundled.model = model;
-    if (effort !== undefined) bundled.effort = effort;
+    if (value.effort === null) delete bundled.effort;
+    else if (effort !== undefined) bundled.effort = effort;
   }
   return { agents: agents as CommanderAgents };
 }
